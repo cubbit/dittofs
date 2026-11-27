@@ -54,12 +54,14 @@ func recordBuf(bp *[]byte, n int64) []byte {
 }
 
 // readRecord reads the record at at of file id whole through st into *bp and
-// verifies it against pieces, the index entries of id that name it. It reads the
-// header first, decodes it at its own place and checks it against every
-// piece, then reads the body and verifies it against the header's payload
-// checksum. It returns the record's payload only when every check passed;
-// otherwise payload is nil and verdict says which check failed. h is the
-// decoded header, and zero when the header did not decode. mtime is the
+// verifies it against pieces, the index entries of id that name it. Its first
+// read takes the header and the body the pieces need, so a record the pieces
+// cover whole costs one storage read; it decodes the header at its own place
+// and checks it against every piece, reads whatever of the body the first
+// read did not reach, then verifies the whole body against the header's
+// payload checksum. It returns the record's payload only when every check
+// passed; otherwise payload is nil and verdict says which check failed. h is
+// the decoded header, and zero when the header did not decode. mtime is the
 // modification time a write record carries: 0 for a fill, and whenever the
 // record does not verify. payload aliases
 // *bp: the caller copies it out before it hands *bp back to recordBufs.
@@ -70,9 +72,10 @@ func recordBuf(bp *[]byte, n int64) []byte {
 // segment.ErrSegmentGone, which segmentGone tells apart.
 //
 // Each call takes one segment reference, makes its one or two reads through
-// it and releases it, so nothing is held when it returns: a retirement of the
-// segment that begins while the record is read waits for the reference, and
-// one that began before finds the read refused with segment.ErrSegmentGone.
+// it (two only when the pieces end before the record does) and releases it,
+// so nothing is held when it returns: a retirement of the segment that begins
+// while the record is read waits for the reference, and one that began before
+// finds the read refused with segment.ErrSegmentGone.
 func (c *Core) readRecord(ctx context.Context, st *segment.Stream, id core.FileID, at index.RecordAt, pieces []index.Placed, bp *[]byte) (payload []byte, h format.RecordHeader, mtime int64, verdict recordVerdict, err error) {
 	if err = ctx.Err(); err != nil {
 		return nil, format.RecordHeader{}, 0, 0, err
@@ -85,12 +88,17 @@ func (c *Core) readRecord(ctx context.Context, st *segment.Stream, id core.FileI
 	// caller hands a record that fails a check to Corrupt, whose append domain
 	// ranks above the storage guard.
 	defer ref.Release()
-	hb := recordBuf(bp, format.RecordHeaderSize)
-	if err = readFull(ref, at.Segment, hb, int64(at.Offset)); err != nil {
+	// The first read is sized from the pieces, never past the segment's cap,
+	// and must reach at least the header; the header alone decides the body.
+	off := int64(at.Offset)
+	first := min(format.RecordHeaderSize+coveredBody(pieces), max(c.set.Cap()-off, format.RecordHeaderSize))
+	buf := recordBuf(bp, first)
+	got, err := readAtLeast(ref, at.Segment, buf, off, format.RecordHeaderSize)
+	if err != nil {
 		return nil, format.RecordHeader{}, 0, 0, err
 	}
 	identity := st.Identity()
-	h, derr := format.DecodeRecordHeader(hb, identity, at.Segment, int64(at.Offset))
+	h, derr := format.DecodeRecordHeader(buf[:format.RecordHeaderSize], identity, at.Segment, off)
 	if derr != nil {
 		return nil, format.RecordHeader{}, 0, recordHeaderDamaged, nil
 	}
@@ -116,15 +124,37 @@ func (c *Core) readRecord(ctx context.Context, st *segment.Stream, id core.FileI
 	// a 1 MiB record reads and verifies the megabyte. Upgrade to a payload
 	// checksum per 64 KiB of payload, a format change, when warm small-read
 	// rates over large records miss their target.
-	body := recordBuf(bp, h.BodySize())
-	if err = readFull(ref, at.Segment, body, int64(at.Offset)+format.RecordHeaderSize); err != nil {
-		return nil, format.RecordHeader{}, 0, 0, err
+	need := format.RecordHeaderSize + h.BodySize()
+	if int64(got) < need {
+		// The rest of the body, after the bytes the first read kept.
+		if int64(cap(*bp)) < need {
+			grown := make([]byte, need)
+			copy(grown, buf[:got])
+			*bp = grown
+		}
+		*bp = (*bp)[:need]
+		if err = readFull(ref, at.Segment, (*bp)[got:need], off+int64(got)); err != nil {
+			return nil, format.RecordHeader{}, 0, 0, err
+		}
+		buf = *bp
 	}
-	rb, verr := format.VerifyRecordBody(body, identity, h)
+	rb, verr := format.VerifyRecordBody(buf[format.RecordHeaderSize:need], identity, h)
 	if verr != nil {
 		return nil, h, 0, recordBodyBad, nil
 	}
 	return rb.Payload, h, rb.MTime, recordVerifies, nil
+}
+
+// coveredBody is the body a write record holding every piece of pieces needs
+// at least: its modification time and its payload up to the end of the last
+// piece. A fill's body has no modification time, so the guess reads 8 bytes
+// past a fill's covered payload, which the body the header decides leaves out.
+func coveredBody(pieces []index.Placed) int64 {
+	var end int64
+	for _, pc := range pieces {
+		end = max(end, int64(pc.Skip)+pc.Extent.Len)
+	}
+	return format.RecordHeader{Kind: format.KindWrite, Extent: core.Extent{Len: end}}.BodySize()
 }
 
 // headerMatches reports whether h is the record every piece of pieces names:
@@ -160,17 +190,27 @@ func headerMatches(h format.RecordHeader, id core.FileID, pieces []index.Placed)
 // read that does not fill b, with no error or with io.EOF, ran past the end of
 // the segment's file and is an io.ErrUnexpectedEOF.
 func readFull(ref segment.Ref, seg core.SegmentID, b []byte, off int64) error {
+	_, err := readAtLeast(ref, seg, b, off, len(b))
+	return err
+}
+
+// readAtLeast reads up to len(b) bytes of seg at off through ref, a reference
+// to seg, and returns how many it read. A read that reaches least bytes, with
+// no error or with io.EOF, read what was needed; one that stops short of
+// least that way ran past the end of the segment's file and is an
+// io.ErrUnexpectedEOF; any other error is returned wrapped, whatever was read.
+func readAtLeast(ref segment.Ref, seg core.SegmentID, b []byte, off int64, least int) (int, error) {
 	n, err := ref.ReadAt(b, off)
-	if n == len(b) && errors.Is(err, io.EOF) {
+	if n >= least && errors.Is(err, io.EOF) {
 		err = nil
 	}
 	switch {
-	case n < len(b) && (err == nil || errors.Is(err, io.EOF)):
-		return fmt.Errorf("datapath: reading %d bytes of segment %d at %d: %w: %d read", len(b), seg, off, io.ErrUnexpectedEOF, n)
+	case n < least && (err == nil || errors.Is(err, io.EOF)):
+		return n, fmt.Errorf("datapath: reading %d bytes of segment %d at %d: %w: %d read", len(b), seg, off, io.ErrUnexpectedEOF, n)
 	case err != nil:
-		return fmt.Errorf("datapath: reading %d bytes of segment %d at %d: %w", len(b), seg, off, err)
+		return n, fmt.Errorf("datapath: reading %d bytes of segment %d at %d: %w", len(b), seg, off, err)
 	}
-	return nil
+	return n, nil
 }
 
 // segmentGone reports whether err is a read of a segment that no longer

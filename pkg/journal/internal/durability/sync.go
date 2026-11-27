@@ -731,7 +731,11 @@ type stream struct {
 	// segment of a tracked record or of a sync, whichever is later.
 	lastSeg  core.SegmentID
 	haveLast bool
-	closed   bool
+	// trackedSeg is the segment of the newest record Track took, stored
+	// under mu and loaded without it by Durable, which asks only the stream
+	// whose newest record is in the segment of the location it is given.
+	trackedSeg atomic.Uint64
+	closed     bool
 	// want is set by the waiter that leads a sync and cleared by the worker
 	// as it starts one; syncing is set while the worker is inside the
 	// stream's Sync.
@@ -841,6 +845,7 @@ func (d *Durability) Sink(no uint32) segment.Sink {
 			st.trackedN++
 			st.ledger = append(st.ledger, entry{w: w, tracked: st.trackedN})
 			st.lastSeg, st.haveLast = w.Loc.Segment, true
+			st.trackedSeg.Store(uint64(w.Loc.Segment))
 			// A record a sync already reached, reported before the sink saw
 			// it, still needs a completion pass.
 			if st.covered(w.Loc) {
@@ -959,33 +964,72 @@ func (d *Durability) SpareLanded() {
 // stream reserves each offset of a segment once and segment ids are never
 // reused, and a re-appended record is tracked at its new place.
 //
-// ponytail: every other stream's ledger is still scanned whole, so a call costs
-// O(streams x ledger) on a journal with several streams. Upgrade to scanning
-// the record's own stream first, or to a per-segment index, when a profile of
-// a several-stream journal shows the scan.
+// The record's own stream is asked first, alone: the stream whose newest
+// tracked record is in at's segment. Its ledger entry for at, when it has
+// one, is the answer the pass over every stream gives, because every piece of
+// state the pass reads about a location (the ledger, the moved chain, the
+// lost records, the pending windows) is kept by the stream that appended the
+// location's segment: a stream appends only into its own segments, a
+// re-append lands on the stream that held the record, and segment ids are
+// never shared or reused. So no other stream holds anything about at, and
+// the pass would reach the owner's same entry and return the same answer.
+// Without an entry there (a completed, lost or windowed record, or a newest
+// segment that moved on since the load) the pass over every stream answers,
+// as it always did.
+//
+// ponytail: a location whose segment is not its stream's newest tracked
+// one, or that the ledger no longer holds, still scans every stream, so such
+// a call costs O(streams x ledger). Upgrade to a per-segment index when a
+// profile shows a caller asking about older records.
 func (d *Durability) Durable(at segment.Location) bool {
 	made := d.snapshot()
 	for _, st := range made {
-		st.mu.Lock()
-		// A re-appended record is asked about where it landed.
-		at := st.followLocked(at)
-		for i := len(st.ledger) - 1; i >= 0; i-- {
-			if st.ledger[i].w.Loc == at {
-				ok := st.covered(at)
-				st.mu.Unlock()
-				return ok
-			}
+		if core.SegmentID(st.trackedSeg.Load()) != at.Segment {
+			continue
 		}
-		// A record of a pending window is never durable, whatever the
-		// segment's synced offset says.
-		_, lost := st.lost[at]
-		if lost || st.inWindowLocked(at) {
-			st.mu.Unlock()
-			return false
+		if ok, found := st.durableTracked(at); found {
+			return ok
+		}
+		break
+	}
+	for _, st := range made {
+		st.mu.Lock()
+		ok, found := st.durableTrackedLocked(at)
+		if !found {
+			// A record of a pending window, or one a failed window dropped,
+			// is never durable, whatever the segment's synced offset says;
+			// ok is false here.
+			loc := st.followLocked(at)
+			_, lost := st.lost[loc]
+			found = lost || st.inWindowLocked(loc)
 		}
 		st.mu.Unlock()
+		if found {
+			return ok
+		}
 	}
 	return true
+}
+
+// durableTracked is durableTrackedLocked under the stream's mutex.
+func (st *stream) durableTracked(at segment.Location) (ok, found bool) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.durableTrackedLocked(at)
+}
+
+// durableTrackedLocked looks for the ledger entry of the record at at, asked
+// about where it landed if it was re-appended, newest entry first, and
+// reports whether a sync covered it. found is false when the ledger holds no
+// such entry. The caller holds mu.
+func (st *stream) durableTrackedLocked(at segment.Location) (ok, found bool) {
+	at = st.followLocked(at)
+	for i := len(st.ledger) - 1; i >= 0; i-- {
+		if st.ledger[i].w.Loc == at {
+			return st.covered(at), true
+		}
+	}
+	return false, false
 }
 
 // Pending returns the locations of the records appended but not yet known

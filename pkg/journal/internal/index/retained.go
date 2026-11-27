@@ -74,6 +74,9 @@ type retainedSet struct {
 	// times is the file's dirty-time table, told of each dirty byte kept or
 	// removed. Nil keeps the set untimed.
 	times *dirtyTimes
+	// newest, when set, is raised by every piece kept. Nil on a standalone
+	// set a test built by hand.
+	newest *newestRecord
 	// bytes is the sum of the retained lengths and dirty the part of it whose
 	// offloaded bit is unset, kept by add and edit whether or not the set is
 	// accounted, and read only under the file's lock.
@@ -129,6 +132,9 @@ func (s *retainedSet) add(r Retained) {
 	}
 	if s.acct != nil {
 		s.acct.add(r.Record.Segment, 0, r.Extent.Len)
+	}
+	if s.newest != nil {
+		s.newest.raise(r.Record, r.Extent)
 	}
 	i, _ := slices.BinarySearchFunc(s.pieces, r, compareRetained)
 	s.pieces = slices.Insert(s.pieces, i, r)

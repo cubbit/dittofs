@@ -129,6 +129,11 @@ type recordPieces struct {
 // serve serves placed, reading each distinct record once. again allows one
 // more resolve of the pieces of a record whose segment is gone.
 func (r *reading) serve(placed []index.Placed, again bool) error {
+	// A span one record backs, a point read's, is its own one group, served
+	// without the grouping's map and slices.
+	if len(placed) > 0 && !slices.ContainsFunc(placed[1:], func(pc index.Placed) bool { return pc.Record != placed[0].Record }) {
+		return r.serveRecord(recordPieces{at: placed[0].Record, pieces: placed}, again)
+	}
 	for _, g := range byRecord(placed) {
 		if err := r.serveRecord(g, again); err != nil {
 			return err

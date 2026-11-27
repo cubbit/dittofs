@@ -932,6 +932,35 @@ func BenchmarkJ3_PointLookup(b *testing.B) {
 	}
 }
 
+// A Sync of a file with nothing unsynced, over an index of n extents of the
+// file, one Sync per op: its mark comes from the file's newest record the index
+// names, so the row shows whether finding that record grows with the file.
+// The sizes are fixed, not scaled: they are the decades the cost was measured
+// at when it walked every extent of the file.
+func BenchmarkSyncClean(b *testing.B) {
+	for _, n := range []int{1_000, 10_000, 100_000} {
+		b.Run(fmt.Sprintf("extents=1e%d", int(math.Round(math.Log10(float64(n))))), func(b *testing.B) {
+			b.ReportAllocs()
+			sink := jbJournalOpen(b, 1)
+			p := make([]byte, jbPointExtent)
+			for i := range n {
+				if _, err := sink.write(0, int64(i)*jbPointStride, p); err != nil {
+					b.Fatalf("bench: build the index, extent %d: %v", i, err)
+				}
+			}
+			if err := sink.sync(0); err != nil {
+				b.Fatalf("bench: the first sync: %v", err)
+			}
+			b.ResetTimer()
+			for range b.N {
+				if err := sink.sync(0); err != nil {
+					b.Fatalf("bench: sync: %v", err)
+				}
+			}
+		})
+	}
+}
+
 // J3's warm read: one stream reading a held file 1 MiB at a time, after one
 // read that warms what the operating system caches.
 func BenchmarkJ3_WarmRead1m(b *testing.B) {

@@ -20,7 +20,7 @@ const (
 	maxWriteAllocs = 5.0
 	// Exactly what one ReadAt of held bytes spent when
 	// TestCounted_AllocationsPerCall measured it here.
-	maxReadAllocs = 4.0
+	maxReadAllocs = 2.0
 	// Exactly what one Stats spends now that it reads maintained counters
 	// and takes none of the locks a write takes; any allocation added past it
 	// fails the check the same way.

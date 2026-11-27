@@ -253,6 +253,9 @@ type file struct {
 	segs []segRecords
 	// markers are the file's unsettled removal markers, in version order.
 	markers []marker
+	// newest is the newest record a piece of the file was put or kept from,
+	// which Newest answers from (see newestRecord).
+	newest newestRecord
 }
 
 // newFile returns an entry whose held and retained sets feed acct, keeping a
@@ -262,6 +265,7 @@ type file struct {
 func newFile(acct *segments, fs *files) *file {
 	f := &file{fs: fs, held: heldSet{acct: acct}, retained: retainedSet{acct: acct}}
 	f.held.times, f.retained.times = &f.dirtyAt, &f.dirtyAt
+	f.retained.newest = &f.newest
 	f.held.of = f
 	f.mu.Init(lockorder.FileIndex, fs.recorder())
 	return f

@@ -2,11 +2,13 @@ package datapath
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/journal/internal/lockorder"
+	"github.com/cubbit/dittofs/pkg/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/journal/internal/storage"
 )
 
@@ -246,12 +248,18 @@ func TestRecordedCoreFixture(t *testing.T) {
 		})
 
 	// The stream probes hold a plain storage guard — the one rank ordered
-	// above the segment append a probe can hold — then read each stream's
-	// room, which takes that stream's append lock alone. One probe per
-	// stream, so a stream whose lock was left unranked fails its own.
+	// above the segment append a probe can hold — then ask each stream to
+	// seal a segment no stream holds, which takes that stream's append lock
+	// alone and is refused under it with no I/O. Room takes no lock: it
+	// reads a figure the appends publish. One probe per stream, so a stream
+	// whose lock was left unranked fails its own.
 	for i := 0; i < c.streams.Len(); i++ {
 		expectOutOfOrder(t, c, rec, lockorder.StorageGuard, fmt.Sprintf("stream %d", i),
-			[]lockorder.Rank{lockorder.SegmentAppend}, func() { c.streams.Stream(i).Room() })
+			[]lockorder.Rank{lockorder.SegmentAppend}, func() {
+				if _, err := c.streams.Stream(i).SealOpen(^core.SegmentID(0), false); !errors.Is(err, segment.ErrNotOpenSegment) {
+					t.Errorf("stream %d's append lock probe = %v, want ErrNotOpenSegment", i, err)
+				}
+			})
 	}
 
 	// The descriptor cache's guard reference is checked when it is granted:

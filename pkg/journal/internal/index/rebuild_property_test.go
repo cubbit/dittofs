@@ -558,6 +558,13 @@ func checkRebuildAccounting(t *testing.T, step int, fs *files, recs []Record) {
 	if got := fs.dropRangeCount(); got != sum {
 		t.Fatalf("step %d: dropRangeCount() = %d, want %d", step, got, sum)
 	}
+	// The newest place each file names, which Newest keeps as the replay
+	// puts and retains, is the one its rebuilt read-out names.
+	for _, id := range walkIDs(fs) {
+		if err := newestMismatch(fs, id); err != nil {
+			t.Fatalf("step %d: %v", step, err)
+		}
+	}
 	// Soundness: every fed record is covered in its own segment by a range
 	// whose pair is at or below its own.
 	for _, r := range recs {

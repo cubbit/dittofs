@@ -233,9 +233,11 @@ func TestReadHeldNamesEachPieceVersionReadingEachRecordOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadAt: %v", err)
 	}
-	// Two records, each read once: its header, then its body.
-	if got := seam.Calls(kit.OpRead) - reads; got != 4 {
-		t.Fatalf("the read made %d storage reads, want 4: two per distinct record", got)
+	// Two records, each read once, and each in one storage read: the pieces
+	// reach the end of each record's payload, so the header and the whole
+	// body come in the call that reads the header.
+	if got := seam.Calls(kit.OpRead) - reads; got != 2 {
+		t.Fatalf("the read made %d storage reads, want 2: one per distinct record", got)
 	}
 	if n != 8<<10 || len(missing) != 0 || !bytes.Equal(p, want) {
 		t.Fatalf("n = %d missing %v, bytes equal %v", n, missing, bytes.Equal(p, want))
@@ -321,5 +323,41 @@ func TestReadBoundsARecordByTheSetItsSegmentsRollAt(t *testing.T) {
 	want := []core.Held{{Extent: core.Extent{Off: 0, Len: 4 << 10}, Version: v}}
 	if n != 4<<10 || len(missing) != 0 || !slices.Equal(held, want) || !bytes.Equal(p, data) {
 		t.Fatalf("n = %d missing %v held %v: an ordinary record was not served", n, missing, held)
+	}
+}
+
+// readRecord's first storage read takes the header and the payload the pieces
+// cover. Pieces that reach the end of the record's payload cost that one read;
+// pieces that end inside it cost a second read of the rest, appended after the
+// bytes the first read kept in a buffer grown from empty, and the payload
+// handed back is the whole record's, verified whole.
+func TestReadRecordReadsTheRestOfTheBodyOnlyWhenThePiecesEndShort(t *testing.T) {
+	c, seam := newTestCore(t)
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	data := pattern(16<<10, 3)
+	mustWrite(t, c, s, f, 0, data)
+	for _, tc := range []struct {
+		name  string
+		size  int64
+		reads int
+	}{{"the whole record", int64(len(data)), 1}, {"its first quarter", int64(len(data)) / 4, 2}} {
+		t.Run(tc.name, func(t *testing.T) {
+			placed, _ := c.Index().Span(f, core.Extent{Off: 0, Len: tc.size})
+			if len(placed) != 1 {
+				t.Fatalf("the span names %d pieces, want the one record's", len(placed))
+			}
+			before := seam.Calls(kit.OpRead)
+			payload, _, _, verdict, err := c.readRecord(context.Background(), c.streams.For(f), f, placed[0].Record, placed, new([]byte))
+			if err != nil || verdict != recordVerifies {
+				t.Fatalf("readRecord = verdict %d, %v; want it to verify", verdict, err)
+			}
+			if got := seam.Calls(kit.OpRead) - before; got != tc.reads {
+				t.Fatalf("readRecord made %d storage reads, want %d", got, tc.reads)
+			}
+			if !bytes.Equal(payload, data) {
+				t.Fatal("the payload handed back is not the record's whole payload")
+			}
+		})
 	}
 }
