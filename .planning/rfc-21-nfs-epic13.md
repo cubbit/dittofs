@@ -1171,7 +1171,7 @@ Gaps, not questions:
 - E3 caches no `RPCSEC_GSS` call and leaves its key here (its R46); T13.5 adds the GSS arm and
   replaces E3's T3.3 case that a GSS call is never cached (D7).
 - Which pull request carries which RFC change: Q3's RFC 20 §4.4 `VerifyMIC` merged in #6239;
-  `Wrap` and `Unwrap` on `gss.Context` are in RFC 20 already; PR 3 waits for nothing.
+  `Wrap` and `Unwrap` on `gss.Context` are in RFC 20 already; PR 3 waits for no RFC change.
   Q1's RFC 21 §11.5 row goes in batch two's one RFC 21 pull request, opened with E8's document pull
   request, beside E8's, E11's and E12's §11.5 cells. Q2's RFC 18 §3.8 sentence goes in batch
   two's one RFC 18 pull request on develop, if agreed. D1 reads RFC 20 §4.7's stage-table row "GSS where the

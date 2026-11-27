@@ -1487,10 +1487,9 @@ Gaps and assumptions, not questions:
   own, D13), is exported by E9's T9.7.
 - **E11's Q5, `priv`.** E11 asks whether RFC 21 drops `priv` from §6.2 and §11.4. T8.2 keeps the
   field as RFC 21 has it; if the answer drops it, T8.2 drops it before any record is written.
-- **Which pull request carries which RFC amendment.** Q1's `Deps.Server` and Q3's `Conn.SetSession`
+- **Which pull request carries which RFC amendment.** Q1's `Deps.Server`, Q2's `Invocation.Bound` returning an error and Q3's `Conn.SetSession`
   go in the next RFC 20 pull request, not opened yet, which E11's Q2 joins with `Conn.Local` and
-  later epics join; Q2's `Invocation.Bound` is already in RFC 20 §4.7 (#5131), and E3's `Conn.Remote`
-  merged in #6239. Q4's `Clients.Owns` goes in an
+  later epics join; E3's `Conn.Remote` merged in #6239. Q4's `Clients.Owns` goes in an
   RFC 17 pull request (with RFC 14's under (b)); Q5's RFC 21 §3.3 sentence, Q6's RFC 24 §4.5 one,
   the §13 row and the §3.5 gaps above, and §14's rows for §1.2's two counters, go in batch two's
   one RFC 21 pull request (RFC 24's

@@ -1321,7 +1321,7 @@ Gaps and assumptions, not questions:
 - Which pull request carries which RFC amendment, once answered: Q2's `Conn.Local` and datagram
   sentence join the next RFC 20 pull request, not opened yet, with D14's sentence for §4.8's row and §10's
   series for a dropped datagram by reason (queue, pool, size), which rule 3 needs, and which also
-  carries E8's `Deps.Server` and `Conn.SetSession` (`Invocation.Bound` is already in RFC 20, #5131); Q1's RFC 17 §3.2
+  carries E8's `Deps.Server`, `Conn.SetSession` and `Invocation.Bound` returning an error; Q1's RFC 17 §3.2
   `Revocation.State` goes in batch two's one RFC 17 pull request, with RFC 14 §11.1's `Revocation`, with E9's D1, E10's Q1 and E12's
   D1, and T11.8's service half waits for it; Q3's cells in RFC 21 §11.5 and Q5's removal in RFC 21
   §6.2 and §11.4 go in batch two's one RFC 21 pull request, opened with E8's document pull request.
