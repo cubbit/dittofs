@@ -169,16 +169,19 @@ func TestReadRacingSegmentRetirement(t *testing.T) {
 	data := pattern(4<<10, 21)
 	f := testFile(1)
 
-	// The read reads a record's header and then its body through one segment
-	// reference. With either read held at storage, the retirement's drain
-	// begins behind that reference and waits for it before it unlinks: the
-	// read serves the record, from storage not yet freed, and the body read
-	// that follows a held header read is not refused by the drain begun before
-	// it.
+	// The read reads a record through one segment reference: the header with
+	// the body its pieces cover in one call, then, when the pieces end before
+	// the record does, the rest of the body in a second. The body case reads
+	// the record's first quarter, so that second read exists. With either
+	// read held at storage, the retirement's drain begins behind that
+	// reference and waits for it before it unlinks: the read serves the
+	// record, from storage not yet freed, and the body read that follows a
+	// held header read is not refused by the drain begun before it.
 	for _, held := range []struct {
 		name string
 		nth  int // the read of the segment held: 1 the header's, 2 the body's
-	}{{"header", 1}, {"body", 2}} {
+		size int // the bytes of the record the read asks for
+	}{{"header", 1, len(data)}, {"body", 2, len(data) / 4}} {
 		t.Run("retired while the "+held.name+" read holds the reference", func(t *testing.T) {
 			c, seam := newTestCore(t)
 			s := mustShare(t, c, 1)
@@ -186,7 +189,7 @@ func TestReadRacingSegmentRetirement(t *testing.T) {
 			name := format.SegmentName(orig.Record.Segment)
 
 			hold := seam.HoldFirst(t, kit.OpRead, name)
-			p := sentinels(len(data))
+			p := sentinels(held.size)
 			read := readAsync(c, s, f, 0, p)
 			within(t, hold.Reached(), "the read's header read")
 			if held.nth == 2 {
@@ -214,7 +217,7 @@ func TestReadRacingSegmentRetirement(t *testing.T) {
 			}
 
 			hold.Release()
-			served(t, within(t, read, "the held read"), p, data, orig.Version)
+			served(t, within(t, read, "the held read"), p, data[:held.size], orig.Version)
 			if err := within(t, retired, "the retirement"); err != nil {
 				t.Fatalf("Retire: %v", err)
 			}
