@@ -2,6 +2,7 @@ package transformtest
 
 import (
 	"context"
+	"flag"
 	"strings"
 	"testing"
 
@@ -14,13 +15,26 @@ import (
 // The correct test transforms under FuzzDecode; plain go test runs their
 // seeds.
 func FuzzFrameDecode(f *testing.F) {
-	prof.Watch(f, prof.Options{})
+	watchSeeds(f)
 	FuzzDecode(f, frameSubject(asFrame))
 }
 
 func FuzzSealDecode(f *testing.F) {
-	prof.Watch(f, prof.Options{})
+	watchSeeds(f)
 	FuzzDecode(f, sealSubject(fullMAC, asSeal))
+}
+
+// watchSeeds runs the profile watch over a fuzz target's seed run.
+//
+// decision: the leak check runs on the seed corpus only. Under -fuzz the
+// fuzzing engine keeps its own signal goroutine running, which the check
+// would report as a leak of this target. Plain go test runs every seed under
+// the check. Withdraw when the fuzzing engine stops leaving its signal
+// goroutine running.
+func watchSeeds(f *testing.F) {
+	if flag.Lookup("test.fuzz").Value.String() == "" {
+		prof.Watch(f, prof.Options{})
+	}
 }
 
 // claimsAlloc allocates the whole of what its body claims before refusing an
