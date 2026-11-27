@@ -179,8 +179,9 @@ from `journal-bench-results.md`, not from these developer-box figures.
 
 ## Iteration 2 — 2026-11-27: the roll pays two device flushes per segment
 
-*Later rounds:* iteration 3 withdrew recommendation 1 (a plain-`fsync` make costs the same in
-situ) and corrected dead end 9's mechanism (the deferral never moved the make).
+*Later rounds:* iteration 3 corrected dead end 9's mechanism (the deferral never moved the
+make). Its test of recommendation 1 did not run as intended (see iteration 3), so recommendation
+1 is unsettled, neither confirmed nor withdrawn.
 
 **Context.** Measured at the merged stack, `33e01b49d` (the read-ahead hint #6472, the record
 buffer pool #6473 and the opening spare #6511 all in), on the same MacBook (APFS,
@@ -471,13 +472,16 @@ of 8 iterations: at volume the Maker starts to fall behind even on the Mac.
   ends at ~119 ms, and step 2 returns 3.6–4.1 ms after the make's sync does, in all 30. With the
   make's bill gone, step 2's own barrier is 8–9 ms. So each seal is ~116 ms of its own data
   flush and ~117 ms of waiting on the make.
-- **The bill belongs to APFS committing the preallocation, not to the sync primitive.** A make
-  synced with plain `fsync` takes 235 ms in situ and the row moves 1.01×. `F_BARRIERFSYNC` gave
-  0.89×, and dropping the file sync but keeping the directory sync gave 0.96×, with the bill
-  moving to the directory sync (11 → 128 ms). Dropping every make sync gave 1.33× at small scale
-  and 1.04× at steady state, where the bill lands on the seals. **Iteration 2's recommendation 1
-  is withdrawn.** A sparse spare (size only, no `F_PREALLOCATE`) is the only make whose bill
-  disappears.
+- **Whoever syncs next pays the make's bill.** Dropping every make sync gave 1.33× at small
+  scale and 1.04× at steady state, with the bill landing on the seals: the cost follows the
+  preallocated extent, not the call that flushes it. A sparse spare (size only, no
+  `F_PREALLOCATE`) was the only make whose bill disappeared. **The probes of a cheaper sync
+  primitive did not run:** the segment files sit behind the durability layer's file wrapper,
+  which did not pass the probe's sync choice through, so the plain-`fsync`, `F_BARRIERFSYNC` and
+  directory-sync-only arms all ran the normal `F_FULLFSYNC` (found by a later round on the Linux
+  host, where the same wrapper hid a writeback hint). Their figures (1.01×, 0.89×, 0.96×) are
+  measurements of the unchanged code, and recommendation 1 stays open until a run whose
+  pass-through is verified.
 - **Dead end 9's mechanism, corrected.** Iteration 2's deferral suppressed only
   `Pool.Take(Content)`'s kick, and the large row never calls that: its roll's content comes
   through a capacity hold, and the kicks of `Pool.Hold` and `Hold.Take` fire within 0.1 ms of the
@@ -500,7 +504,7 @@ gate was unusable):
 | SegmentCap 1 GiB / 512 MiB | 1.40× / 1.35× | **1.98× / 1.65×** | RFC 28 §5 Q2 and RFC 1 §6 (the stock's footprint doubles) |
 | Make held out of the seal window, two spares | 1.28× | 1.08× | in-code, below the gate |
 | Merge the seal's two flushes | 1.00× | — | RFC 28 §2.5; do not ask |
-| Seal step 1 as `F_BARRIERFSYNC` | 1.00–1.08× | — | RFC 28 Appendix A; do not ask |
+| Seal step 1 as `F_BARRIERFSYNC` | not run: the probe's choice never reached the file | — | open |
 | Deeper stock alone (`SpareTarget: 2`) | 0.96–1.02× | 0.91× | a setting |
 | Faster CRC32C (interleaved arm64) | not run; ≤ 4% | | in-code, macOS only (amd64 is already interleaved) |
 
@@ -601,8 +605,9 @@ Once the scan is gone, the writer's CPU above `pwrite` is ~3 µs at 4 KiB and ~1
     went 707 → 1,012 ns at 4 KiB.
 12. **Flush-behind as a durability sync**, above: the roll waits on the make, not on step 1.
     Retry only as a writeback hint, and only once the make stops being the wall.
-13. **Merging the seal's two flushes, or step 1 as `F_BARRIERFSYNC`**: 1.00× at stock; the second
-    flush's own cost is ~8 ms per roll. Do not send the RFC question.
+13. **Merging the seal's two flushes**: 1.00× at stock; the second flush's own cost is ~8 ms per
+    roll. Do not send the RFC question. (Step 1 as `F_BARRIERFSYNC` was meant to be tested beside
+    it, but that probe never reached the file, so it is not a dead end.)
 
 **Not checked**: the dedicated Linux benchmark host. There `pwrite` is cheaper and the CRC is
 already interleaved, so the scan's share of a write should be larger still, but no run backs it.
