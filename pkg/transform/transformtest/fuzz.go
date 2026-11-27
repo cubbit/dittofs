@@ -21,7 +21,7 @@ import (
 // its material. Every decode must not panic, must return one of RFC 5 §2.7's
 // five errors or at most max bytes, and must keep within the allocation
 // bound; a decoded output, encoded again under the seed's material, must
-// decode to itself.
+// decode to itself, unless the transform declines it.
 func FuzzDecode(f *testing.F, s Subject) {
 	f.Helper()
 
@@ -34,7 +34,7 @@ func FuzzDecode(f *testing.F, s Subject) {
 		f.Fatal(err)
 	}
 
-	for i, sd := range z.seeds {
+	for i, sd := range z {
 		f.Add(uint8(i), sd.body)
 	}
 
@@ -59,55 +59,59 @@ type fuzzSeed struct {
 	census []keys.MaterialID
 	enc    transform.Transform
 	body   []byte
+	claims bool // the body claims more than max
 }
 
-// fuzzer holds every seed, their material all given to one Memory.
-type fuzzer struct {
-	seeds []fuzzSeed
-}
+// fuzzer is every seed, their material all given to one Memory.
+type fuzzer []fuzzSeed
 
-func newFuzzer(ctx context.Context, s Subject) (*fuzzer, error) {
+func newFuzzer(ctx context.Context, s Subject) (fuzzer, error) {
 	e, err := newEnv(ctx, s)
 	if err != nil {
 		return nil, err
 	}
-
-	z := &fuzzer{}
 
 	ins, err := e.small(ctx, fuzzRoundTrips)
 	if err != nil {
 		return nil, err
 	}
 
-	seed := func(in input) (bool, error) {
+	var z fuzzer
+
+	seed := func(in input, claims bool) (bool, error) {
 		enc, err := e.encode(ctx, e.enc, nil, in.clone())
 		if err != nil {
 			return false, fmt.Errorf("transformtest: seeding the fuzzer: %s: Encode: %w", in, err)
 		}
 
 		if enc.Applied {
-			z.seeds = append(z.seeds, fuzzSeed{e, in.hash, enc.Material, e.enc, enc.Body})
+			z = append(z, fuzzSeed{e, in.hash, enc.Material, e.enc, enc.Body, claims})
 		}
 
 		return enc.Applied, nil
 	}
 
 	for _, in := range ins {
-		if _, err := seed(in); err != nil {
+		if _, err := seed(in, false); err != nil {
 			return nil, err
 		}
 	}
 
 	// A body claiming 4 × max bytes: the encode of zeros, or of random bytes
 	// if the transform declines zeros.
+	claimed := false
 	for _, plain := range [][]byte{make([]byte, 4*s.Max), randomBytes(4 * s.Max)} {
-		if ok, err := seed(newInput(-1, plain)); ok || err != nil {
-			if err != nil {
-				return nil, err
-			}
+		if claimed, err = seed(newInput(-1, plain), true); err != nil {
+			return nil, err
+		}
 
+		if claimed {
 			break
 		}
+	}
+
+	if !claimed {
+		return nil, fmt.Errorf("transformtest: the transform declined %d zeros and %d random bytes, so no seed claims 4 × max", 4*s.Max, 4*s.Max)
 	}
 
 	cases, err := e.fixtures()
@@ -116,20 +120,28 @@ func newFuzzer(ctx context.Context, s Subject) (*fuzzer, error) {
 	}
 
 	for _, c := range cases {
-		ce := *e
-		ce.ns = c.ns
-
-		pin := []keys.MaterialID{}
-		for _, m := range c.Material {
-			pin = append(pin, e.mem.Give(c.ns, m.Kind, m.ID, m.Bytes))
-		}
+		ce, pin := e.forCase(c, e.mem)
 
 		tr, err := e.build(ctx, c.Settings)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", c, err)
 		}
 
-		z.seeds = append(z.seeds, fuzzSeed{&ce, c.hash, pin, tr, c.Body})
+		z = append(z, fuzzSeed{ce, c.Hash, pin, tr, c.Body, false})
+	}
+
+	if len(z) > 256 {
+		return nil, fmt.Errorf("transformtest: %d seeds, over the 256 a seed index reaches", len(z))
+	}
+
+	// One Memory holds every seed's material, so a fixture giving an ID
+	// another seed was given under other bytes would spoil that seed's
+	// decode, and every fuzz input on it would pass as refused.
+	for i, sd := range z {
+		_, err := sd.e.decode(ctx, nil, sd.hash, nil, transform.Encoded{Body: sd.body, Applied: true, Material: sd.census})
+		if err != nil && !sd.claims {
+			return nil, fmt.Errorf("transformtest: seed %d does not decode under the fuzzer's one Memory: %w", i, err)
+		}
 	}
 
 	return z, nil
@@ -139,14 +151,20 @@ func newFuzzer(ctx context.Context, s Subject) (*fuzzer, error) {
 // wrong, or nil.
 //
 // ponytail: the allocation bound covers the whole Decode, not only up to its
-// header's validation, and an overrun of under 64 KiB passes. Move to
-// per-call allocation profiles if a transform ever needs that precision.
-func (z *fuzzer) check(ctx context.Context, seed uint8, body []byte) error {
-	sd := z.seeds[int(seed)%len(z.seeds)]
+// header's validation, counts what any other goroutine allocates meanwhile,
+// sees nothing allocated outside the Go heap, and lets an overrun of under
+// 64 KiB pass. Move to per-call allocation profiles if a transform ever needs
+// that precision.
+func (z fuzzer) check(ctx context.Context, seed uint8, body []byte) error {
+	sd := z[int(seed)%len(z)]
 	max := sd.e.s.Max
 	enc := transform.Encoded{Body: body, Applied: true, Material: sd.census}
 
 	dst := make([]byte, 0, max)
+
+	// A first decode, unmeasured, builds whatever the decoder keeps for
+	// later calls, so the measured one counts only what this call needs.
+	_, _ = sd.e.decode(ctx, dst, sd.hash, nil, enc)
 
 	var before, after runtime.MemStats
 
@@ -172,12 +190,8 @@ func (z *fuzzer) check(ctx context.Context, seed uint8, body []byte) error {
 		return fmt.Errorf("seed %d, a body of %d bytes: Encode of its %d decoded bytes: %w", seed, len(body), len(out), err)
 	}
 
+	// A declined chunk is stored as it is and never reaches Decode.
 	if !again.Applied {
-		// A declined chunk is stored as it is and never reaches Decode.
-		if !bytes.Equal(again.Body, out) {
-			return fmt.Errorf("seed %d, a body of %d bytes: Encode declined its %d decoded bytes with a body other than them", seed, len(body), len(out))
-		}
-
 		return nil
 	}
 

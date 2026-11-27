@@ -25,25 +25,87 @@ import (
 // one JSON file per case.
 const fixtureDir = "testdata/fixtures"
 
-// Fixture is one case a transform's format version wrote (RFC 5 §4 item 7),
-// in its JSON form under testdata/fixtures/v<n>/<case>.json. Byte strings are
-// hex. Settings reach the Factory as encoding/json decodes them, so a number
-// is a float64.
+// Fixture is one case a transform's format version wrote (RFC 5 §4 item 7).
+// A transform ships its cases in Fixture's JSON form, one file per case under
+// testdata/fixtures/v<n>/<case>.json, byte strings in hex. Settings reach the
+// Factory as encoding/json decodes them, so a number is a float64.
 type Fixture struct {
-	Version   uint8             `json:"version"`
-	Namespace hexBytes          `json:"namespace"` // the 16-byte namespace ID
-	Hash      hexBytes          `json:"hash"`      // the chunk's 32-byte hash
-	Settings  map[string]any    `json:"settings"`
-	Material  []fixtureMaterial `json:"material"` // pinned in this order
-	Input     hexBytes          `json:"input"`
-	Body      hexBytes          `json:"body"`
+	Version   uint8
+	Namespace entity.NamespaceID
+	Hash      [32]byte // the chunk's hash
+	Settings  map[string]any
+	Material  []struct {
+		Kind, ID string
+		Bytes    []byte
+	} // pinned in this order
+	Input []byte
+	Body  []byte
 }
 
-// fixtureMaterial is one material a fixture's body was encoded under.
-type fixtureMaterial struct {
-	Kind  string   `json:"kind"`
-	ID    string   `json:"id"`
-	Bytes hexBytes `json:"bytes"`
+// fixtureJSON is a Fixture as its file holds it.
+type fixtureJSON struct {
+	Version   uint8          `json:"version"`
+	Namespace hexBytes       `json:"namespace"`
+	Hash      hexBytes       `json:"hash"`
+	Settings  map[string]any `json:"settings"`
+	Material  []struct {
+		Kind  string   `json:"kind"`
+		ID    string   `json:"id"`
+		Bytes hexBytes `json:"bytes"`
+	} `json:"material"`
+	Input hexBytes `json:"input"`
+	Body  hexBytes `json:"body"`
+}
+
+// MarshalJSON writes f in its file's form.
+func (f Fixture) MarshalJSON() ([]byte, error) {
+	j := fixtureJSON{
+		Version: f.Version, Namespace: f.Namespace[:], Hash: f.Hash[:], Settings: f.Settings,
+		Input: f.Input, Body: f.Body,
+	}
+
+	for _, m := range f.Material {
+		j.Material = append(j.Material, struct {
+			Kind  string   `json:"kind"`
+			ID    string   `json:"id"`
+			Bytes hexBytes `json:"bytes"`
+		}{m.Kind, m.ID, m.Bytes})
+	}
+
+	return json.Marshal(j)
+}
+
+// UnmarshalJSON reads f from its file's form, refusing a field it does not
+// know and a namespace or hash of another length.
+func (f *Fixture) UnmarshalJSON(b []byte) error {
+	var j fixtureJSON
+
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+
+	if err := dec.Decode(&j); err != nil {
+		return err
+	}
+
+	switch {
+	case len(j.Namespace) != len(f.Namespace):
+		return fmt.Errorf("namespace of %d bytes, want %d", len(j.Namespace), len(f.Namespace))
+	case len(j.Hash) != len(f.Hash):
+		return fmt.Errorf("hash of %d bytes, want %d", len(j.Hash), len(f.Hash))
+	}
+
+	*f = Fixture{Version: j.Version, Settings: j.Settings, Input: j.Input, Body: j.Body}
+	copy(f.Namespace[:], j.Namespace)
+	copy(f.Hash[:], j.Hash)
+
+	for _, m := range j.Material {
+		f.Material = append(f.Material, struct {
+			Kind, ID string
+			Bytes    []byte
+		}{m.Kind, m.ID, m.Bytes})
+	}
+
+	return nil
 }
 
 // hexBytes is a byte string written as hex.
@@ -58,14 +120,11 @@ func (h *hexBytes) UnmarshalText(text []byte) error {
 	return err
 }
 
-// fixtureCase is a loaded fixture: where it came from, and its namespace
-// and hash at their fixed sizes.
+// fixtureCase is a loaded fixture and the file it came from.
 type fixtureCase struct {
 	Fixture
 
 	path string
-	ns   entity.NamespaceID
-	hash [32]byte
 }
 
 func (c fixtureCase) String() string { return c.path }
@@ -85,8 +144,12 @@ func loadFixtures(dir string) ([]fixtureCase, error) {
 	var cases []fixtureCase
 
 	for _, v := range versions {
+		if strings.HasPrefix(v.Name(), ".") {
+			continue
+		}
+
 		n, err := strconv.ParseUint(strings.TrimPrefix(v.Name(), "v"), 10, 8)
-		if !v.IsDir() || !strings.HasPrefix(v.Name(), "v") || err != nil {
+		if !v.IsDir() || err != nil || v.Name() != "v"+strconv.FormatUint(n, 10) {
 			return nil, fmt.Errorf("transformtest: %s holds %s, want only v<n> directories", dir, v.Name())
 		}
 
@@ -117,37 +180,28 @@ func loadFixture(path string, version uint8) (fixtureCase, error) {
 		return c, fmt.Errorf("transformtest: %w", err)
 	}
 
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-
-	if err := dec.Decode(&c.Fixture); err != nil {
+	if err := json.Unmarshal(raw, &c.Fixture); err != nil {
 		return c, fmt.Errorf("transformtest: %s: %w", path, err)
 	}
 
-	switch {
-	case c.Version != version:
+	if c.Version != version {
 		return c, fmt.Errorf("transformtest: %s: version %d under the directory of version %d", path, c.Version, version)
-	case len(c.Namespace) != len(c.ns):
-		return c, fmt.Errorf("transformtest: %s: namespace of %d bytes, want %d", path, len(c.Namespace), len(c.ns))
-	case len(c.Hash) != len(c.hash):
-		return c, fmt.Errorf("transformtest: %s: hash of %d bytes, want %d", path, len(c.Hash), len(c.hash))
 	}
-
-	copy(c.ns[:], c.Namespace)
-	copy(c.hash[:], c.Hash)
 
 	return c, nil
 }
 
-// forCase is e moved to the case's namespace, over a fresh Memory holding the
-// case's material, with the IDs a pin of it reads, in the case's order.
-func (e *env) forCase(c fixtureCase) (*env, []keys.MaterialID) {
+// forCase is e moved to the case's namespace over mem, given the case's
+// material, with the IDs a pin of it reads, in the case's order. The decoder
+// keeps the provider its Factory was given, which lacks that material, since
+// a decode reaches material through the census alone.
+func (e *env) forCase(c fixtureCase, mem *keystest.Memory) (*env, []keys.MaterialID) {
 	ce := *e
-	ce.ns, ce.mem = c.ns, keystest.NewMemory()
+	ce.ns, ce.mem = c.Namespace, mem
 
 	pin := []keys.MaterialID{}
 	for _, m := range c.Material {
-		pin = append(pin, ce.mem.Give(c.ns, m.Kind, m.ID, m.Bytes))
+		pin = append(pin, mem.Give(c.Namespace, m.Kind, m.ID, m.Bytes))
 	}
 
 	return &ce, pin
@@ -176,9 +230,9 @@ func fixtureDecode(ctx context.Context, e *env) error {
 	}
 
 	for _, c := range cases {
-		ce, pin := e.forCase(c)
+		ce, pin := e.forCase(c, keystest.NewMemory())
 
-		out, err := ce.decode(ctx, nil, c.hash, nil, transform.Encoded{Body: c.Body, Applied: true, Material: pin})
+		out, err := ce.decode(ctx, nil, c.Hash, nil, transform.Encoded{Body: c.Body, Applied: true, Material: pin})
 		if err != nil {
 			return fmt.Errorf("%s: Decode: %w", c, err)
 		}
@@ -206,20 +260,24 @@ func fixtureEncode(ctx context.Context, e *env) error {
 			continue
 		}
 
-		ce, pin := e.forCase(c)
+		ce, pin := e.forCase(c, keystest.NewMemory())
 
 		tr, err := e.s.Factory(ctx, c.Settings, ce.mem)
 		if err != nil {
 			return fmt.Errorf("%s: Factory(%v): %w", c, c.Settings, err)
 		}
 
-		enc, err := ce.encodeUnder(ctx, tr, pin, nil, input{index: -1, plain: slices.Clone(c.Input), hash: c.hash})
+		enc, err := ce.encodeUnder(ctx, tr, pin, nil, input{index: -1, plain: slices.Clone(c.Input), hash: c.Hash})
 		if err != nil {
 			return fmt.Errorf("%s: Encode: %w", c, err)
 		}
 
 		if !enc.Applied {
 			return fmt.Errorf("%s: Encode declined its input", c)
+		}
+
+		if enc.Version != c.Version || !slices.Equal(enc.Material, pin) {
+			return fmt.Errorf("%s: Encoded.Version = %d and Material = %+v, want the fixture's %d and %+v", c, enc.Version, enc.Material, c.Version, pin)
 		}
 
 		if !bytes.Equal(enc.Body, c.Body) {
@@ -239,7 +297,7 @@ func fixtureCurrent(_ context.Context, e *env) error {
 	}
 
 	if !slices.ContainsFunc(cases, func(c fixtureCase) bool { return c.Version == e.enc.Version() }) {
-		return fmt.Errorf("no fixture under %s/v%d for format version %d, the one Encode writes", e.s.fixtureDir(), e.enc.Version(), e.enc.Version())
+		return fmt.Errorf("no fixture under %s/v%d, the format version Encode writes", e.s.fixtureDir(), e.enc.Version())
 	}
 
 	return nil

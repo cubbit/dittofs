@@ -711,7 +711,10 @@ func brokenSubjects() []brokenSubject {
 		{"its own output unwrapped twice", broken(func(f *frame) transform.Transform { return unwrapsNested{f} }),
 			map[string]string{"roundtrip": "Decode(Encode(p)) differs from p"}},
 		{"a format version Version does not name", broken(func(f *frame) transform.Transform { return wrongVersion{f} }),
-			map[string]string{"roundtrip": "Encoded.Version = 2, Version() = 1"}},
+			map[string]string{
+				"roundtrip":      "Encoded.Version = 2, Version() = 1",
+				"fixture-encode": "pad7.json: Encoded.Version = 2 and Material = [], want the fixture's 1 and []",
+			}},
 		{"a bound one byte short", broken(func(f *frame) transform.Transform { return boundBy{frame: f, pinned: -1} }),
 			map[string]string{"bound": "over MaxEncodedLen(1, pinned) = 4"}},
 		{"a bound one byte loose", broken(func(f *frame) transform.Transform { return boundBy{frame: f, pinned: 1} }),
@@ -791,6 +794,6 @@ func brokenSubjects() []brokenSubject {
 		{"a decoder that stopped decoding the fixture's body", broken(func(f *frame) transform.Transform { return stoppedDecoding{f} }),
 			map[string]string{"fixture-decode": "pad7.json: Decode: transform: malformed body"}},
 		{"a format version with no fixture", broken(func(f *frame) transform.Transform { return version2{f} }),
-			map[string]string{"fixture-current": "no fixture under testdata/fixtures/v2 for format version 2"}},
+			map[string]string{"fixture-current": "no fixture under testdata/fixtures/v2, the format version Encode writes"}},
 	}
 }
