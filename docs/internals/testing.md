@@ -465,8 +465,8 @@ of its own with `dt run CELL --ci`. A new suite in the registry reaches CI with 
 |---|---|---|---|
 | Pull request | `pr` | none | Plans only what the diff touches (below) |
 | Merge queue | `pr` | none | The whole `pr` tier, on the merged result |
-| Push to `develop`, `main`, `feat/storage-v2` | `merge` | 1 | Posts failures on develop (below) |
-| Nightly (22:13 UTC, develop) | `nightly` | 1 | Posts failures on develop |
+| Push to `develop`, `main` | `merge` | 1 | Posts failures on develop (below) |
+| Nightly (22:13 UTC, on `develop`, the default branch) | `nightly` | 1 | Posts failures on develop |
 | Manual dispatch | chosen | none | Maintainers: `gh workflow run tests.yml -f tier=nightly -f suite=nfstest --ref BRANCH` |
 
 **What a pull request runs.**
@@ -478,12 +478,12 @@ of its own with `dt run CELL --ci`. A new suite in the registry reaches CI with 
 - **Always:** Go Checks, Repo Checks, ShellCheck, the secret scan (gitleaks) and CodeQL.
 - **Blocking or not:** `e2e`'s options, `bench-smoke` and `unit/windows` don't block a pull
   request. Everything else does.
-- **On `feat/storage-v2`:** `tests.yml` skips the suites that haven't moved there yet, on every
-  run, a PR stacked on another branch included: the suites `pjdfstest`, `pynfs`, `wpts`,
+- **The data-path skip:** until the adapters serve the data path, `tests.yml` skips the suites
+  that need it, on every run, a PR stacked on another branch included: the suites `pjdfstest`, `pynfs`, `wpts`,
   `smbtorture`, `cthon04`, `nfstest`, `clients`, `fio-verify`, `bench-smoke` and `system`, and the
   cells `e2e`, `e2e/kerberos`, `e2e/cross-protocol`, `e2e/stress` and `unit/windows`.
 
-**Required to merge** into `develop` or `feat/storage-v2`:
+**Required to merge** into `develop`:
 
 - **Checks:** `gate` (green when every blocking cell passed), Go Checks, Repo Checks, ShellCheck,
   gitleaks and `Analyze (go)`.
@@ -556,7 +556,7 @@ test/harness/bin/dt hooks status
 | `pre-push` | builds the changed packages, and runs `dt run unit --packages` on those with tests | `DITTOFS_SKIP_PREPUSH=1` |
 
 `git commit --no-verify` and `git push --no-verify` skip them all. The pre-push hook compares
-with `DITTOFS_PREPUSH_BASE` (default `origin/feat/storage-v2`); on a branch based on another branch, set
+with `DITTOFS_PREPUSH_BASE` (default `origin/develop`); on a branch based on another branch, set
 it to that branch.
 
 ## Writing tests

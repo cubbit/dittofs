@@ -209,8 +209,8 @@ section and "Writing tests" in [CLAUDE.md](../../CLAUDE.md).
 
 ## Benchmarking
 
-On storage-v2, `tests.yml` drops `bench-smoke` and `fio-verify`, as it does every suite that
-hasn't moved to storage-v2 yet. Go's `-bench`, `dfsbench`'s full runs and the `manual` tier's
+`tests.yml`'s data-path skip drops `bench-smoke` and `fio-verify` until the adapters serve the
+data path. Go's `-bench`, `dfsbench`'s full runs and the `manual` tier's
 `engine-bench`, `reconcile-bench` and `version-limit-probe-bench` are run by hand (RFC 29 §4.3).
 [`bench/README.md`](../../bench/README.md) covers how to run `dfsbench` and the components'
 `go test -bench`.
