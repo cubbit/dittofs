@@ -46,10 +46,15 @@ var notExportedEnvNames = []string{
 // the operator is its own program, renamed_keys.go holds the table of
 // refused names, and dtc matches every name by a pattern.
 var (
+	// A skills file mentions names the way a document does — its reader sets
+	// the variables it names; nothing at build or run time reads them on the
+	// file's behalf — so it belongs with docs/ and .planning/ as a mentioner
+	// the gate does not count as a user or a reader.
 	driftExemptPrefixes = []string{
 		"docs/internals/",
 		".planning/",
 		"k8s/dittofs-operator/",
+		".claude/skills/",
 	}
 	driftExemptFiles = []string{
 		"CHANGELOG.md",
