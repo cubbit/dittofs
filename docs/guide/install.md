@@ -23,7 +23,7 @@ management API.
 You need [Go](https://go.dev/dl/) 1.26 or later and `git`:
 
 ```bash
-git clone --depth 1 --branch feat/storage-v2 https://github.com/cubbit/dittofs.git
+git clone --depth 1 --branch develop https://github.com/cubbit/dittofs.git
 cd dittofs
 go build -o dfs ./cmd/dfs
 go build -o dfsctl ./cmd/dfsctl

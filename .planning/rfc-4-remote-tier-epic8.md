@@ -12,7 +12,7 @@ and `fetch_workers`, fixed for the life of the process); [RFC 24](../docs/intern
 [RFC 0](../docs/internals/rfcs/rfc-0-data-lifecycle.md) §1.2 (allowed imports: the composers
 are the node and its content wiring). The RFC 4 follow-up (#5795) is applied where it touches
 this epic: `pkg/remote/s3`'s `NewClient(ClientConfig, Deps)` and `Open`. Every citation is
-`develop`'s text; the code lands on `feat/storage-v2`, and the paths below are paths there.
+`develop`'s text; the code lands on `develop`, and the paths below are paths there.
 **Track:** the team.
 **Epic 8 estimate: 2 subtasks, 3.25 man-days.**
 **Depends on:** **S7**, RFC 8 offload plan's node composition built: its epic 21 holds one

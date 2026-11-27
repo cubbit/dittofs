@@ -8,7 +8,7 @@ cases and §10.6 (where §5.7's checks run). [RFC 6](../docs/internals/rfcs/rfc-
 becomes. [RFC 8](../docs/internals/rfcs/rfc-8-engine.md) §6.2 (the offload maximum age) and §6.3,
 the Assemble and Commit states, which drive the fold and commit its plans.
 [RFC 0](../docs/internals/rfcs/rfc-0-data-lifecycle.md) §1.2: an invalid setting is refused, never
-replaced. Every citation is `develop`'s text. The code lands on `feat/storage-v2`, where E1 creates
+replaced. Every citation is `develop`'s text. The code lands on `develop`, where E1 creates
 `pkg/carver/assembler`, and the paths below are paths there.
 **Track:** C.
 **Epic 5 estimate: 6 subtasks, 9 man-days.**

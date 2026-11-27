@@ -623,8 +623,8 @@ test/engine/known.yaml                  E12
   `<e>` from 11) cannot collide with the first part's; a pull request still names the plan's slug,
   `RFC 8 offload-engine`, before its ids, as `pr-opening` asks when an RFC has two plans. Prior art:
   none found. Every epic.
-- **D2 — code lands on `feat/storage-v2`.** The engine and the journal live there; the plan lands on
-  `develop`. Prior art: none found; the first part did the same. Every epic.
+- **D2 — code lands on `develop`.** The engine and the journal live there, and the plan lands
+  there too. Prior art: none found; the first part did the same. Every epic.
 - **D3 — `pkg/workqueue` is built here, whole.** RFC 8 §6.1.1 specifies it once for the engine and GC
   and §2.8 places it; the engine is its first consumer and GC, planned later, instantiates it
   unchanged. Nothing in the repository does this: `pkg/schedule` parses intervals only. Prior art:

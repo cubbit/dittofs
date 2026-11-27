@@ -12,7 +12,7 @@ amends it: contract and implementation, and the transitive import check. Cited, 
 [RFC 8](../docs/internals/rfcs/rfc-8-engine.md) §2.1, §2.6, §6.2, §6.3 and §6.6, the engine that calls this
 surface; [RFC 6](../docs/internals/rfcs/rfc-6-block-metadata.md) §4.1 and §5.2, the commit a plan
 becomes and its key budget. Every citation is `develop`'s text. The code lands on
-`feat/storage-v2`, where `pkg/metadata/entity` exists, and the paths below are paths there.
+`develop`, where `pkg/metadata/entity` exists, and the paths below are paths there.
 **Track:** the team.
 **Epic 1 estimate: 4 subtasks, 4 man-days.**
 **Depends on:** no other epic of RFC 2. It builds on `pkg/metadata/entity` on `feat/storage-v2`

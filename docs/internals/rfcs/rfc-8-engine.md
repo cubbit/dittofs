@@ -1378,7 +1378,7 @@ pkg/workqueue/               the shared work scheduler (§6.1.1), used by the en
 internal/node/content/       the node's content wiring: builds the content components for the node and the engine's checks (§2.1)
 ```
 
-**On `feat/storage-v2` the engine is `pkg/engine`**, as the journal is `pkg/journal`.
+**The engine is `pkg/engine`**, as the journal is `pkg/journal`.
 While v1 existed they were `pkg/block/enginev2` and `pkg/block/journalv2`; the
 suffix was in Go package and import paths only, and metric, span and log names
 said `engine` and `journal` from the start.

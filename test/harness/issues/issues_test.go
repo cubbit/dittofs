@@ -456,8 +456,8 @@ func TestFromEnv(t *testing.T) {
 
 // A run's commit status is success, failure or error as dt's exit status
 // says, under the name asked for, on the commit's full hash, with the run's
-// test counts and its log; only the merge and nightly runs of develop, main
-// and feat/storage-v2 set one.
+// test counts and its log; only the merge and nightly runs of develop and
+// main set one.
 func TestCheck(t *testing.T) {
 	var got []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -500,7 +500,7 @@ func TestCheck(t *testing.T) {
 			t.Errorf("exit %d: %q, want %q", exit, got, want)
 		}
 	}
-	for _, b := range []string{"main", "feat/storage-v2"} {
+	for _, b := range []string{"main"} {
 		got = nil
 		r := run("20261028T100000Z-abababab", "merge")
 		r.Branch = b

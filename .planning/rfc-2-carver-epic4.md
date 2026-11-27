@@ -11,7 +11,7 @@ and the golden name; §10.5's memory per call. [RFC 5](../docs/internals/rfcs/rf
 §8.2 T17, the carver's half. [RFC 16](../docs/internals/rfcs/rfc-16-metadata-store.md) §4.2.1, the
 namespace ID's raw bytes. [RFC 0](../docs/internals/rfcs/rfc-0-data-lifecycle.md) §1.2, as #5774
 amends it: who may import a component's implementation, and the transitive import check. Every citation is `develop`'s
-text. The code lands on `feat/storage-v2`, where E1 creates `pkg/carver`, E2
+text. The code lands on `develop`, where E1 creates `pkg/carver`, E2
 `internal/carvetest` and E3 `internal/chunker`, and the paths below are paths there.
 **Track:** B.
 **Epic 4 estimate: 8 subtasks, 12.75 man-days.**

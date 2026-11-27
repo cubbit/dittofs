@@ -103,9 +103,8 @@ Do all of these first. Each one stops the step rather than letting it create hal
    gh label create -R "$R" rfc-<n>-epic-<k> --color C5DEF5 --description "RFC <n> <component> v2, epic <k>: <title>"
    gh label create -R "$R" deferred --color D4C5F9 --description "Deferred by a plan's deferral ledger"
    ```
-5. **Every link resolves.** Link a document on a branch that holds it, which is not always
-   `develop` (a programme branch such as `feat/storage-v2` holds documents `develop` does not
-   have yet). Check each file before writing its link:
+5. **Every link resolves.** Link a document on a branch that holds it, which is `develop`
+   once its pull request has merged. Check each file before writing its link:
    `gh api "repos/$R/contents/<path>?ref=<branch>" --silent`. A 404 means linking another
    branch, never writing a dead link. Issues pointing at an epic document are created only
    **once its pull request has merged**, never during the breakdown.

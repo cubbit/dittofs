@@ -13,7 +13,7 @@ transform meets them; §8.1's generic rows, its two §2.7 authenticating rows an
 B.1 rows on salts and nonces, labels and golden vectors (the chunk part); §8.3's per-transform
 benchmark and encryption's encode split; Appendix B.4's rows a decode sees; Appendix B.5's two
 `decision:` notes. Every citation is the RFC's text with #5851's amendment; the code lands on
-`feat/storage-v2`, and the paths below are paths there.
+`develop`, and the paths below are paths there.
 **Track:** B.
 **Epic 5 estimate: 4 subtasks, 7.25 man-days.**
 **Depends on:** **S2**: from E2, `transformtest.Run` with its `Subject`, `transformtest.Fixture`,

@@ -12,7 +12,7 @@ and "A proposed target is replaced once, by measurement". [RFC 25](../docs/inter
 §5.4 (O14), for what the production row's results may not hold. Cited, not owned:
 [RFC 29](../docs/internals/rfcs/rfc-29-test-harness.md) §4.3 (tiers and blocking), §4.5 (needs) and
 §4.10 (benchmarks); the RFC 2 plan's epic 2, D6, for the shared `fuzz` suite's form. Every citation
-is `develop`'s text. The code lands on `feat/storage-v2`, and the paths below are paths there.
+is `develop`'s text. The code lands on `develop`, and the paths below are paths there.
 **Track:** the team.
 **Epic 9 estimate: 7 subtasks, 14.5 man-days.**
 **Depends on:** **R4-S3**, the store and codec complete: E3's `s3fault` (`New`, `Inject`,

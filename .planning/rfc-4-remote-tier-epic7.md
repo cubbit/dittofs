@@ -18,7 +18,7 @@ and §2.9 for the series, and §7's ticket on `codec_verify_failures_total`. Cit
 [RFC 3](../docs/internals/rfcs/rfc-3-syncer.md) §2.12 (`syncer_retries_total`, which the alert
 subtracts); RFC 4 §4.10 (no key sets the client's limit); [RFC 0](../docs/internals/rfcs/rfc-0-data-lifecycle.md)
 §1.2 (only the composers import `pkg/settings` and `pkg/metrics`). Every citation is `develop`'s
-text with this pull request's RFC 13 amendment; the code lands on `feat/storage-v2`, and the paths
+text with this pull request's RFC 13 amendment; the code lands on `develop`, and the paths
 below are paths there.
 **Track:** the team.
 **Epic 7 estimate: 5 subtasks, 9.25 man-days.**

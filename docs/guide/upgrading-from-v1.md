@@ -2,7 +2,7 @@
 
 Upgrading from v1 is not supported. This release is a new installation: it reads no
 configuration, control-plane database, metadata store or block layout a v1 release
-wrote, and no tool converts them. Every release up to v0.36.0 is v1.
+wrote, and no tool converts them. Every release up to v0.37.0 is v1.
 
 ## What a start says
 
@@ -45,8 +45,8 @@ v1 share's files into. Block layouts are covered in the
 
 ## v1 releases stay available
 
-v0.36.0 and the earlier releases stay on the
+v0.37.0 and the earlier releases stay on the
 [GitHub releases page](https://github.com/cubbit/dittofs/releases). Keep v1 data on the
 v1 release that wrote it. That release's own guides, the metadata store migration guide
 among them, are in its tree:
-[docs/guide at v0.36.0](https://github.com/cubbit/dittofs/tree/v0.36.0/docs/guide).
+[docs/guide at v0.37.0](https://github.com/cubbit/dittofs/tree/v0.37.0/docs/guide).

@@ -7,7 +7,7 @@ name: PR title
 
 on:
   pull_request:
-    branches: [develop, main, feat/storage-v2]
+    branches: [develop, main]
     types: [opened, edited, reopened, synchronize]
   # So the check can be required: a required check a merge queue run never
   # reports holds every group until it times out. In the queue the squashed

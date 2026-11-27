@@ -95,11 +95,9 @@ small | full)
 	# too close to start at all.
 	[ "$(date +%s)" -lt "$BENCH_NOT_AFTER" ] || { echo "too late to start before the nightly work" >&2; exit 2; }
 	# Update before anything is recorded: a fetch or checkout failure aborts
-	# here, so no run folder is ever filed against a stale commit. The
-	# branch is hardcoded because these scripts retire with it once it
-	# reaches develop — nothing outlives the branch to point elsewhere.
+	# here, so no run folder is ever filed against a stale commit.
 	# Uncommitted work in this dedicated checkout is not kept.
-	git fetch origin feat/storage-v2 || { echo "git fetch failed" >&2; exit 2; }
+	git fetch origin develop || { echo "git fetch failed" >&2; exit 2; }
 	# Detached at the tip, never onto the branch: a hand run must not find
 	# its worktree's branch ref moved.
 	git checkout -f --detach FETCH_HEAD || { echo "git checkout failed" >&2; exit 2; }

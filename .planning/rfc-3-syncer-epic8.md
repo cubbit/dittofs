@@ -8,7 +8,7 @@ warning. [RFC 13](../docs/internals/rfcs/rfc-13-configuration.md) Appendix B's `
 `fetch_workers` row, with §4.2, §5 and §6, which that row's cells mean.
 [RFC 25](../docs/internals/rfcs/rfc-25-observability.md) §2.1 to §2.8, for the collector.
 Cited, not owned: [RFC 4](../docs/internals/rfcs/rfc-4-remote-tier.md) §4.12, whose alert reads
-`syncer_retries_total`. Every citation is `develop`'s text. The code lands on `feat/storage-v2`,
+`syncer_retries_total`. Every citation is `develop`'s text. The code lands on `develop`,
 and the paths below are paths there.
 **Track:** C.
 **Epic 8 estimate: 2 subtasks, 4 man-days.**

@@ -10,7 +10,7 @@ amended), through the import test; [RFC 25](../docs/internals/rfcs/rfc-25-observ
 (injection from the root), for the chain's `Deps`.
 **Track:** the team.
 **Epic 1 estimate: 2 subtasks, 3.75 man-days.**
-**Depends on:** nothing. The code lands on `feat/storage-v2`, where `pkg/metadata/entity`'s
+**Depends on:** nothing. The code lands on `develop`, where `pkg/metadata/entity`'s
 `NamespaceID` exists.
 **Blocks:** every other epic of RFC 5, through S1:
 - E2 needs `Transform` for `transformtest`, and `keys.Provider` with the two engine-facing

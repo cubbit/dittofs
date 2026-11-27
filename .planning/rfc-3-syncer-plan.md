@@ -48,8 +48,7 @@ ignores v1 (rule 7), and no epic touches v1 code or waits on #5484.
 **Transition policy.** New installations only (#3119). No metric, log key or setting carries a
 version.
 
-**Branches.** The plan and the RFC 3 amendment land on `develop`. The code lands on
-`feat/storage-v2`, where `pkg/sim`, `pkg/health`, `pkg/metrics` and `pkg/settings` live.
+**Branches.** The plan, the RFC 3 amendment and the code land on `develop`, where `pkg/sim`, `pkg/health`, `pkg/metrics` and `pkg/settings` live.
 
 **Defaults used from Step 0:** no dashboards (#9); output path `.planning/rfc-3-syncer-plan.md`
 (#10).

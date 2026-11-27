@@ -10,7 +10,7 @@ for the clock. [RFC 25](../docs/internals/rfcs/rfc-25-observability.md) §2.6, f
 buckets. Cited, not owned: [RFC 4](../docs/internals/rfcs/rfc-4-remote-tier.md) §4.1 and §4.8,
 the contract the syncer imports, and §4.3's `codec.Store`, as the pull request finalising the
 syncer's seam gives them (`docs/rfc-4-syncer-seam`). Every citation is `develop`'s text. The
-code lands on `feat/storage-v2`, and the paths below are paths there.
+code lands on `develop`, and the paths below are paths there.
 **Track:** the team.
 **Epic 1 estimate: 4 subtasks, 3.75 man-days.**
 **Depends on:** **RFC 8 offload plan S1c**, the remote store contract agreed: `pkg/remote`'s

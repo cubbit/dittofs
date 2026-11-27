@@ -32,10 +32,11 @@ one metadata store and an on-disk journal per node, managed through an API.
 > data you cannot afford to lose. See [Security](#security) and [FAQ](docs/guide/faq.md).
 
 > [!NOTE]
-> **This is the development branch.** It holds the next storage design, and it changes every
-> day. Some features of the released versions do not work here yet. For the code you can run
-> today, use the [latest release](https://github.com/cubbit/dittofs/releases/latest) or the
-> [`main`](https://github.com/cubbit/dittofs/tree/main) branch.
+> **`develop` is the development branch.** It holds v2, the next storage design: it changes
+> every day, it is not production ready, and some features of the released versions do not
+> work here yet. The released v1 code is at the latest `v0.x` tag: use the
+> [latest release](https://github.com/cubbit/dittofs/releases/latest), or check out its tag on
+> the [`main`](https://github.com/cubbit/dittofs/tree/main) branch.
 
 ## What is DittoFS?
 
@@ -123,7 +124,7 @@ with [Go](https://go.dev/dl/) 1.26 or later:
 
 ```bash
 cd ~
-git clone --depth 1 --branch feat/storage-v2 https://github.com/cubbit/dittofs.git
+git clone --depth 1 --branch develop https://github.com/cubbit/dittofs.git
 cd dittofs
 go build -o dfs ./cmd/dfs
 go build -o dfsctl ./cmd/dfsctl

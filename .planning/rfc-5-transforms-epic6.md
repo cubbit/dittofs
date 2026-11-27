@@ -22,7 +22,7 @@ its key-object half), and Appendix C (the key file's passphrase, the
 `storage` role's retired keys). [RFC 0](../docs/internals/rfcs/rfc-0-data-lifecycle.md) §1.2
 (component imports as amended, and a verified in-memory implementation of every interface a
 component takes). Every citation is the RFCs' text on `develop`; the code lands on
-`feat/storage-v2`, and the paths below are paths there.
+`develop`, and the paths below are paths there.
 **Track:** C.
 **Epic 6 estimate: 8 subtasks, 18.25 man-days.**
 **Depends on:** **S2**: from E2, `keystest.Run` with its `Harness` (`Give`, `Replace`, `Destroy`,

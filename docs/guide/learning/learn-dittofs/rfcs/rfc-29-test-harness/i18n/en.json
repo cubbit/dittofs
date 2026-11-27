@@ -249,7 +249,7 @@
       "Every 10 minutes it also checks develop, `main` and a long-lived feature branch. When one has a new commit and the host is idle, it runs the system scenarios on it and sets the commit status `system (dedicated)`.",
       "Its GitHub token can write issues and commit statuses, and nothing else."
     ],
-    "notes": "§4.5 'The dedicated host is not a self-hosted runner'; §9 'The dedicated host' (ditto, a server Cubbit rents; cloud spot VMs are the alternative). It runs only when nothing else runs on the host; merges landing during a run are taken together by the next one. Only develop's new failures go to the develop-status issue. The 9x scenarios: §4.5's places table (scenario 92 grows a 30 GB file) and §4.1's system entry (needs_by_test '9?-*.sh'). The branches the host watches are develop, main and feat/storage-v2 (§4.5). Scenario file names are <number>-<what>-<size>.sh; the long runs match 9?-*.sh (§4.1)."
+    "notes": "§4.5 'The dedicated host is not a self-hosted runner'; §9 'The dedicated host' (ditto, a server Cubbit rents; cloud spot VMs are the alternative). It runs only when nothing else runs on the host; merges landing during a run are taken together by the next one. Only develop's new failures go to the develop-status issue. The 9x scenarios: §4.5's places table (scenario 92 grows a 30 GB file) and §4.1's system entry (needs_by_test '9?-*.sh'). The branches the host watches are develop and main (§4.5). Scenario file names are <number>-<what>-<size>.sh; the long runs match 9?-*.sh (§4.1)."
   },
   "tiersK": {
     "kicker": "Tiers and the gate"
@@ -284,7 +284,7 @@
       ]
     ],
     "footer": "Each tier runs everything the smaller one runs: `merge` includes `pr`, and `nightly` runs all but the `manual` suites. A [[suite]] names the smallest tier that runs it. Moving it is a one-word change, made on the timings `dt history` has measured.",
-    "notes": "§4.3 Tiers (table and 'Budgets'); §9 'The tier budgets', adjusted on measured numbers. Before dt (October 2026) a PR waited 25–40 min. On 2026-10-12 a merge took a median of 33 minutes to its last check (§9). The pr tier also runs on merge_group: tests.yml maps that event to pr. The merge queue is enabled on develop and feat/storage-v2, so a queued pull request runs the pr tier again on the merged result (§4.3, §4.8). The merge tier runs on pushes to develop, main and feat/storage-v2 (§4.3)."
+    "notes": "§4.3 Tiers (table and 'Budgets'); §9 'The tier budgets', adjusted on measured numbers. Before dt (October 2026) a PR waited 25–40 min. On 2026-10-12 a merge took a median of 33 minutes to its last check (§9). The pr tier also runs on merge_group: tests.yml maps that event to pr. The merge queue is enabled on develop, so a queued pull request runs the pr tier again on the merged result (§4.3, §4.8). The merge tier runs on pushes to develop and main (§4.3)."
   },
   "whatruns": {
     "title": "What each pull request runs",
@@ -326,10 +326,10 @@
     ],
     "why": [
       "No [[retry]] runs on a pull request, so the test is graded `new` and its [[cell]] exits 1. A [[blocking]] cell that did not exit 0 makes the [[gate]] fail.",
-      "In CI, a retry runs only on a push to develop, main or `feat/storage-v2`, which in practice follows a merge, and on scheduled runs. On a pull request nothing is retried, so a PR cannot merge a [[flaky]] test it introduced.",
+      "In CI, a retry runs only on a push to develop or main, which in practice follows a merge, and on scheduled runs. On a pull request nothing is retried, so a PR cannot merge a [[flaky]] test it introduced.",
       "Exit 2 is for a test that did not run. This one ran and failed with no list entry, so it is a new failure and its [[cell]] exits 1."
     ],
-    "notes": "'Start here · Scenarios', the first: graded a new failure, exit 1 (§4.4); no retry on a pull request (§4.7 Retry: 'None on pull requests … so a PR can't merge a flaky test it introduced. On a push and on the schedule, --retry 1 …'); the gate fails because a blocking cell did not exit 0 (§4.8). Exit 2 means not run (§4.4). tests.yml runs on a push only to develop, main and feat/storage-v2, so a push is in practice a merge."
+    "notes": "'Start here · Scenarios', the first: graded a new failure, exit 1 (§4.4); no retry on a pull request (§4.7 Retry: 'None on pull requests … so a PR can't merge a flaky test it introduced. On a push and on the schedule, --retry 1 …'); the gate fails because a blocking cell did not exit 0 (§4.8). Exit 2 means not run (§4.4). tests.yml runs on a push only to develop and main, so a push is in practice a merge."
   },
   "grading": {
     "kicker": "Results and grading"
@@ -500,11 +500,11 @@
     "rTitle": "[[retry|Retry]]",
     "r": [
       "Tests are never retried on a pull request, so a PR cannot merge a flaky test it introduced.",
-      "On a push to develop, main or `feat/storage-v2` (in practice, after a merge) and on scheduled runs, `--retry 1` runs each new failure once more, and nothing else.",
+      "On a push to develop or main (in practice, after a merge) and on scheduled runs, `--retry 1` runs each new failure once more, and nothing else.",
       "A test that passes on retry is flaky. It raises no alert, and `dt history` counts it.",
       "A test that is flaky twice in a week on develop becomes a candidate for quarantine."
     ],
-    "notes": "§4.7 'Quarantine' and 'Retry'. The quarantine list is test/harness/quarantine.yaml; an entry names one test exactly, never a pattern. An expired entry is an error from dt doctor, which lint-repo runs (Repo Checks). The retry runs on the cell's own fixture, within the cell's limit; a test none of the naming rules can name isn't retried. The AD-DC keytab race (#2968) is what quarantine is for. Expiry: §4.7 ('its test fails as new and the gate goes red on that test and on Repo Checks'); dt doctor is one of lint-repo's commands (§4.1), and lint-repo is the Repo Checks job, which runs on every pull request (§4.8). tests.yml runs on a push only to develop, main and feat/storage-v2, so a push is in practice a merge."
+    "notes": "§4.7 'Quarantine' and 'Retry'. The quarantine list is test/harness/quarantine.yaml; an entry names one test exactly, never a pattern. An expired entry is an error from dt doctor, which lint-repo runs (Repo Checks). The retry runs on the cell's own fixture, within the cell's limit; a test none of the naming rules can name isn't retried. The AD-DC keytab race (#2968) is what quarantine is for. Expiry: §4.7 ('its test fails as new and the gate goes red on that test and on Repo Checks'); dt doctor is one of lint-repo's commands (§4.1), and lint-repo is the Repo Checks job, which runs on every pull request (§4.8). tests.yml runs on a push only to develop and main, so a push is in practice a merge."
   },
   "ctrf": {
     "title": "One result format: [[ctrf|CTRF]], with JUnit beside it",

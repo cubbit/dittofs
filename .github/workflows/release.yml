@@ -7,10 +7,56 @@ on:
 
 permissions: {}
 
+# decision: release runs one at a time, so the latest job's tag comparison and
+# the uploads it gates happen in the same serialized run, and two tags pushed
+# close together cannot both claim "latest". GitHub keeps one pending run per
+# group and cancels an older pending one when a third arrives: rerun a
+# cancelled tag's workflow by hand.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
+  # decision: "latest" (Docker :latest, the Homebrew casks,
+  # the Scoop manifests, the S3 latest file and install script, GitHub's latest
+  # release, the operator's :latest and the docs site's Latest) goes only to the
+  # highest non-rc version tag in the repository, and Docker's major tag to the
+  # highest version of its major. hotfix.sh releases only the next patch of the
+  # newest final release, so this is a safety net against a lower tag pushed
+  # out of order. The versioned artifacts always publish.
+  latest:
+    name: Is this the latest version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      is_latest: ${{ steps.latest.outputs.is_latest }}
+      is_latest_major: ${{ steps.latest.outputs.is_latest_major }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Compare with the highest version tag
+        id: latest
+        run: |
+          set -o pipefail
+          TAG="${GITHUB_REF#refs/tags/}"
+          git fetch --force --tags
+          TOP=$(git tag --list 'v*' --sort=-v:refname | grep -v -- - | head -n 1 || true)
+          MAJOR="${TAG#v}"; MAJOR="${MAJOR%%.*}"
+          TOP_MAJOR=$(git tag --list "v${MAJOR}.*" --sort=-v:refname | grep -v -- - | head -n 1 || true)
+          IS_LATEST=false IS_LATEST_MAJOR=false
+          [ "$TAG" = "$TOP" ] && IS_LATEST=true
+          [ "$TAG" = "$TOP_MAJOR" ] && IS_LATEST_MAJOR=true
+          echo "$TAG; highest non-rc tag $TOP, of v$MAJOR $TOP_MAJOR; latest: $IS_LATEST, latest of its major: $IS_LATEST_MAJOR"
+          echo "is_latest=$IS_LATEST" >> "$GITHUB_OUTPUT"
+          echo "is_latest_major=$IS_LATEST_MAJOR" >> "$GITHUB_OUTPUT"
+
   release:
     name: Create Release
-    needs: tarball-foundationdb
+    needs: [latest, tarball-foundationdb]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -18,6 +64,9 @@ jobs:
     env:
       S3_BUCKET: dittofs-binaries
       S3_ENDPOINT: https://s3.cubbit.eu
+      # Read by .goreleaser.yml's latest conditions and the S3 steps below.
+      IS_LATEST: ${{ needs.latest.outputs.is_latest }}
+      IS_LATEST_MAJOR: ${{ needs.latest.outputs.is_latest_major }}
 
     steps:
       - name: Checkout code
@@ -125,16 +174,16 @@ jobs:
               --acl public-read
           done
 
-          # Upload version marker for install script auto-detection (skip pre-releases)
-          if [[ "${VERSION}" != *-* ]]; then
+          # The version marker the install script reads, and the install
+          # script itself, go only with the latest version (the latest job).
+          if [ "${IS_LATEST}" = true ]; then
             echo "${VERSION}" | aws s3 cp - "s3://${S3_BUCKET}/latest" \
               --endpoint-url "${S3_ENDPOINT}" \
               --acl public-read \
               --content-type "text/plain"
           fi
 
-          # Upload install script to bucket root (always latest)
-          if [ -f scripts/install.sh ]; then
+          if [ "${IS_LATEST}" = true ] && [ -f scripts/install.sh ]; then
             aws s3 cp scripts/install.sh "s3://${S3_BUCKET}/install.sh" \
               --endpoint-url "${S3_ENDPOINT}" \
               --acl public-read \
@@ -175,7 +224,7 @@ jobs:
 
           # Verify additional required files
           check_url "${BASE}/install.sh"
-          if [[ "${VERSION}" != *-* ]]; then
+          if [ "${IS_LATEST}" = true ]; then
             check_url "${BASE}/latest"
           fi
 
@@ -385,6 +434,7 @@ jobs:
 
   operator:
     name: Build Operator Image
+    needs: latest
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -400,11 +450,13 @@ jobs:
 
       - name: Get version from tag
         id: version
+        env:
+          IS_LATEST: ${{ needs.latest.outputs.is_latest }}
         run: |
           VERSION="${GITHUB_REF#refs/tags/}"
           echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
           TAGS="marmos91c/dittofs-operator:${VERSION}"
-          if [[ "${VERSION}" != *-* ]]; then
+          if [ "${IS_LATEST}" = true ]; then
             TAGS="${TAGS},marmos91c/dittofs-operator:latest"
           fi
           echo "TAGS=${TAGS}" >> $GITHUB_OUTPUT
@@ -440,16 +492,18 @@ jobs:
 
   sync-docs:
     name: Sync docs to website
+    needs: latest
     runs-on: ubuntu-latest
     steps:
       - name: Trigger dittofs-web docs refresh
         env:
           GH_TOKEN: ${{ secrets.DOCS_SYNC_TOKEN }}
+          IS_LATEST: ${{ needs.latest.outputs.is_latest }}
         run: |
           VERSION="${GITHUB_REF#refs/tags/}"
-          # Docs "Latest" tracks the newest stable tag; skip pre-release (rc) tags.
-          if [[ "${VERSION}" == *-* ]]; then
-            echo "Pre-release ${VERSION}; skipping docs sync."
+          # Docs "Latest" tracks the highest stable tag (the latest job).
+          if [ "${IS_LATEST}" != true ]; then
+            echo "${VERSION} is not the latest version; skipping docs sync."
             exit 0
           fi
           gh workflow run refresh-docs.yml --repo cubbit/dittofs-web -f ref="${VERSION}"

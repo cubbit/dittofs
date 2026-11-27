@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Cut a release: bump flake.nix on develop, fast-forward main to it, tag it.
+# A release candidate is tagged on develop alone: main holds final releases
+# only, so a hotfix (scripts/hotfix.sh) of main's release never carries rc code.
 #
 # Usage: scripts/release.sh X.Y.Z[-rcN]
 #
@@ -20,7 +22,9 @@ git fetch -q origin develop main --tags
 [[ "$(git branch --show-current)" == develop ]] || die "not on develop"
 [[ -z "$(git status --porcelain --untracked-files=no)" ]] || die "tracked files have uncommitted changes"
 [[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/develop)" ]] || die "develop is not in sync with origin/develop"
-git merge-base --is-ancestor origin/main HEAD || die "origin/main is not an ancestor of develop"
+# A hotfix (scripts/hotfix.sh) moves main past develop until its back-merge lands.
+git merge-base --is-ancestor origin/main HEAD ||
+  die "origin/main is not an ancestor of develop: a hotfix was not merged back. Merge it first: git switch --detach origin/develop && git merge -S origin/main (add -s ours if the fix does not apply to develop) && git push origin HEAD:develop"
 ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null || die "tag $tag already exists"
 
 # decision: a release candidate may ship without a changelog section; its notes
@@ -47,18 +51,29 @@ git commit -S -q -m "chore(release): $tag" flake.nix
 git tag -s "$tag" -m "$tag"
 sha="$(git rev-parse --short HEAD)"
 
+# decision: an rc moves develop only. Were main fast-forwarded to it, main would
+# hold rc code that is not a final release, and the next hotfix of main's final
+# tag would ship it.
+refs=(HEAD:develop HEAD:main)
+moves="push develop and fast-forward main to $sha"
+if [[ "$version" == *-rc* ]]; then
+  refs=(HEAD:develop)
+  moves="push develop to $sha (an rc leaves main where it is)"
+fi
+
 echo
 echo "Committed $sha and tagged $tag locally. Pushing will:"
-echo "  push develop and fast-forward main to $sha, then push $tag (triggers release.yml)"
+echo "  $moves, then push $tag (triggers release.yml)"
 read -r -p "Push? [y/N] " ok
 if [[ "$ok" != [yY] ]]; then
   echo "Not pushed. To undo: git tag -d $tag && git reset --hard origin/develop"
   exit 0
 fi
 
-# develop and main move together, without the tag even under push.followTags,
-# so release.yml never starts on a tag main does not contain.
+# The branches move first and together, without the tag even under
+# push.followTags, so release.yml never starts on a tag its branches do not
+# contain: main for a final release, develop for an rc.
 # A rerun after a failed push stops at "tag already exists", so name what is left.
-git push --atomic --no-follow-tags origin HEAD:develop HEAD:main ||
-  die "push failed; nothing was published. Finish with: git push --atomic --no-follow-tags origin HEAD:develop HEAD:main && git push origin $tag"
+git push --atomic --no-follow-tags origin "${refs[@]}" ||
+  die "push failed; nothing was published. Finish with: git push --atomic --no-follow-tags origin ${refs[*]} && git push origin $tag"
 git push origin "$tag" || die "branches pushed, tag not; finish with: git push origin $tag"

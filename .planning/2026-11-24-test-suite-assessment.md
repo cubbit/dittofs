@@ -479,7 +479,7 @@ fail":
 
 The reason lives at the code site, as CLAUDE.md asks for other decisions, so a reviewer
 checks it in the diff without running a tool. For a
-change to existing code, `gremlins unleash --diff origin/feat/storage-v2 ./<pkg>` lists the
+change to existing code, `gremlins unleash --diff origin/develop ./<pkg>` lists the
 surviving mutants on the changed lines. Run it by hand when you review.
 
 ---

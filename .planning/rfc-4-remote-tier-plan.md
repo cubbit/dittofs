@@ -66,9 +66,9 @@ remains for v2 to touch, so no metric, log key or setting carries a version (§1
 v1 surface remains: the `remote.endpoint` and `remote.credential` keys of
 `internal/node/api/res_stores.go` (listed again in `pkg/bootstrap/keyspec.go`), which epic 7
 moves into `pkg/remote/s3` rather than declaring a second time.
-**Where the code lands:** `feat/storage-v2`, where the engine, `pkg/sim`, `pkg/metrics`'s
-registry, `pkg/settings` and `internal/prof` live; this plan is written on `develop` and carried to `feat/storage-v2`. Paths below are on
-`feat/storage-v2`.
+**Where the code lands:** `develop`, where the engine, `pkg/sim`, `pkg/metrics`'s
+registry, `pkg/settings` and `internal/prof` live, as this plan does. Paths below are on
+`develop`.
 **Defaults used from the skill's inputs:** no dashboards; external dependencies are §3.3's.
 **How it was reviewed:** an independent architect pass proposed the tree and surface (D3,
 §6 point 4), then separate adversarial, correctness and simplification passes, then a five-lens

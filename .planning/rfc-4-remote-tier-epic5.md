@@ -16,7 +16,7 @@ claim); [RFC 25](../docs/internals/rfcs/rfc-25-observability.md) §2.4 (entity l
 component imports another's contract only"). The RFC 4 follow-up under review (#5795) is applied
 where this epic touches it: `pkg/remote/s3` records through a recorder it declares and imports
 neither `pkg/metrics` nor `pkg/health`. Every citation is `develop`'s text; the code lands on
-`feat/storage-v2`, and the paths below are paths there.
+`develop`, and the paths below are paths there.
 **Track:** C.
 **Epic 5 estimate: 5 subtasks, 12 man-days.**
 **Depends on:** **E3**, the fault transport and LocalStack: `integration`'s LocalStack cell over

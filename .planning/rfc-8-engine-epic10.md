@@ -44,7 +44,7 @@ At the end of the epic:
 - a seeded soak composes the filesystem service over the engine, crashes and restarts it in a
   loop under fault schedules, and asserts that every acknowledged synced write reads back or
   reads **Lost**, never zeros and never the superseded chunk; it runs on every pull request
-  and every push to `feat/storage-v2` with a short list of seeds (the `pr` tier, which `merge`
+  and every push to `develop` with a short list of seeds (the `pr` tier, which `merge`
   contains) and in the `nightly` tier with the long list (D7);
 - B5, B7 and B9 (adapted) run in the `manual` tier over a benchmark composition on a real
   directory (D12), with their
@@ -247,7 +247,7 @@ the next free number in its group's table, and a withdrawn one keeps its row.
 | R22 | B9, with one unrelated append on the same stream held in flight for 100 ms at a time: the stable writes' p99 is reported, and is within twice the run without it (a proposal) | bound (reported) | RFC 8 §15.4 (B9) | T10.2 |
 | R23 | B5's and B7's count targets follow from RFC 8 §5.1 and §5.2 and are asserted (B9's are reported, D6); the figures (2×, and the others the table lists) are release bars proposed, and the first baseline run replaces each with its measured value plus headroom. A target the design cannot meet on that run is a design finding, not a number to relax | decision | RFC 8 §15.4 | T10.2, T10.5 |
 | R24 | Performance is tracked, not gated: the benchmarks run in the `manual` tier and write their results as standard Go benchmark output, so runs compare over time with `benchstat` | invariant | RFC 29 §4.3, §4.10; RFC 17 §8 (Tiers) | T10.2, T10.5 |
-| R25 | The soak runs on every pull request and every push to `feat/storage-v2`, as a bounded list of seeds in the `pr` tier (`merge` contains `pr`), so CI on the pull request confirms its known entries, and in the `nightly` tier with the long list; each fits its tier's budget, the `pr` one shared with `engine-conformance`. (`nightly` runs only on a schedule, which runs only on `develop`, so the branch needs the `pr` run.) The plan step's select in `tests.yml` names the suite, or the branch never runs it | invariant | RFC 29 §4.3; `CLAUDE.md`, "By kind" | T10.1, T10.5 |
+| R25 | The soak runs on every pull request and every push to `develop`, as a bounded list of seeds in the `pr` tier (`merge` contains `pr`), so CI on the pull request confirms its known entries, and in the `nightly` tier with the long list; each fits its tier's budget, the `pr` one shared with `engine-conformance`. (`nightly` runs only on a schedule, which runs only on `develop`, so the branch needs the `pr` run.) The plan step's select in `tests.yml` names the suite, or the branch never runs it | invariant | RFC 29 §4.3; `CLAUDE.md`, "By kind" | T10.1, T10.5 |
 | R26 | Every benchmark result is recorded in absolute numbers with the commit, the box (CPU, memory, device and its raw figures), the operating system and filesystem with its mount options, and each row's concurrency; results from another box are compared only with themselves | invariant | RFC index, "Test tiers" (Recording results) | T10.2, T10.5 |
 | R27 | B5's and B9's p99 latency and throughput are reported against v1's same workload on the same box, with `-count=10` and read by `benchstat`, so the baselines show whether v2 is better than the engine it replaces: 64 writers with an `fsync` every 1 MiB, and 64 stable overwriters against unstable writes with a flush every second. The two runs share no code, only their result files meet (rule 7) | invariant | none in the RFCs: this epic's, from review, proposed for RFC 8 §15.4 in §9 point 8 | T10.5 |
 | R29 | The latency and throughput the baselines record are measured on a composition with no cost of its own that a device would not have: the journal on a real directory with real `fsync`, an on-disk store, the real clock and a share sized for the workload. v1's side of R27 pays the same, on an on-disk metadata store. The counts of R17, R18 and R20 hold on either composition | invariant | RFC index, "Test tiers" (what must not stand in: an in-memory backend is never the only one under test for a check about cost); RFC 8 §15.4 | T10.2, T10.5 |
@@ -304,7 +304,7 @@ of §15.4's decision block is R23.
   the offload part's issue, since their rows wait on offload, not on this epic.
 - **D5, the soak is a fixed list of seeds.** Each seed builds its fault schedules with
   `sim.NewSchedule(seed, clock, rules...)`, which gives the same actions over the same
-  calls; the soak runs a short fixed list on every pull request and every push to `feat/storage-v2`
+  calls; the soak runs a short fixed list on every pull request and every push to `develop`
   (a few seeds, the `pr` tier) and a long one in the nightly run (D7), and a flag replays one
   seed's schedule. The lists
   are a `ponytail:` marker: a fixed list finds only what those seeds reach; upgrade to a
@@ -497,7 +497,7 @@ The v1 benchmark itself sits in v1's tree on `develop` (T10.5), outside this tre
 - **Acceptance criteria:**
   - each seed prints itself on failure with the faults that fired, and a flag replays its
     schedule (D5);
-  - `engine-soak` runs on a pull request and on a push to `feat/storage-v2` within the `pr`
+  - `engine-soak` runs on a pull request and on a push to `develop` within the `pr`
     tier's budget, its seed count taken from `dt plan --tier pr --estimate` (D7), and
     `dt plan --tier pr` on the branch lists it;
   - after each restart the verifier differs from the one before (R14), a file with pending

@@ -48,7 +48,7 @@ simulated beneath the code under test; RFC 24 §6.1.
   `nfsops` encode their calls with (pending Q5).
 - **S7**, `dfs` serving NFS, and RFC 23's implementation plan's epic 7, which builds the server
   fixture the e2e tests start `dfs` through, and its epic 8, which rebuilds the e2e helpers on it,
-  takes `e2e` out of `tests.yml`'s V2 filter's suite list with its T8.2 and stops skipping the `e2e`
+  takes `e2e` out of `tests.yml`'s data-path skip's suite list with its T8.2 and stops skipping the `e2e`
   cell by name with its T8.6, its first green test (that plan's epic 8, its D2), for T16.7 to
   T16.10 and T16.13. T16.7 cannot land first: it needs that epic's T8.1, which lands with T8.6.
   Not E15: by that epic's D2 a cell leaves the filter with its first green test, so `e2e/kerberos`
@@ -186,7 +186,7 @@ pinned pjdfstest has no tests for (no xattr directory at `03eb257`).
   channel. **E11**, NLM, NSM and the datagram path. **E12**, the NFSv4.2 operations. **E13**,
   RPCSEC_GSS. **E14**, the capture diffs against knfsd.
 - **E15**, the integration with the node: `settings.NFS`, and `pjdfstest`, `pynfs`, `cthon04` and
-  `nfstest` out of the V2 filter. The `e2e` cells are not E15's (RFC 23's implementation plan's epic 8, its D2).
+  `nfstest` out of the data-path skip. The `e2e` cells are not E15's (RFC 23's implementation plan's epic 8, its D2).
 - **S5**, the composed in-process node, `internal/node/nodetest`, serving NFS.
 - **S6b**, Kerberos sign-in behind `SignIn`: RFC 18's implementation plan's epic 5.
 - **S7**, the node serves NFS through `dfs`: the cutover, which E15 and T16.7 to T16.10 and T16.13
@@ -728,7 +728,7 @@ in a subtask (§9, gap 8).
   `./test/e2e/` without `...` is the package the other options run, which holds every row here. `test/suites.yaml`'s `e2e` gains `tcpdump` and `tshark` among its needs,
   and the harness's closed set of needs (`test/harness/registry/check.go`) gains both, with their
   probes and packages in `test/harness/needs/needs.go`, since the registry check refuses a need it
-  does not know. The `e2e` cell is out of `tests.yml`'s V2 filter by then: RFC 23's T8.6 takes it
+  does not know. The `e2e` cell is out of `tests.yml`'s data-path skip by then: RFC 23's T8.6 takes it
   out, and lands with T8.1, which this subtask needs (RFC 23's implementation plan's epic 8, its D2).
 - **Acceptance criteria:**
   - The extraction's tree matches a local one byte for byte after the drain and the start.
@@ -755,7 +755,7 @@ in a subtask (§9, gap 8).
   xpf` steps under `no_root_squash` and `root_squash`; `test/e2e/nfs_tls_test.go`: an `xprtsec=tls`
   mount, `require`, the certificate files replaced. `test/suites.yaml`'s `e2e` gains `tlshd` among
   its needs, added to the harness's set of needs and probed as T16.7 adds `tshark`. The Kerberos
-  tests' names contain `Kerberos`, which `e2e`'s `kerberos` option selects. `tests.yml`'s V2 filter
+  tests' names contain `Kerberos`, which `e2e`'s `kerberos` option selects. `tests.yml`'s data-path skip
   stops skipping `e2e/kerberos` by name if RFC 23's T8.8 or another protocol plan's Kerberos row has
   not already (RFC 23's implementation plan's epic 8, its D2). No later subtask consumes them.
 - **Acceptance criteria:**
@@ -798,7 +798,7 @@ in a subtask (§9, gap 8).
   caller named `…Kerberos…` as well, so `e2e/kerberos` runs them and `cross-protocol` skips them.
   `test/suites.yaml`'s `e2e` gains `smbclient` among its needs, the need that installs `smbcacls`,
   beside `smb-client`, which mounts; its `cross-protocol` and `kerberos` options, which set no needs
-  of their own, inherit it, and the main cell runs the same tests. `tests.yml`'s V2 filter stops
+  of their own, inherit it, and the main cell runs the same tests. `tests.yml`'s data-path skip stops
   skipping `e2e/cross-protocol` by name if RFC 22's epic 16 has not already (RFC 23's implementation
   plan's epic 8, its D2). The fixture of users, groups and mounts is consumed by T16.10.
 - **Acceptance criteria:**
@@ -897,7 +897,7 @@ in a subtask (§9, gap 8).
   hard-coded `TARGETS`, `AREAS`, `STEP_AREAS` and headline geomean per protocol, and `bench/ditto/score_test.py`, the script's first tests, a `unittest` module over
   fixture nights that `lint-repo` runs. `test/e2e/stress_nfs_test.go` (D5): `TestStressNFS…` under
   the `stress` tag, which the option's `-run ^TestStress` selects; as `e2e/stress`'s first green
-  test it takes the cell out of `tests.yml`'s V2 filter's skip by name (RFC 23's implementation
+  test it takes the cell out of `tests.yml`'s data-path skip's skip by name (RFC 23's implementation
   plan's epic 8, its D2). The estimate holds knfsd's setup
   on the host, `nfsops` with MOUNT and session setup, `score.py`'s areas made per protocol, a
   calibration week of NFS nights, and the soak.
@@ -1093,8 +1093,8 @@ Gaps, not questions:
    the dedicated host (D4). T16.14's large clones
    need 12 GiB free under the nightly `unit/node-clone` cell's temporary directory, and fail
    naming the free bytes when it is not there; the figure is provisional, measured on the cell's first run and revised then. The cell runs on ditto, through its `host:dedicated` need, until a CI runner is chosen (rif, 25 Nov). `tests.yml`'s `schedule` trigger runs on the default
-   branch only, so the hosted nightly cells this epic adds on `feat/storage-v2` (the soak) run nothing until the cutover brings them to `develop`; the dedicated host's cron runs
-   `develop` too (`bench/ditto/README.md`), so `nfs-night` and `unit/node-clone` wait for the cutover the same way.
+   branch, `develop`, so the hosted nightly cells this epic adds (the soak) run there; the dedicated host's cron runs
+   `develop` too (`bench/ditto/README.md`), so `nfs-night` and `unit/node-clone` run there the same way.
 8. **Which pull request carries which RFC amendment.** D1's sentence for RFC 21 §13's suites
    paragraph (Q1) goes in batch two's one RFC 21 pull request, opened with E8's document pull
    request. Q3's RFC 20 §6.10 change joins the programme's one RFC 20 pull request, opened by E3's

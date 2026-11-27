@@ -85,13 +85,12 @@ imported only from `_test.go` files: production code never depends on it. It car
 tag, so `go vet` and the linter see it and lint-go's tag list does not change.
 
 The targets themselves live next to the component they fuzz, in the component's package, so
-they can reach `export_test.go` hooks: `pkg/journal/fuzz_test.go` and `pkg/engine/fuzz_test.go` on
-`feat/storage-v2`, where both are written (`develop` has the packages under `pkg/block/`). Their corpora
+they can reach `export_test.go` hooks: `pkg/journal/fuzz_test.go` and `pkg/engine/fuzz_test.go`. Their corpora
 live where Go puts them, `testdata/fuzz/<FuzzName>/`.
 
 ### 2.1 The journal's model harness
 
-`feat/storage-v2` already has a model-based harness for the journal,
+The journal already has a model-based harness,
 `pkg/journal/journaltest/model`: a step decoder for the fuzzer's bytes, a readable corpus text
 (`corpus.go`), shrinking to a short corpus file (`shrink.go`), crash steps, and `Compare` after
 every step. `FuzzModel` (`journaltest/model/fuzz_test.go`) and `FuzzModelDataPath`,
@@ -548,8 +547,7 @@ Each of these is verified by breaking what it guards (CLAUDE.md, "Verifying a ch
 
 - **Replay**, on every `go test` in the unit suite: each target's seeds and committed crashers
   run as subtests of `FuzzXxx`. No tag, no registry change.
-- **Fuzzing**, by hand: `go test -run '^$' -fuzz '^FuzzJournal$' -fuzztime 10m ./pkg/journal` (the
-  `feat/storage-v2` path).
+- **Fuzzing**, by hand: `go test -run '^$' -fuzz '^FuzzJournal$' -fuzztime 10m ./pkg/journal`.
   A crasher lands in `testdata/fuzz/FuzzJournal/`, is committed with its text seed (§5.2), and
   becomes a regression test.
 - **`DITTOFS_FUZZ_TRACE=1`** prints the trace of every input replayed, for reading a corpus.
@@ -563,7 +561,7 @@ Each of these is verified by breaking what it guards (CLAUDE.md, "Verifying a ch
   writes per file, is the first that can approach it.
 - **A scheduled campaign.** A `fuzz` suite that runs each target for a fixed time, a short run on
   the packages a pull request changes and a longer one at night with the corpus kept between
-  runs, is proposed as its own task of the roadmap (§13). `feat/storage-v2` already has 70 native
+  runs, is proposed as its own task of the roadmap (§13). The tree already has 70 native
   targets, decoders included, that no suite runs past their seeds. The repository is public, so that
   task also decides where a crasher of a decoder a network peer reaches is run and kept: never in a
   public log until its fix is public.
@@ -574,5 +572,5 @@ Each of these is verified by breaking what it guards (CLAUDE.md, "Verifying a ch
 |---|---|---|---|
 | Fault wrappers for the filesystem and the remote store | They wrap interfaces the harness does not own; each lives with its package | fuzz: journal, fuzz: engine | The component target is started |
 | Making background work steppable in the journal and engine | Component change, not harness | fuzz: journal, fuzz: engine | The component target is started |
-| A scheduled fuzzing suite in `test/suites.yaml` | Needs targets to run and a measured cost per run | fuzz: running the targets (a task of the roadmap, proposed) | Now on `feat/storage-v2`, whose 70 targets already exist; on `develop`, two component targets merged |
+| A scheduled fuzzing suite in `test/suites.yaml` | Needs targets to run and a measured cost per run | fuzz: running the targets (a task of the roadmap, proposed) | Now: the 70 targets already exist |
 | A conversion tool from crasher bytes to text seeds across table changes | `DITTOFS_FUZZ_TRACE` and hand conversion suffice while the corpora are small | unowned | A table change invalidates more than a handful of crashers |

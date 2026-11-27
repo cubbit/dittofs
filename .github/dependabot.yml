@@ -2,19 +2,19 @@
 # this file GitHub still reports vulnerabilities but never opens a PR for them,
 # so they accumulate until someone bumps by hand.
 #
-# Every ecosystem sets target-branch: feat/storage-v2, the default branch, so
-# the setting is redundant, but it is the only line here that survives the
-# default moving again. Dependabot reads this config from the default branch,
-# not from the PR base: while main was the default and its copy had no
-# target-branch, every bump opened against main. A bump on main puts a commit
-# there that develop does not have, and breaks the release flow, which needs
-# main to be an ancestor of develop. develop gets no bumps from here: it holds
-# the released line, and a fix it needs is carried by hand.
+# Every ecosystem sets target-branch: develop, the default branch, so the
+# setting is redundant, but it is the only line here that survives the default
+# moving. Dependabot reads this config from the default branch, not from the PR
+# base: while main was the default and its copy had no target-branch, every bump
+# opened against main. A bump on main puts a commit there that develop does not
+# have, and breaks the release flow, which needs main to be an ancestor of
+# develop. A released line that needs a bump gets it through a hotfix
+# (scripts/hotfix.sh).
 version: 2
 updates:
   - package-ecosystem: gomod
     directory: /
-    target-branch: feat/storage-v2
+    target-branch: develop
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
@@ -32,7 +32,7 @@ updates:
 
   - package-ecosystem: gomod
     directory: /k8s/dittofs-operator
-    target-branch: feat/storage-v2
+    target-branch: develop
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
@@ -49,7 +49,7 @@ updates:
   - package-ecosystem: github-actions
     # The root scans .github/workflows; the composite actions each need theirs.
     directories: ["/", "/.github/actions/*"]
-    target-branch: feat/storage-v2
+    target-branch: develop
     schedule:
       interval: weekly
     open-pull-requests-limit: 5

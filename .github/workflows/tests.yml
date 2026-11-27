@@ -21,7 +21,7 @@ name: Tests
 
 on:
   pull_request:
-    branches: [develop, main, feat/storage-v2]
+    branches: [develop, main]
   # The merge queue runs the pull-request tier on the merged result, so a
   # queued pull request is held to the checks it passed on its own.
   merge_group:
@@ -29,7 +29,7 @@ on:
   # A push to any of them runs the merge tier; only develop's results alert
   # or post.
   push:
-    branches: [develop, main, feat/storage-v2]
+    branches: [develop, main]
   schedule:
     # Nightly at 22:13 UTC, staggered from the other suites' runs.
     - cron: '13 22 * * *'
@@ -581,8 +581,8 @@ jobs:
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: '"$RUNNER_TEMP/dt" run unit/whole-tree --tier "$TIER" --ci --retry "$RETRY"'
 
-      # On feat/storage-v2 nothing else links the commands: the data-path
-      # suites that build them are skipped there.
+      # Nothing else links the commands: the data-path suites that build them
+      # are dropped by the plan's skip.
       - name: Build the commands
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: go build ./cmd/...
@@ -702,12 +702,8 @@ jobs:
           jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
           jq -e '.plan.result == "success" and all(.[]; .result == "success" or .result == "skipped")' <<<"$NEEDS" >/dev/null
 
-  # decision: GitHub fires the schedule only on the default branch,
-  # feat/storage-v2, and only develop's runs post, so no nightly run posts:
-  # feat/storage-v2's nightly results show on its run alone. Posting them needs
-  # an issue of feat/storage-v2's own, as dt report --post writes develop's.
-  #
-  # After the retry, on develop only, pushed or scheduled: dt report --post
+  # After the retry, on develop only, pushed or scheduled (GitHub fires the
+  # schedule only on the default branch, develop): dt report --post
   # writes the new failures and unexpected passes of every job gate waits for,
   # and the cells that failed or didn't run, to the develop-status issue, and
   # gives a test failing 2 runs in a row an issue of its own. Waiting for gate

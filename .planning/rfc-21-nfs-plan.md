@@ -64,7 +64,7 @@ although the code is written by an agent.
 epic-level figure, and no subtask id. Where it depends on RFC 22's plan, it names that plan's epic
 and what the epic builds.
 **Defaults used from Step 0:** dashboards none (#9); output path the default (#10). The target
-branch is `feat/storage-v2`; the plan document lands there too, as the
+branch is `develop`; the plan document lands there too, as the
 other planning documents do. External dependencies: RFC 20's plan (its scaffold, landed; its epic
 7 for S5 and S7), RFC 18's plan (#4058): its
 S2 for `Spell`, `Find` and resolution (S6a), its E5 for Kerberos (S6b); RFC 17's service on
@@ -146,7 +146,7 @@ inject a fault below the server in `unit`; the rows naming pynfs, cthon04 or nfs
 one file over NFS and SMB in `e2e/cross-protocol`; and the Kerberos rows in `e2e/kerberos`. Every one
 is registered already. **Epic 2 registers no red suite**: `unit` and `e2e` keep no `known.yaml`, so
 their tests land green with the epic that makes them pass, and `pjdfstest`, `pynfs`, `cthon04` and
-`nfstest` stay off on `feat/storage-v2` under `tests.yml`'s V2 filter until the cutover, when E15 rewrites
+`nfstest` stay off under `tests.yml`'s data-path skip until the cutover, when E15 rewrites
 their `known.yaml` for v2: RFC 21 §13's "Tests expected to fail", then each v2 failure an entry
 `status: fail`, `fix: planned`, `category: feature`, with a reason and `issue: "#…"` naming this
 plan's epic issue, which exist before then (`epic-breakdown` Step 6.3, under #3628). So a pjdfstest,
@@ -464,7 +464,7 @@ test runs, and NFS's scaffold answers every procedure over loopback through `cor
 | 🔀 S6b | E13 and E16, partly | a ticket `SignIn` accepts |
 | S6c | the rest of E13; RFC 22's plan's epic 4 | the Kerberos acceptor and `Exchanges` the context table drives; the package NTLM and SPNEGO join |
 | 🔀 S7 | E15 | no node to wire into, no `dfs` serving NFS |
-| 🔀 E15 | E16, partly | the NFS suites run only once `dfs` serves NFS and the V2 filter lets them |
+| 🔀 E15 | E16, partly | the NFS suites run only once `dfs` serves NFS and the data-path skip lets them |
 
 ### 3.4 Splitting the work
 
@@ -1110,7 +1110,7 @@ E3's scripted client lands, and against DittoFS from S5.
 Waits for S7. Then: `settings.NFS` reaching `New` and, through `Reconfigure`, while serving (RFC 20
 §3.6), as the `adapters.nfs` section of the node's table (#4059's D2), with any key a later gap adds
 under `adapters.nfs`, its default and its check (#4059's D2, D3); `pjdfstest`, `pynfs`, `cthon04`
-and `nfstest` out of the V2 filter, their `known.yaml` rewritten for v2 with each entry naming this
+and `nfstest` out of the data-path skip, their `known.yaml` rewritten for v2 with each entry naming this
 plan's epic issue and RFC 21 §13's expected failures listed by name; D11's settings closed as
 decided. The `e2e` cells, `e2e`, `e2e/kerberos` and `e2e/cross-protocol`, leave the filter with
 their first green test, by RFC 23's implementation plan's epic 8 D2, not here: E16's document names
@@ -1340,7 +1340,7 @@ Each row is one of [RFC 20's plan](rfc-20-adapters-plan.md)'s deferral ledger (i
 | the `require_kerberos` boot refusal (D25) | E13 |
 | uid and gid mapping (identity-mapping config) | E7 |
 | `test/required-tests.json` pins for NFS's gates | E16 |
-| suites skipped by the V2 filter (NFS's: `pjdfstest`, `pynfs`, `cthon04`, `nfstest`) | E15 (on), E16 (green) |
+| suites skipped by the data-path skip (NFS's: `pjdfstest`, `pynfs`, `cthon04`, `nfstest`) | E15 (on), E16 (green) |
 
 ### 6.5 RFC 18's ledger rows for NFS
 

@@ -13,7 +13,7 @@ stored wrap as bytes; §8.2's Appendix B.1 ambiguous-Locate row and in-place rot
 custody halves; §9 item 2. Outside RFC 5: the RFC 5 plan's D6 and D14 (the custody seam, the
 transport moved out of `pkg/keyprovider`), its §1.4 catalogue's KMIP rows, its O5 and O9; the RFC
 13 plan's deferral-ledger row on `kmip_fake_test.go`, which this epic owns. The code lands on
-`feat/storage-v2`, and the paths below are paths there.
+`develop`, and the paths below are paths there.
 **Track:** B.
 **Epic 7 estimate: 3 subtasks, 9.5 man-days.**
 **Depends on:** **S2**: from E2, `transformtest.LoadVectors` and its vector file with the key

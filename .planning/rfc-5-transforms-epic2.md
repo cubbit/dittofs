@@ -9,7 +9,7 @@ tables of §2.8 and Appendix B.1, and the envelope vector the RFC 5 plan's §1.4
 layout; Appendix B.2's salvage key as the in-memory provider holds it.
 Cited, not owned: [RFC 2](../docs/internals/rfcs/rfc-2-carver.md) §3.2 (the chunk maximum), §4.1
 and the RFC 2 plan's golden-vector script, which RFC 5's vectors join. Every citation is
-`develop`'s text. The code lands on `feat/storage-v2`, and the paths below are paths there.
+`develop`'s text. The code lands on `develop`, and the paths below are paths there.
 **Track:** team.
 **Epic 2 estimate: 5 subtasks, 11 man-days.**
 **Depends on:** **S1**, E1's surface frozen: `transform.Transform`, `Factory`, `Encoded`,

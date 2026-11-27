@@ -116,7 +116,7 @@ already done, and what remains is smaller and different:
   as `TestInitRefusesAV1Store` does, never from v1's code, so E2 can delete that code in either
   order.
 - E3 T3.3 waits for Marco's answer to D4, because it changes `node.Preflight`, RFC 23 §2.1's
-  surface. The RFC edit lands on `feat/storage-v2` directly.
+  surface. The RFC edit lands on `develop` directly.
 - E3 T3.3 also needs E1 T1.1. Its row "a key that is not the installation's answers
   unidentifiable" needs T1.1's `Open`: today `Open` answers `ErrNotInitialised` whenever the
   format record is missing (`store.go:139-140`). E1 and E3 may go to different people (below), so

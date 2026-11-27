@@ -69,8 +69,7 @@ match:
 An item under one of those roadmap epics normally takes that epic's section. When the list above
 places it elsewhere, the list wins: triage places the item there and proposes moving it.
 
-A **shared gate** is a pipeline whose verdict others rely on: CI on `develop` and on an integration
-branch such as `feat/storage-v2`, the release build, and the nightly suite. A problem in one
+A **shared gate** is a pipeline whose verdict others rely on: CI on `develop`, the release build, and the nightly suite. A problem in one
 developer's local setup is not a shared gate.
 
 Then walk that section's tiers top-down and stop at the **first** one that matches. Write one line

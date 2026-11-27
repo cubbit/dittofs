@@ -11,7 +11,7 @@ reaches; §10.4's allocation count, average and edit stability for the chunker; 
 first, second and sixth rows, as regression checks. [RFC 13](../docs/internals/rfcs/rfc-13-configuration.md)
 Appendix B's `Target` row. [RFC 0](../docs/internals/rfcs/rfc-0-data-lifecycle.md) §1.2, as
 #5774 amends it: an invalid setting is refused, and what `pkg/carver/section` may import.
-Every citation is `develop`'s text. The code lands on `feat/storage-v2`, where E1 creates
+Every citation is `develop`'s text. The code lands on `develop`, where E1 creates
 `pkg/carver` and E2 `internal/carvetest`, and the paths below are paths there.
 **Track:** A.
 **Epic 3 estimate: 6 subtasks, 10.75 man-days.**

@@ -10,7 +10,7 @@ transform returns them; §2.8's length-affecting settings; §3.1 as amended by #
 §8.1's generic rows as these two transforms run them; §8.2's T16 (the compressors' half); §8.3's
 per-transform, compression-ratio and `Attempt.MaxEncodedLen` benchmarks; Appendix D's rows D1 and
 D2. Every citation is the RFC's text with #5851's amendment; the code lands on
-`feat/storage-v2`, and the paths below are paths there.
+`develop`, and the paths below are paths there.
 **Track:** A.
 **Epic 4 estimate: 3 subtasks, 7 man-days.**
 **Depends on:** **S2**: from E2, `transformtest.Run` with its `Subject`, `transformtest.Fixture`,
