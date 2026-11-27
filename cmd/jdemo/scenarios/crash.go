@@ -106,13 +106,14 @@ func CrashStory() ([]jdemo.Beat, journal.Settings) {
 				}
 				d.Codef("    j, err = journal.Open(ctx, dir, floor, expectedID, syncMarks, opts...)")
 				d.Codef("    j.SetVersionLimit(versionLimit)  // the window, raised again before any write")
-				j, oerr := journal.Open(context.Background(), d.Dir, d.Stashed,
+				j, oerr := journal.Open(context.Background(), d.Dir, journal.Version{Counter: st.Limit},
 					st.ID, marks, d.OpenOptions()...)
 				if oerr != nil {
 					d.Yellowf("    // → %v", oerr)
 					return
 				}
-				if lerr := j.SetVersionLimit(journal.Version{Counter: st.Limit}); lerr != nil {
+				if lerr := d.RaiseLimit(j, st.ID, st.Limit); lerr != nil {
+					_ = j.Close()
 					d.Yellowf("    // → version limit: %v", lerr)
 					return
 				}

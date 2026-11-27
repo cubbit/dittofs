@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -209,6 +210,19 @@ func (d *Demo) open(ctx context.Context) error {
 	}
 	d.J = j
 	return nil
+}
+
+// RaiseLimit raises j's version limit a window past floor and records the new
+// limit before any write, so a crash leaves a safe lower floor on disk.
+func (d *Demo) RaiseLimit(j *journal.Journal, id journal.JournalID, floor uint64) error {
+	if floor > math.MaxUint64-versionWindow {
+		return fmt.Errorf("version limit %d leaves no room for a window", floor)
+	}
+	limit := journal.Version{Counter: floor + versionWindow}
+	if err := j.SetVersionLimit(limit); err != nil {
+		return err
+	}
+	return saveState(StatePath(filepath.Clean(d.Dir)), stateFile{ID: id, Limit: limit.Counter})
 }
 
 // awaitSpares waits until the journal's spare pool holds its settings'

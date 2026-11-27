@@ -174,8 +174,17 @@ func LimitsStory() ([]jdemo.Beat, journal.Settings) {
 			Title:   "the honesty ledger",
 			Caption: "the share limit, the escape hatch and repack are live wiring; the offload drain to the remote tier is not built in this journal yet, and the journal says so in its own words",
 			Run: func(d *jdemo.Demo) {
+				h := d.H[d.Tag]
+				if h == nil {
+					d.Yellowf("    // → no share handle; the attach beat was refused")
+					return
+				}
+				err := h.Offload(context.Background(), jdemo.StoryFile, d.Stashed, 0, 0,
+					func(context.Context, journal.Offer, func([]journal.Extent) error) error {
+						return nil
+					})
 				d.Codef("    err := h.Offload(ctx, FILE, throughVersion, limitBytes_none, widenBytes_none, sink)")
-				d.Yellowf("    // → journal: not implemented")
+				d.Yellowf("    // → %v", err)
 			},
 		},
 	}
