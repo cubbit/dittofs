@@ -1,23 +1,23 @@
 ---
 name: bench-host
-description: Access DittoFS's dedicated Linux benchmark host (ditto) and run, collect, and probe journal benchmarks on it. Use when fetching reference-box bench artifacts, placing hand-run journal-bench small/full runs, scheduling around the host's cron, reading /proc device stats or running fio probes against the raid.
+description: Access DittoFS's dedicated Linux benchmark host (ditto) and run, collect, and probe benchmark workloads on it. Use when fetching reference artifacts from the box, scheduling hand runs around its cron and lock, or running device probes (fio, /proc sampling) against its storage.
 ---
 
 # The DittoFS benchmark host (ditto)
 
-The quiet Linux reference box for the journal performance work: two NVMe members in
-md-raid1 (`md2`, ext4 on `/`), where the scheduled full-scale J1–J3 runs live. All box time
-is CET. Lucian (llucian-iws on GitHub) owns the host, its schedule and the scenario infra,
-and hands a shell account to whoever on the team runs measurements. Read-only access to
-the shared artifacts and manual bench runs in the host's quiet windows are the standing
-arrangement — anything beyond that goes through him. For an agent: assume exactly that
-access, ask for nothing less freely given, and nothing more.
+The team's quiet Linux reference box: two NVMe members in md-raid1 (`md2`, ext4 on `/`),
+used to measure DittoFS away from developer-machine noise — the journal benches, the
+engine benches, and any future suite that needs a quiet device. All box time is CET.
+Lucian (llucian-iws on GitHub) owns the host and its schedule; the shared account exists
+for read access to artifacts and for hand-run measurements in the quiet windows. For an
+agent: exactly that access — nothing extra gets asked, and anything beyond goes through
+Lucian.
 
 ## Access
 
 The address, port and account are **not in this file** — they come from the environment,
 and the owner hands them out with the account. Set both before any command in this skill
-(the skill's commands fail loudly until they are):
+(the commands fail loudly until they are):
 
 ```
 export DITTOFS_BENCH_HOST=<user@host>   # the account the owner issued
@@ -29,24 +29,30 @@ ssh -o BatchMode=yes -o ConnectTimeout=15 -p "${DITTOFS_BENCH_PORT:?}" "${DITTOF
 rsync -az -e "ssh -p ${DITTOFS_BENCH_PORT:?}" "${DITTOFS_BENCH_HOST:?}":<remote-path> <local-path>
 ```
 
-Keys are in place on the issued account; BatchMode works. Keep the values in your local
-environment or an untracked file, never in the repo or its docs. The box reaches GitHub
-over HTTPS (anonymous fetch of this repo works; ssh to github.com fails host-key
-verification).
+Keys are in place on the issued account; BatchMode works. The box reaches GitHub over
+HTTPS (anonymous fetch of this repo works; ssh to github.com fails host-key verification).
+Keep the access values in your local environment or an untracked file, never in the repo.
 
 ## Hard etiquette
 
-- **Lucian's paths are read-only for the shared account**: `/srv/cubbit/journal-bench`
-  (his checkout), `/var/tmp/dittofs-perf/journal` (his run folders),
-  `/var/tmp/dittofs-journal-bench` (his bench data dir). Never write, move, or prune
-  anything there. His artifacts ARE world-readable: fetch and read them freely. The one
-  shared EXCEPTION: `/run/lock/dittofs-run.lock` is there to be TAKEN (below).
-- **`BENCH_EXPORT_DEST` stays unset**: the scheduled runs export nothing and hand runs must
-  keep it that way — results stay on the box and in your local archive, nowhere else.
-- **Check what's running first**: `pgrep -a -f "fio|bench-run|conformance"` and `uptime`
-  before anything that writes. A scheduled run in flight means waiting it out.
-- **Clean up your own probe files** (fio/`dd` scratch under the account's home) but never
-  the run folders — run folders are the record.
+- **The scheduled infra is read-only**: `/srv/cubbit/journal-bench` and `/srv/cubbit/dt`
+  (the owner's checkouts), `/var/tmp/dittofs-perf/**` (run folders) and the other
+  scheduled-run data dirs are not yours to write, move or prune. The artifacts under them
+  ARE world-readable: fetch and read them freely. The shared EXCEPTION:
+  `/run/lock/dittofs-run.lock` is there to be TAKEN (below).
+- **Announce, then lock, then quiet window.** That is the order. Say what you are about
+  to run in the team channel first.
+- **Every run takes the lock**: wrap the whole run in
+  `flock -w 3600 /run/lock/dittofs-run.lock <command>`. The scheduled runs hold it, yours
+  wait for theirs and theirs for yours; the kernel releases it the moment the run ends,
+  even on a crash, so it is never left stuck. A scheduled job that gives up waiting is
+  skipped and logged, never retried. A run started WITHOUT the lock can overlap a
+  scheduled one and skew both results — that is the failure this whole section exists to
+  prevent.
+- **Check what's running first**: `pgrep -a -f "fio|bench-run|dt"` and `uptime` before
+  anything that writes, even with the lock held honestly.
+- **Clean up your own scratch** (probe files, ad-hoc benchmarks under the account's home)
+  but never a run folder — run folders are the record.
 
 ## The host's schedule (what to schedule around)
 
@@ -58,87 +64,78 @@ box confirms the local half. As of 2026-11-27 (all CET):
 | --- | --- | --- |
 | daily 06:00 and 18:00 | scenario canary | ~30 min (waits up to 1 h) |
 | daily 18:45 | the nightly (perf night, then system scenarios); ends ~22:10 lately | hours |
-| Tue+Fri 08:30 | journal bench full (30 GiB rows) | up to 3.5 h (~1 h 45 m typical) |
+| Tue+Fri 08:30 | journal bench full | up to 3.5 h (~1 h 45 m typical) |
 | Mon–Fri 13:00 | journal bench small | a few minutes |
-| any time a develop/main head lands | its check | ~25 min (skips and retries in 10 min) |
+| any time a develop/main head lands | its check | ~25 min (skips, retries in 10 min) |
 | daily 12:50 | prune of old run folders | seconds |
 
 Quiet windows: about **22:15–05:45**, **07:00–12:45** (minus 08:30–~11:30 on Tue and
 Fri), and **13:15–17:45**. The list is illustrative, not exhaustive — trust `pgrep` and
 `uptime` over it. A hand run still holding the lock at **19:45 costs that night's
-nightly**: the nightly waits up to 1 h for the lock and then runs anyway, so plan hand
-runs to be done before the evening's work begins.
+nightly**: the nightly waits up to 1 h and then runs anyway, so plan hand runs to be
+done before the evening's work begins.
 
-## Hand runs (the issued account's own runner, no Lucian involvement)
+## Running your own benchmarks
 
-Under the account's home on the box (recreate per account if absent):
+Whatever the suite — journal, engine, a one-off `dt` cell, an ad-hoc measurement — the
+method is the same:
 
-- `~/journal-bench` — a checkout of feat/storage-v2 with
-  `origin = https://github.com/cubbit/dittofs.git`.
-- `~/journal-runs` — `BENCH_RUN_ROOT`, mirroring his layout: `small|full/<UTC>-<sha>/…`
-  with `commit.txt`, per-group `j1/j2/j3.txt` + `.cpu/.mutex/.block/.heap` profiles, a
-  `done` marker when finished, and the full run's `bench.txt`/`dt.log` (benchstat against
-  the previous run of the same kind in the same root).
-- `~/journal-bench-data` — `DITTOFS_BENCH_DIR` (on md2, like his).
-- Launcher shape, per `test/journal/bench-run.sh`'s own hand-run mode:
+1. **Your own checkout**, never the scheduled one: the box fetches this repo anonymously
+   over HTTPS, so `git clone https://github.com/cubbit/dittofs.git` under the account's
+   home; `git fetch origin && git checkout -f --detach <sha>` to measure the commit you
+   mean, in a tree nobody else moves.
+2. **Your own run root and data dir**, on the same device as what you measure
+   (everything on the box sits on md2, so any directory under the account's home
+   measures the same device the scheduled runs do). Keep artifacts: dated folders with a
+   `commit.txt` and a `done` marker are the house pattern.
+3. **Announce, then wrap the run in the lock**
+   (`flock -w 3600 /run/lock/dittofs-run.lock …`).
+4. If the suite has a not-later-than guard, use it. The journal's `bench-run.sh`
+   computes `BENCH_NOT_AFTER` as the 18:00 canary minus the worst-case run — a
+   convention that transfers to any suite: a ~3.5 h worst-case run starts no later than
+   14:30; anything shorter scales up from 17:40.
+5. Run the suite the way CI does — `test/harness/bin/dt` and the tags each suite defines —
+   rather than bare `go test -bench` invocations that miss tags and known failures.
 
-```sh
-export BENCH_CHECKOUT=$HOME/journal-bench
-export BENCH_RUN_ROOT=$HOME/journal-runs
-export DITTOFS_BENCH_DIR=$HOME/journal-bench-data
-export BENCH_NOT_AFTER=$(date -d "today 14:30" +%s)   # full: the 18:00 canary minus its 3.5 h worst case
-nohup flock -w 3600 /run/lock/dittofs-run.lock sh $HOME/journal-bench/test/journal/bench-run.sh full > $HOME/full-run.log 2>&1 &
-```
-
-`BENCH_NOT_AFTER` differs per kind: the script's own budget is the 18:00 canary minus the
-worst-case run — 3.5 h for a full, 20 min for a small — so a full refuses to start after
-about 14:30 and a small after about 17:40. The scheduled wrapper computes exactly this
-(`test/journal/bench-run.sh`'s header); a start cutoff later than this, or the expected
-run time, risks running a still-quiet-looking load into the canary.
-
-**The lock.** Every run, scheduled or by hand, takes `/run/lock/dittofs-run.lock`; the
-shared account can take it (no sudo). A hand run wraps the whole thing:
-
-```
-flock -w 3600 /run/lock/dittofs-run.lock sh $HOME/journal-bench/test/journal/bench-run.sh full
-```
-
-The scheduled runs hold it, your run waits for them, they wait for yours; the kernel
-releases it the moment the run ends, even on a crash, so it is never left stuck. A run
-that gives up waiting is skipped and logged, never retried. **Say it in the team channel
-first**, then take the lock, and prefer the quiet windows. And leave `BENCH_LOCK` unset
-precisely BECAUSE the wrapper holds the lock: `bench-run.sh` flocks `BENCH_LOCK` itself,
-so setting it to the same file makes the script's inner flock wait behind the wrapper's
-outer one — a deadlock on yourself. The script's quiet-load gate (waits for load < 4)
-still helps on top. The script fetches the branch tip and
-detaches at it (a run always measures the merged tip, never a stale tree), builds with the
-repo's pinned toolchain (auto-downloads on first use), and prunes only within its own
-root. Small ≈ 20–25 min; full ≈ 1 h 45 m.
+**A worked precedent** (the journal's own runner: `~/journal-bench` +
+`~/journal-runs` + `~/journal-bench-data`, driven by
+`test/journal/bench-run.sh`'s hand-run mode): its layout — one checkout whose origin is
+the HTTPS remote, per-kind run folders stamped `<UTC>-<sha>` holding group outputs and
+profiles — is a good shape to copy for a new suite. One subtlety from it that transfers
+to any script with its OWN lock env: if you wrap a command in `flock` yourself, do NOT
+also point the script's internal lock variable at the same file — the script's inner
+flock then waits behind your outer one *from the same process* and deadlocks on
+yourself. Wrap or pass a lock env, never both.
 
 ## Collecting and reading results
 
-Raw artifacts out, parse locally — remote one-liners over ssh invite quoting failures
-(timed in this repo, twice):
+Raw artifacts out, parse locally — remote one-liners over ssh invite quoting failures:
 
-```sh
-rsync -az -e "ssh -p ${DITTOFS_BENCH_PORT:?}" "${DITTOFS_BENCH_HOST:?}":journal-runs/<kind>/ <local archive>/
+```
+rsync -az -e "ssh -p ${DITTOFS_BENCH_PORT:?}" "${DITTOFS_BENCH_HOST:?}":<run-root>/<kind>/ <local archive>/
 ```
 
-Parse benches with benchstat (strip any `== ` wrapper lines; benchstat config-keys every
-differing header line, so feed it only `goos/goarch/pkg/cpu` + `Benchmark` lines), or a
-local per-row script. The measurement and comparison rules — same-hour pairs, the raw
-twin's ±25% validity gate, the pprof misleads — live in
-`docs/internals/journal-performance-optimization.md`; read them before quoting any number.
+Read numbers by the repo's own rules (CLAUDE.md's benchmarks section): `benchstat` over
+`-count=10` runs on the same machine only; never compare across hosts or against a
+Docker Desktop figure; each suite carries its own validity checks (the journal's bench
+rows pair every figure with a raw twin for this). Benchstat needs cleaned inputs: strip
+any `== ` wrapper lines and feed it only `goos/goarch/pkg/cpu` + `Benchmark` lines, or
+its config keys split the runs into incomparable groups.
 
 ## Ad-hoc device probes (fio, /proc sampling)
 
-For attributing device factors (flush tax, writeback throttling, jbd2 coupling). fio is
-installed (3.41); job files need **one option per line** (comma-lists on one line abort
-every phase); write scratch under the account's home; get per-job bandwidth via
-`--output-format=json` and parse the json **after fetching it locally** —
-`d["jobs"][i]["jobname"]` names the job, its bandwidth is `d["jobs"][i]["write"]["bw"]`
-in KiB/s. Sample once per second during a probe: `/proc/diskstats` (watch `md2` +
-`nvme0n1p4`/`nvme1n1p4`), `/proc/vmstat` (`nr_dirty`/`nr_writeback`), and
-`/proc/fs/jbd2/*/info` (the md2 ext4 journal). Delete probe files when done. Known box
-facts: `md2` reports `write_zeroes_max_bytes=0` (`FALLOC_FL_WRITE_ZEROES` gains nothing
-there); twin-class sequential writes reach ~850–890 MB/s; both members are NVMe.
+For attributing device factors under any benchmark (flush tax, writeback throttling,
+filesystem-journal coupling). fio is installed (3.41); job files need **one option per
+line** (comma-lists on one line abort every phase); write scratch under the account's
+home; get per-job bandwidth via `--output-format=json` and parse the json **after
+fetching it locally** — `d["jobs"][i]["jobname"]` names the job, its bandwidth is
+`d["jobs"][i]["write"]["bw"]` in KiB/s. Sample once per second while a probe runs:
+`/proc/diskstats` (watch `md2` + `nvme0n1p4`/`nvme1n1p4`), `/proc/vmstat`
+(`nr_dirty`/`nr_writeback`), and `/proc/fs/jbd2/*/info` (the md2 ext4 journal). Take
+the lock for probes too — they write.
+
+Known box facts: `md2` reports `write_zeroes_max_bytes=0` (`FALLOC_FL_WRITE_ZEROES` gains
+nothing there); twin-class sequential writes reach ~850–890 MB/s; flush latency ~3 ms;
+both members are NVMe. The box's own runs under `/var/tmp/dittofs-perf/` (read-only for
+the shared account) are the public record — check what already exists before
+commissioning a new measurement.
