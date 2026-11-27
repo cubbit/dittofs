@@ -72,8 +72,9 @@ func TestBlockNameMovesWithEachInput(t *testing.T) {
 
 // BlockName is BLAKE3's key derivation under the name's context over
 // 0x10 ‖ scope ‖ nonce ‖ 0x20 ‖ chain ID ‖ IDs, for the golden block and for
-// a block of one chunk; a scope encoded with another length byte gives
-// another name.
+// a block of one chunk. A scope encoded with another length byte gives
+// another name: that restates RFC 2 §9's name row and cannot fail once the
+// derivation check passes.
 func TestBlockNameIsTheDerivationOverItsInputs(t *testing.T) {
 	golden, _ := goldenName(t)
 	one := golden
