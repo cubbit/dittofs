@@ -1097,6 +1097,5 @@ Gaps, not questions:
    `develop` too (`bench/ditto/README.md`), so `nfs-night` and `unit/node-clone` wait for the cutover the same way.
 8. **Which pull request carries which RFC amendment.** D1's sentence for RFC 21 §13's suites
    paragraph (Q1) goes in batch two's one RFC 21 pull request, opened with E8's document pull
-   request. Q3's RFC 20 §6.10 change joins the programme's one RFC 20 pull request, opened by E3's
-   Q2, with RFC 20 §8.5's "No suite runs yet … §6.10's end-to-end benchmark", which T16.13's
+   request. Q3's RFC 20 §6.10 change joins the next RFC 20 pull request, not opened yet, with RFC 20 §8.5's "No suite runs yet … §6.10's end-to-end benchmark", which T16.13's
    `nfs-night` cell makes untrue for NFS.

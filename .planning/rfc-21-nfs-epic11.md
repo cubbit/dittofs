@@ -151,7 +151,7 @@ cited by number and title and not copied.
 | rule 8, real dependencies for properties of those dependencies | T11.1, T11.2, T11.9, T11.10, T11.11 | golden files cut from knfsd's NLM and NSM captures (E2) or written by hand from RFC 1813 and RFC 1833, never vectors the encoder under test made; real TCP and UDP over loopback, on `127.0.0.2` and `127.0.0.3` where an address is asserted; the composed node for the restart row |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | all | RFC 21 §6.1's two `decision:` notes at their code sites, the host binding at the `Name` encoding (T11.1) and the `Claimed` admission at E3's route, which sets `Call.HostCall` on every NLM and NSM call, and at E4's admission check (kept as E3 and E4 wrote it); the markers of §4 at theirs; `nfs.go`'s comment that no listener reads UDP rewritten (T11.10) |
 | rule 10, a test must be able to fail | all | each test names the break it catches; none asserts the scripted host's own answer, only what the adapter did with it; the absence of a reply over UDP is a bounded wait, the one assertion no clock can make, and says so |
-| rule 11, a symbol is exported only if an interface uses it | T11.1, T11.2, T11.9, T11.10 | `core.Conn.Local` and the datagram `Listener` through an RFC 20 pull request first (Q2); `adapter.Deps.DialClient`'s network, already RFC 20 §3.4's text; `rpcclient`'s functions for `nfs/callbacks.go` and `ops/nlm`; `wire`'s call encoder and reply decoder for `rpcclient` and the scripted client; `nlm.Handlers` and `nsm.Handlers` for `nfs.go`; `nfsclient.Host` and `nfsclient.DialUDP` for this epic's and E16's tests |
+| rule 11, a symbol is exported only if an interface uses it | T11.1, T11.2, T11.9, T11.10 | `core.Conn.Local` and the datagram `Listener` through the next RFC 20 pull request, not opened yet (Q2); `adapter.Deps.DialClient`'s network, already RFC 20 §3.4's text; `rpcclient`'s functions for `nfs/callbacks.go` and `ops/nlm`; `wire`'s call encoder and reply decoder for `rpcclient` and the scripted client; `nlm.Handlers` and `nsm.Handlers` for `nfs.go`; `nfsclient.Host` and `nfsclient.DialUDP` for this epic's and E16's tests |
 | rule 12, each subtask creates only what it declares | all | `rpcclient` arrives with `GETPORT` and its first caller's test; the waiting-request table with the first blocking lock; the share table with `SHARE`; the scripted host with the first callback it receives |
 | rule 13, translate, never decide | all | every NLM field maps to a neutral value or a named refusal by a pure function (R47); a handler makes one service call, beside the `Connect` its row's `Resolve` makes; whether a lock conflicts, is granted, waits or is authorised is the service's, and so is when a grant is sent again |
 | rule 14, nothing deferred is lost | all | §1.2 names the owner of each part of an obligation this epic leaves out; §9 the gaps, with the RFC each needs |
@@ -504,7 +504,7 @@ that subtasks and tests can cite them.
   overturned if a client is found that waits on a `PROG_UNAVAIL` over UDP before trying TCP. RFC 20
   §4.8's table answers an unknown program `PROG_UNAVAIL` on every listener, which RFC 21 §2.2, §12
   (N1) and §13's "§2.2 TCP only" row contradict for UDP; the one-sentence amendment of §4.8's row, a
-  UDP listener answers a program it does not serve with nothing, joins Q2's RFC 20 pull request.
+  UDP listener answers a program it does not serve with nothing, joins the next RFC 20 pull request, not opened yet (Q2).
 - **D15. An NLM holder's `svid` and `oh` reach the wire only for the asking host's own owners.** A
   conflicting lock of another client, NLM or not, is reported `svid` 0 and an empty `oh`, so no owner
   name is ever decoded from another client's bytes (R32). A `decision:` marker at the reply, overturned
@@ -673,7 +673,7 @@ pkg/openstate/clients.go         T11.12 an NLM record's zero Boot and its first 
     netip.AddrPort) (net.Conn, error)`, as RFC 20 §3.4 has it; its nil default a `net.Dialer` bound to
     `from` for `network`. Consumed by `rpcclient`.
   - `core`: `func (c *Conn) Local() netip.Addr`, the address the client reached, unmapped, through
-    an RFC 20 pull request first (Q2), with `core.golden` updated. Consumed by T11.3, which keeps it
+    the next RFC 20 pull request, not opened yet (Q2), with `core.golden` updated. Consumed by T11.3, which keeps it
     with the host, and T11.9's datagram `Conn`.
   - `rpcclient`: `type DialFunc func(ctx context.Context, network string, from netip.Addr, to
     netip.AddrPort) (net.Conn, error)`, the type of `adapter.Deps.DialClient`; a `Client` built with a
@@ -1202,10 +1202,10 @@ Questions pending the user's answer. Each recommended option is written in place
   - (c) No notice on a single node's restart, a hole RFC 21 §6.2 forbids; listed only to say why not.
 - **Q2. `Conn.Local` and the datagram listener in RFC 20 §4.7** (D13, T11.2, T11.9). Rule 11 adds a
   symbol `core` lacks to RFC 20 first.
-  - (a) **Recommended:** one RFC 20 pull request adding `func (c *Conn) Local() netip.Addr // the
+  - (a) **Recommended:** the next RFC 20 pull request, not opened yet, adding `func (c *Conn) Local() netip.Addr // the
     address the client reached, unmapped: a callback leaves from it` to §4.7's `Conn` list, and to
     §3.1's datagram bullet that each datagram is a `Conn` of one record replied to from its
-    destination address; joined to E3's Q2 pull request (`Conn.Remote`) if that is still open.
+    destination address. E3's `Conn.Remote` merged in #6239, so it does not wait for it.
   - (b) `core` sets the local address on `r.Call` or a field of `Request`; nothing in RFC 17's `Call`
     names it, so it would be a second change to RFC 17.
 - **Q3. NLM's cells for the rows RFC 21 §11.5 leaves without one** (D4). This document's pull request
@@ -1319,9 +1319,9 @@ Gaps and assumptions, not questions:
   the plan's §3.3 blockers table and §3.1 graph have no E3, E7 or E10 edge into E11 and no E11 edge
   into E13. They go with the plan's next edit, with E8's.
 - Which pull request carries which RFC amendment, once answered: Q2's `Conn.Local` and datagram
-  sentence join the programme's one RFC 20 pull request, with D14's sentence for §4.8's row and §10's
-  series for a dropped datagram by reason (queue, pool, size), which rule 3 needs, which E3's Q2 opens for `Conn.Remote` and
-  which also carries E8's `Deps.Server`, `Invocation.Bound` and `Conn.SetSession`; Q1's RFC 17 §3.2
+  sentence join the next RFC 20 pull request, not opened yet, with D14's sentence for §4.8's row and §10's
+  series for a dropped datagram by reason (queue, pool, size), which rule 3 needs, and which also
+  carries E8's `Conn.SetSession` and `Invocation.Bound` returning an error (E8's `Deps.Server` merged in #6637); Q1's RFC 17 §3.2
   `Revocation.State` goes in batch two's one RFC 17 pull request, with RFC 14 §11.1's `Revocation`, with E9's D1, E10's Q1 and E12's
   D1, and T11.8's service half waits for it; Q3's cells in RFC 21 §11.5 and Q5's removal in RFC 21
   §6.2 and §11.4 go in batch two's one RFC 21 pull request, opened with E8's document pull request.

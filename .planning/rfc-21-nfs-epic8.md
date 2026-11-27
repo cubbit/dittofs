@@ -430,8 +430,7 @@ reclaims themselves and stale stateids (E9); the lease owner and `Reach.Sessions
   never a status alone. On success it marks the slot's next sequence, which `Store` commits with
   the caller's key and, under `sa_cachethis`, the reply: the slot advances whether or not the reply
   is kept (R73). `core` calls `Store` for a `COMPOUND` only when a member that ran has a `Cacheable`
-  row (E3's D5, R26 and Q5, the condition RFC 20 §4.7's amendment in E3's Q2's pull request
-  carries), and the `COMPOUND` row is
+  row (E3's D5, R26 and Q5, the condition RFC 20 §4.7 now carries, merged in #6239), and the `COMPOUND` row is
   not `Cacheable`, so the `SEQUENCE` row is: every compound whose `SEQUENCE` ran reaches `Store`,
   whatever its later members answer, since E3 counts a member that ran, not the compound's last
   status, and so a `CREATE` stored before a later delay is still stored there too. `Store` commits
@@ -1445,7 +1444,7 @@ Gaps and assumptions, not questions:
   for a retransmission from another user (R69, T8.5) and §18.37.3's `DESTROY_SESSION` last in its
   own session's compound (R70, T8.9), none of which RFC 21 names.
 - **The slot's commit rides on E3's per-member `Store` condition** (its D5, R26 and Q5, carried
-  by RFC 20 §4.7's amendment in E3's Q2's pull request): with the `SEQUENCE` row `Cacheable`, it needs
+  by RFC 20 §4.7's text, merged in #6239): with the `SEQUENCE` row `Cacheable`, it needs
   no further `core` change or RFC text. Were that amendment to judge a `COMPOUND` by its last
   status instead, a compound whose later member answered `NFS4ERR_DELAY` would skip `Store` and
   break R73, so the amendment's text keeps "a member that ran".
@@ -1488,10 +1487,9 @@ Gaps and assumptions, not questions:
   own, D13), is exported by E9's T9.7.
 - **E11's Q5, `priv`.** E11 asks whether RFC 21 drops `priv` from §6.2 and §11.4. T8.2 keeps the
   field as RFC 21 has it; if the answer drops it, T8.2 drops it before any record is written.
-- **Which pull request carries which RFC amendment.** Q1's `Deps.Server`, Q2's `Invocation.Bound`,
-  and Q3's `Conn.SetSession` go in the programme's one RFC 20 pull request, which E3's Q2 opens
-  for `Conn.Remote` and E11's Q2 joins with `Conn.Local`; if that one has merged, this epic's
-  document pull request opens the next and later epics join it. Q4's `Clients.Owns` goes in an
+- **Which pull request carries which RFC amendment.** Q1's `Deps.Server` merged in #6637 and E3's `Conn.Remote` in #6239. Q2's `Invocation.Bound` returning an error and Q3's `Conn.SetSession`
+  go in the next RFC 20 pull request, not opened yet, which E11's Q2 joins with `Conn.Local` and
+  later epics join. Q4's `Clients.Owns` goes in an
   RFC 17 pull request (with RFC 14's under (b)); Q5's RFC 21 §3.3 sentence, Q6's RFC 24 §4.5 one,
   the §13 row and the §3.5 gaps above, and §14's rows for §1.2's two counters, go in batch two's
   one RFC 21 pull request (RFC 24's

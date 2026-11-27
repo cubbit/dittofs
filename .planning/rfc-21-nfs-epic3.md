@@ -382,7 +382,7 @@ row (E8); RFC 20 §4.4's `gss` package, but for D1's reading of it (Q1).
   table, and one that ends with no reply (a drain row) withdraw the request, the reader reads on in
   plaintext, and no handshake starts (R44). The request is a request until then: `Decode` has judged
   nothing but the header's shape. This changes when
-  `StartTLS` is called, so RFC 20 §5.5's sentence is amended with `Remote` (Q2). The reply's verifier
+  `StartTLS` is called, so RFC 20 §5.5's sentence is amended with `Remote` (Q2, merged in #6239). The reply's verifier
   is `AUTH_NONE` with the body `STARTTLS` (RFC 9289 §4.1, from memory), which the probe's `Encode`
   writes itself after `wire.AppendAccepted`'s header, leaving that function's callers as they are.
   `AUTH_TLS` on any other procedure, under `mode: off`, or after the upgrade stays `AUTH_BADCRED`, as
@@ -953,7 +953,7 @@ written in place above.
   `WRITE` is `Cacheable`.
   - (a) **Chosen:** the row unmarked, and `core`'s compound runner storing a reply when a member
     that ran has a `Cacheable` row; one condition in `compound.go`, with RFC 20 §4.7's
-    `if op.Cacheable` sentence amended in Q2's pull request, and each NFSv4.0 member's column set by
+    `if op.Cacheable` sentence amended in #6239, and each NFSv4.0 member's column set by
     the epic that adds it (E5, E9). knfsd stores no NFSv4.0 compound in its cache at all
     (`NFSPROC4_COMPOUND` is `RC_NOCACHE` in `fs/nfsd/nfs4proc.c`) and relies on the open-owner
     seqid replay instead, so storing only compounds with a non-idempotent member is the closer of
@@ -973,10 +973,10 @@ written in place above.
     an NFSv4.0 `COMPOUND` the connection is closed instead, as D5 does for `ErrDelay`, since a v4.0
     client resends only on a new connection (RFC 7530 §3.1.1). `ReplayCache` gains a call
     `core` makes when a looked-up call ends unstored (a refusal at route, no reply, an ended
-    context), amended into RFC 20 §4.7 in Q2's pull request; about 0.75 man-days in T3.3, plus
+    context), amended into RFC 20 §4.7 in #6239 (`ReplayCache.Drop`); about 0.75 man-days in T3.3, plus
     `core`'s change. knfsd drops a retransmission it finds in progress (`RC_INPROG` answers `RC_DROPIT` in `fs/nfsd/nfscache.c`).
   - (b) R23 narrowed as written: the in-progress case runs again, under D5's `decision:` marker, and
-    RFC 21 §11.2 amended to say so in Q2's pull request.
+    RFC 21 §11.2 would be amended to say so, were this taken.
 
 Gaps, not questions:
 

@@ -690,8 +690,8 @@ test/pcap-corpus/
   over one implementation taking the direction (D11): the keys `gokrb5` derives once per context,
   HMAC-SHA1-96 written in place over the standard library, `MIC` lifted from `develop`'s
   `rpc/gss/verifier.go` and `VerifyMIC` from `integrity.go`'s `UnwrapIntegrity`, so `gsstest`'s
-  Kerberos initiator gains its `MIC` and `VerifyMIC`; the RFC 20 §4.4 pull request for `VerifyMIC`
-  (Q3); `FuzzMICToken`, checking a parsed token against a parser written in the test from RFC 4121
+  Kerberos initiator gains its `MIC` and `VerifyMIC`; `VerifyMIC`, already in RFC 20 §4.4
+  (Q3, #6239); `FuzzMICToken`, checking a parsed token against a parser written in the test from RFC 4121
   §4.2.6.1's layout and re-encoding its header and checksum to the same bytes. Consumed by T13.3
   (the keys and the direction), T13.5 (the header and reply verifiers), T13.6 (`krb5i`), and the
   RFC 22 implementation plan's epic 4 (SPNEGO's mechanism-list MIC over Kerberos).
@@ -1067,7 +1067,7 @@ before track B reaches this epic.
 | --- | --- | --- | --- | --- |
 | 1 | T13.1, T13.2 | 3.5 | — | the reference capture and the codec its vectors anchor |
 | 2 | T13.9, T13.10, T13.11 | 5.25 | PR 1 | `gss`'s first commit: the Kerberos mechanism and its initiator, `Exchanges` and `Identity`, reviewed by `gss`'s owners for both adapters |
-| 3 | T13.12, T13.3 | 3.75 | PR 2, the RFC 20 pull request (Q3) | RFC 4121's per-message tokens, with the RFC 20 §4.4 change |
+| 3 | T13.12, T13.3 | 3.75 | PR 2 | RFC 4121's per-message tokens; RFC 20 §4.4's change is already in (#6239) |
 | 4 | T13.4, T13.5 | 8.25 | PR 1, PR 3 | the table and the stage that drives it: Kerberos at `krb5` end to end |
 | 5 | T13.6, T13.7 | 5.75 | PR 4 | integrity and privacy, and the rows that need them, with the RFC 21 §11.5 change |
 | 6 | T13.8 | 1.5 | PR 4, S5 | RFC 18's rows on the composed node |
@@ -1122,8 +1122,7 @@ Questions pending the user's answer. Each recommended option is written in place
   client's MIC tokens to check (RFC 2203 §5.3), and RFC 20 names no field for it. `develop`'s
   `rpc/gss/integrity.go` already checks one (`UnwrapIntegrity`).
   - (a) **Recommended:** `VerifyMIC func(msg, tok []byte) error` beside `MIC`, lifted from
-    `UnwrapIntegrity` with the rest of the per-message code in T13.12, in one RFC 20 §4.4 pull
-    request with its comment "RFC 4121: a peer's MIC token, the `RPCSEC_GSS` verifier and `krb5i`";
+    `UnwrapIntegrity` with the rest of the per-message code in T13.12, in RFC 20 §4.4 (merged in #6239) with its comment "RFC 4121: a peer's MIC token, the `RPCSEC_GSS` verifier and `krb5i`";
     SPNEGO's check of the mechanism-list MIC over Kerberos, in the RFC 22 implementation plan's
     epic 4, can call it too.
   - (b) `Unwrap` checks MIC tokens too, telling them from Wrap tokens by the token ID: no new field,
@@ -1171,12 +1170,11 @@ Gaps, not questions:
   breakdown pull requests merge.
 - E3 caches no `RPCSEC_GSS` call and leaves its key here (its R46); T13.5 adds the GSS arm and
   replaces E3's T3.3 case that a GSS call is never cached (D7).
-- Which pull request carries which RFC change: Q3's RFC 20 §4.4 `VerifyMIC`, with `Wrap` and
-  `Unwrap` on `gss.Context` and `gss.Identity`'s shape, is in the programme's one RFC 20 pull
-  request, opened by E3's Q2; PR 3 waits for it.
+- Which pull request carries which RFC change: Q3's RFC 20 §4.4 `VerifyMIC` merged in #6239;
+  `Wrap` and `Unwrap` on `gss.Context` are in RFC 20 already; PR 3 waits for no RFC change.
   Q1's RFC 21 §11.5 row goes in batch two's one RFC 21 pull request, opened with E8's document pull
   request, beside E8's, E11's and E12's §11.5 cells. Q2's RFC 18 §3.8 sentence goes in batch
   two's one RFC 18 pull request on develop, if agreed. D1 reads RFC 20 §4.7's stage-table row "GSS where the
   flavour is `RPCSEC_GSS`, else nil" per call, since the flavour is a call's and the stages a
   connection's; the row's rewording, "GSS on every connection, passing a call of another flavour
-  unchanged", joins the same RFC 20 pull request as Q3.
+  unchanged", is already RFC 20 §4.7's text.
