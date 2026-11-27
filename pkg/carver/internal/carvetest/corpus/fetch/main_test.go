@@ -37,9 +37,7 @@ func TestRunFetchesIntoTheDirectory(t *testing.T) {
 
 // run refuses an empty directory argument before it fetches anything.
 func TestRunRefusesNoDirectory(t *testing.T) {
-	e := corpus.Entry{Kind: "media", Name: "film.mp4", URL: "http://127.0.0.1:0/film.mp4"}
-
-	if err := run(t.Context(), "", []corpus.Entry{e}); err == nil || err.Error() != "usage: fetch <dir>" {
+	if err := run(t.Context(), "", nil); err == nil || err.Error() != "usage: fetch <dir>" {
 		t.Errorf("run with no directory: %v, want the usage error", err)
 	}
 }

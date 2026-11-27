@@ -12,7 +12,8 @@ import (
 // package; the settings value nothing; carve and the fold the root, with the
 // settings value it brings, and the entity package with the libraries it
 // imports, BLAKE3 among them. Never another component's implementation, never
-// v1's carver. A test may reach besides the package it tests and the
+// v1's carver. The corpus and its fetch command the standard library alone.
+// A test may reach besides the package it tests and the
 // architecture tests' support. A row is an upper bound: a
 // package that reaches less passes.
 var table = []archtest.Row{
@@ -20,8 +21,7 @@ var table = []archtest.Row{
 	{Pkg: "pkg/carver/internal/params", Tests: archtest.Support},
 	{Pkg: "pkg/carver/carve", Reach: []string{"pkg/carver", "pkg/carver/internal/params", "pkg/metadata/entity"}, Libs: archtest.EntityLibs(), Tests: archtest.Support},
 	{Pkg: "pkg/carver/assembler", Reach: []string{"pkg/carver", "pkg/carver/internal/params", "pkg/metadata/entity"}, Libs: archtest.EntityLibs(), Tests: archtest.Support},
-	// The corpus and its fetch command reach the standard library alone, and
-	// no other row admits them.
+	// No other row admits the corpus or its fetch command.
 	{Pkg: "pkg/carver/internal/carvetest/corpus"},
 	{Pkg: "pkg/carver/internal/carvetest/corpus/fetch", Reach: []string{"pkg/carver/internal/carvetest/corpus"}},
 }

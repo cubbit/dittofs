@@ -17,29 +17,25 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-// EnvDir names the environment variable holding the corpus directory.
-const EnvDir = "DITTOFS_CORPUS_DIR"
+// envDir names the environment variable holding the corpus directory.
+const envDir = "DITTOFS_CORPUS_DIR"
 
-// unsetMessage is Dir's skip when EnvDir is unset.
-const unsetMessage = EnvDir + " is not set: fill a directory with " +
-	"go run ./pkg/carver/internal/carvetest/corpus/fetch <dir> and set " + EnvDir + " to it"
-
-// Dir returns DITTOFS_CORPUS_DIR, whose files sit at <dir>/<kind>/<name>, the
-// kinds source, vm and media. It skips tb when the variable is unset, naming
-// it. A file missing from a set directory fails the test that opens it.
+// Dir returns DITTOFS_CORPUS_DIR, skipping tb, naming the variable, when it is
+// unset or empty. A file missing from a set directory fails the test that
+// opens it.
 func Dir(tb testing.TB) string {
 	tb.Helper()
 
-	dir := os.Getenv(EnvDir)
+	dir := os.Getenv(envDir)
 	if dir == "" {
-		tb.Skip(unsetMessage)
+		tb.Skip(envDir + " is not set: fill a directory with " +
+			"go run ./pkg/carver/internal/carvetest/corpus/fetch <dir> and set " + envDir + " to it")
 	}
 
 	return dir
@@ -49,7 +45,7 @@ func Dir(tb testing.TB) string {
 type Entry struct {
 	Kind, Name, URL  string
 	Download, Stored [32]byte // SHA-256 of what is downloaded and of the file stored
-	Repetitive       bool     // has repetitive regions, so K5's at-Max target skips it
+	Repetitive       bool     // has repetitive regions, such as zero runs
 }
 
 // Entries is the pinned corpus. An entry whose URL ends in .gz is stored
@@ -109,6 +105,10 @@ func Fetch(ctx context.Context, client *http.Client, dir string, entries []Entry
 }
 
 func fetch(ctx context.Context, client *http.Client, dir string, e Entry) error {
+	if !plainName(e.Kind) || !plainName(e.Name) {
+		return errors.New("kind and name must each be one path element")
+	}
+
 	kindDir := filepath.Join(dir, e.Kind)
 	path := filepath.Join(kindDir, e.Name)
 
@@ -127,7 +127,9 @@ func fetch(ctx context.Context, client *http.Client, dir string, e Entry) error 
 		return err
 	}
 
-	tmp, err := os.CreateTemp(kindDir, "."+e.Name+".*")
+	// One temporary name per entry, so a fetch killed part-way leaves at most
+	// one partial file, which the next fetch truncates.
+	tmp, err := os.OpenFile(filepath.Join(kindDir, "."+e.Name+".part"), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
 	}
@@ -140,11 +142,6 @@ func fetch(ctx context.Context, client *http.Client, dir string, e Entry) error 
 	}
 
 	if err := tmp.Close(); err != nil {
-		return err
-	}
-
-	// CreateTemp leaves the file private; the corpus is read by other users' runs too.
-	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
 		return err
 	}
 
@@ -177,7 +174,7 @@ func download(ctx context.Context, client *http.Client, e Entry, f *os.File) err
 	body := io.TeeReader(resp.Body, downloaded)
 
 	src := body
-	if u, err := url.Parse(e.URL); err == nil && strings.HasSuffix(u.Path, ".gz") {
+	if strings.HasSuffix(e.URL, ".gz") {
 		zr, err := gzip.NewReader(body)
 		if err != nil {
 			return err
@@ -187,11 +184,6 @@ func download(ctx context.Context, client *http.Client, e Entry, f *os.File) err
 	}
 
 	if _, err := io.Copy(io.MultiWriter(f, stored), src); err != nil {
-		return err
-	}
-
-	// What follows the gzip stream is downloaded bytes too.
-	if _, err := io.Copy(io.Discard, body); err != nil {
 		return err
 	}
 
@@ -221,4 +213,9 @@ func hashFile(path string) ([32]byte, error) {
 	}
 
 	return [32]byte(h.Sum(nil)), nil
+}
+
+// plainName reports whether s is one path element inside its directory.
+func plainName(s string) bool {
+	return filepath.IsLocal(s) && filepath.Base(s) == s
 }

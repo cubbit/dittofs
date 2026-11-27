@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"net/http"
@@ -41,13 +42,15 @@ func gzipped(t *testing.T, b []byte) []byte {
 	return buf.Bytes()
 }
 
-// serve serves each file at its path on 127.0.0.1:0. A path under
-// /truncated/ announces its full length and sends half of it.
+// serve serves each file at its path on 127.0.0.1:0. The same path under
+// /truncated announces the file's full length and sends half of it.
 func serve(t *testing.T, files map[string][]byte) *httptest.Server {
 	t.Helper()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b, ok := files[r.URL.Path]
+		path, truncated := strings.CutPrefix(r.URL.Path, "/truncated")
+
+		b, ok := files[path]
 		if !ok {
 			http.NotFound(w, r)
 			return
@@ -55,7 +58,7 @@ func serve(t *testing.T, files map[string][]byte) *httptest.Server {
 
 		w.Header().Set("Content-Length", strconv.Itoa(len(b)))
 
-		if strings.HasPrefix(r.URL.Path, "/truncated/") {
+		if truncated {
 			b = b[:len(b)/2]
 		}
 
@@ -70,7 +73,7 @@ func serve(t *testing.T, files map[string][]byte) *httptest.Server {
 // entries pinning them.
 type corpusFixture struct {
 	srv       *httptest.Server
-	raw, gz   []byte
+	raw       []byte
 	film, src Entry
 }
 
@@ -80,14 +83,12 @@ func newFixture(t *testing.T) corpusFixture {
 	raw := content()
 	gz := gzipped(t, raw)
 	srv := serve(t, map[string][]byte{
-		"/film.mp4":             raw,
-		"/src.tar.gz":           gz,
-		"/truncated/film.mp4":   raw,
-		"/truncated/src.tar.gz": gz,
+		"/film.mp4":   raw,
+		"/src.tar.gz": gz,
 	})
 
 	return corpusFixture{
-		srv: srv, raw: raw, gz: gz,
+		srv: srv, raw: raw,
 		film: Entry{Kind: "media", Name: "film.mp4", URL: srv.URL + "/film.mp4", Download: sha256.Sum256(raw), Stored: sha256.Sum256(raw)},
 		src:  Entry{Kind: "source", Name: "src.tar", URL: srv.URL + "/src.tar.gz", Download: sha256.Sum256(gz), Stored: sha256.Sum256(raw)},
 	}
@@ -165,7 +166,8 @@ func TestFetchRefuses(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			bad := tc.entry(f.film, f.src)
-			good := Entry{Kind: "vm", Name: "image.raw", URL: f.film.URL, Download: f.film.Download, Stored: f.film.Stored}
+			good := f.film
+			good.Kind, good.Name = "vm", "image.raw"
 
 			if tc.old {
 				if err := os.MkdirAll(filepath.Join(dir, bad.Kind), 0o755); err != nil {
@@ -206,8 +208,8 @@ func TestFetchCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	if err := Fetch(ctx, http.DefaultClient, dir, []Entry{f.film}); err == nil {
-		t.Fatal("fetch under a cancelled context succeeded, want its error")
+	if err := Fetch(ctx, http.DefaultClient, dir, []Entry{f.film}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("fetch under a cancelled context: %v, want context.Canceled", err)
 	}
 
 	if _, err := os.Stat(filepath.Join(dir, f.film.Kind, f.film.Name)); !os.IsNotExist(err) {
@@ -231,7 +233,11 @@ func (r *skipRecorder) Skip(args ...any) {
 // Dir skips, naming the variable, when it is unset, and returns it when set.
 // The name is spelled out: other readers of the layout find the corpus by it.
 func TestDir(t *testing.T) {
-	t.Setenv("DITTOFS_CORPUS_DIR", "")
+	t.Setenv("DITTOFS_CORPUS_DIR", "") // restores the variable at cleanup
+
+	if err := os.Unsetenv("DITTOFS_CORPUS_DIR"); err != nil {
+		t.Fatal(err)
+	}
 
 	rec := &skipRecorder{}
 	reached := false
@@ -254,14 +260,46 @@ func TestDir(t *testing.T) {
 	}
 }
 
-// The pinned corpus is one entry of each kind, source, vm and media.
+// The pinned corpus is one entry of each kind, source, vm and media; only the
+// VM image, with its zero runs, is repetitive; and a .gz is stored
+// decompressed, so its two hashes differ.
 func TestEntries(t *testing.T) {
 	kinds := map[string]bool{}
+
 	for _, e := range Entries {
 		kinds[e.Kind] = true
+
+		if e.Repetitive != (e.Kind == "vm") {
+			t.Errorf("entry %s/%s: repetitive %v, want %v", e.Kind, e.Name, e.Repetitive, e.Kind == "vm")
+		}
+
+		if gz := strings.HasSuffix(e.URL, ".gz"); gz == (e.Download == e.Stored) {
+			t.Errorf("entry %s/%s from %s: download and stored hashes equal %v, want %v", e.Kind, e.Name, e.URL, e.Download == e.Stored, !gz)
+		}
 	}
 
 	if len(Entries) != 3 || !kinds["source"] || !kinds["vm"] || !kinds["media"] {
 		t.Errorf("pinned kinds %v over %d entries, want one each of source, vm and media", kinds, len(Entries))
+	}
+}
+
+// An entry whose kind or name is not one path element is refused before
+// anything under dir is touched.
+func TestFetchRefusesAPathName(t *testing.T) {
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "victim")
+
+	if err := os.WriteFile(victim, []byte("kept"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, e := range []Entry{{Kind: "media", Name: "../victim"}, {Kind: "..", Name: "victim"}, {Kind: "media/x", Name: "film"}, {Kind: "media", Name: ""}} {
+		if err := Fetch(t.Context(), http.DefaultClient, dir, []Entry{e}); err == nil || !strings.Contains(err.Error(), "one path element") {
+			t.Errorf("fetch of kind %q name %q: %v, want the path refusal", e.Kind, e.Name, err)
+		}
+	}
+
+	if b, err := os.ReadFile(victim); err != nil || string(b) != "kept" {
+		t.Errorf("the file outside the kind directory after the refusals: %q, %v; want it kept", b, err)
 	}
 }
