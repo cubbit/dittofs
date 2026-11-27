@@ -379,18 +379,21 @@ git fetch origin && git switch -c fix/my-change origin/develop
 gh pr create --base develop
 ```
 
-`main` holds releases only. Each release fast-forwards `main` to `develop` and tags it there,
-so tags live on `main` and `main` is always an ancestor of `develop`:
+`main` holds final releases only. Each release fast-forwards `main` to `develop` and tags it
+there, so final tags live on `main` and `main` is always an ancestor of `develop`. A release
+candidate is tagged on `develop` alone and leaves `main` where it is:
 
 ```bash
 scripts/release.sh 0.38.0          # on an up-to-date develop
 ```
 
-A hotfix of a released line is made on `main`, not through `develop`. Cut `hotfix/X.Y.Z` from
-`main`'s latest tag, add the fix and its `## [X.Y.Z]` changelog section, push the branch, and
+A hotfix patches the release `main` holds, the newest final release, and is made on `main`, not
+through `develop`. An older line, such as v0.37 once a later release is out, is not supported:
+it would need a maintenance branch (`release/X.Y`). Cut `hotfix/X.Y.Z` from `main`'s tag, add the fix and its `## [X.Y.Z]` changelog section, push the branch, and
 run `scripts/hotfix.sh`. It tags the release, fast-forwards `main`, and merges `main` back into
 `develop` so the next `release.sh` finds `main` an ancestor. Pass `--ours` when the fix does not
-apply to `develop`'s code; the merge is then recorded and `develop`'s tree stays as it is.
+apply to `develop`'s code; the merge is then recorded, `develop`'s tree stays as it is, and only
+the hotfix's CHANGELOG.md section is added to it.
 
 ```bash
 git switch -c hotfix/0.37.1 v0.37.0
@@ -399,10 +402,10 @@ git push -u origin hotfix/0.37.1
 scripts/hotfix.sh --ours 0.37.1
 ```
 
-"Latest" goes only to the highest version: Docker `:latest`, the Homebrew casks, the Scoop
-manifests, the install script's `latest` file and GitHub's latest release move only when the tag
-is the highest non-rc version in the repository. A hotfix of an older line publishes its own
-versioned binaries, images and release, and leaves "latest" where it is.
+"Latest" goes only to the highest version, as a safety net against a tag pushed out of order:
+Docker `:latest`, the Homebrew casks, the Scoop manifests, the install script's `latest` file
+and GitHub's latest release move only when the tag is the highest non-rc version in the
+repository. Releases run one at a time, so two tags pushed together cannot both claim it.
 
 Long-lived feature branches are avoided. If one is ever needed, it goes through the same
 rulesets as `develop`. `feat/storage-v2`, the v2 line, was merged into `develop` on 2026-11-27

@@ -446,12 +446,13 @@ in the pull request that finishes the work, never by an agent unasked. A deferra
 ## Releases
 
 **Branches.** `develop` is the one development branch and the default: every PR targets it
-and merges through the queue with squash. `main` holds releases only, each a fast-forward of
-`develop`, and **tags live on `main`**, so `main` stays a strict ancestor of `develop`.
+and merges through the queue with squash. `main` holds final releases only, each a fast-forward of
+`develop`, and **final tags live on `main`** (an rc is tagged on `develop` alone), so `main` stays a strict ancestor of `develop`.
 v0.18.0 / v0.19.0 broke this by tagging develop-only and never advancing `main` (it stuck at
-v0.17.0 for 152 commits) — don't repeat that. A hotfix of a released line goes through
-`scripts/hotfix.sh` (below). Docker `:latest`, the Homebrew and Scoop manifests, the S3
-`latest` file and GitHub's "latest" release go only to the highest version. The full
+v0.17.0 for 152 commits) — don't repeat that. A hotfix of the newest release goes through
+`scripts/hotfix.sh` (below); an older line is not supported, and would need a maintenance
+branch (`release/X.Y`). As a safety net, Docker `:latest`, the Homebrew and Scoop manifests,
+the S3 `latest` file and GitHub's "latest" release go only to the highest version. The full
 strategy, with a command per step, is in `docs/internals/contributing.md`
 ("Branches and releases").
 
@@ -471,13 +472,16 @@ Steps (X.Y.Z):
    commit and signed tag, and asks before pushing develop, **fast-forwarding `main`**
    (the step that used to be forgotten) and pushing the tag. The tag push triggers
    `release.yml`, which moves `:latest` and the other "latest" pointers only when the
-   tag is the highest non-rc version.
+   tag is the highest non-rc version. For an rc, release.sh pushes `develop` and the tag
+   only: `main` never holds rc code.
 
-Hotfix (X.Y.Z, a patch of main's latest tag, on a branch `hotfix/X.Y.Z` cut from that tag,
-with its changelog section): `scripts/hotfix.sh X.Y.Z` bumps `flake.nix`, makes the signed
+Hotfix (X.Y.Z, the next patch of the newest final release, which `main` must sit on, on a
+branch `hotfix/X.Y.Z` cut from that tag, with its changelog section, pushed):
+`scripts/hotfix.sh [--ours] X.Y.Z` bumps `flake.nix`, makes the signed
 release commit and tag, asks, fast-forwards `main` and pushes the tag, then merges `main` back
 into `develop` so release.sh's ancestor check keeps holding. `--ours` records that merge with
-`-s ours` when the fix does not apply to develop's code; without it the merge stops on a
+`-s ours` when the fix does not apply to develop's code, and still adds the hotfix's
+CHANGELOG.md section to develop; without it the merge stops on a
 conflict and the script prints the commands that finish it.
 
 Notes:
