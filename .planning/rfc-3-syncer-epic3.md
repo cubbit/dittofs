@@ -260,8 +260,8 @@ already state with their two exceptions.
     queue `Remove` or `CloseFlow` empties is unlinked from its slot in O(1), and its deficit is
     reset as R17 says, which forgives its debt. A `Done` that shrinks a parked flow's debt, a
     `Done(e, 0)` from a cancelled caller among them, moves it in O(1) to the slot its remaining
-    debt needs, net of the quanta its rounds have given since it parked, or onto the ring if none
-    remains; so a flow is in debt exactly while it is parked,
+    debt needs, net of the quanta given since it parked, those of the class rounds its store
+    sat out included, or onto the ring if none remains; so a flow is in debt exactly while it is parked,
     and the model reads it so.
   - **A parked flow is not work waiting:** it binds no cap and is not "waiting" in the fair share.
     A store whose flows of a class are all parked, held by E4 or empty leaves that class's store
@@ -270,8 +270,7 @@ already state with their two exceptions.
     debt is not capped, and no worker idles for a flow that may not run (R26).
   - A store of a class is in the class's store ring, in one slot of the class's store wheel, or in
     neither. Only a store that leaves the ring because its flows are all parked, held or empty,
-    with at least one parked, sits out in the store wheel. A store out of the ring for its cap or
-    its per-store bound does not: it gets no store turn, so its own ring and flow wheel do not turn
+    with at least one parked, sits out in the store wheel. A store out of the ring for its cap or its per-store bound while it has queued work does not: it gets no store turn, so its own ring and flow wheel do not turn
     and its flows are credited nothing for those rounds.
   - Rounds are counted by a round number per class at the store level and per store and class at the
     flow level, each read lazily, and beside each a running sum of the quanta those rounds gave, a
@@ -292,13 +291,13 @@ already state with their two exceptions.
     rejoins the store ring as at a due rejoin: new work on a flow not in debt, E4 releasing a held
     flow's head, or a `Done` that clears a parked flow's debt. When a `Done` moves a parked flow to
     an earlier slot, the store moves to the matching slot of the store wheel, counted in class rounds
-    since it sat out, only if that is earlier than its own; if that round has passed, the store
-    rejoins the ring at once. When its flow
+    since it sat out, only if that is earlier than its own; if that round has passed, the store rejoins the ring at once and the moved flow goes onto its
+    ring. When its flow
     wheel empties, as when `Remove` or `CloseFlow` empties its last parked flow, the store is
     unlinked and leaves the store wheel. A store out of the ring for its cap or bound whose last
     queued flow `Remove` or `CloseFlow` empties, with a flow still parked, moves to the store wheel
-    at once, as if it had left the ring for that reason; if its slot comes due while it still holds
-    its cap or bound, it rejoins only when a transfer ends. Each of these is O(1). E3 has no held flow; E4's T4.5,
+    at once, as if it had left the ring for that reason; if its slot comes due while it still holds its cap or bound, it rejoins as a capped store does
+    (D3). Each of these is O(1). E3 has no held flow; E4's T4.5,
     which adds `Release`, adds the case of a store sitting out behind one flow's debt whose held
     flow is released: it is served within one round. `RemoveStore` therefore finds the store, whose
     flows are all closed, off both wheels, and asserts it.
@@ -309,8 +308,10 @@ already state with their two exceptions.
     still needed, one more O(1) step.
   - For class order, a class whose store wheel is not empty has work waiting. When its store ring is
     empty, its store wheel jumps to its next occupied slot through the mask before a lower class is
-    served. Each store-wheel slot keeps the OR of its stores' bucket bits, set at park and cleared at
-    unlink once no other store of the slot shares the bit, by a count per bit as D4 keeps; the jump
+    served. Each store-wheel slot keeps the OR of its stores' bucket bits, set at park and cleared at unlink once no other store of the slot shares the bit, by a count per bit
+    as D4 keeps; a slot's bits and counts are zeroed when its list is spliced, and a store records
+    the bit it parked with, which unlink clears and an earlier move carries to its new slot, so a
+    `SetRate` meanwhile leaves them true; the jump
     takes its quantum from the class mask OR that slot's bits, in O(1), and the class's round number
     and quantum sum move on by the jump at that quantum, so a lone flow in debt is credited the
     rounds the jump skipped rather than nothing. Each released store still enters its bucket once,
@@ -672,7 +673,7 @@ test/suites.yaml           T3.8  FuzzSched in the fuzz suite's commands
   - A store whose flows of a class are all parked, held or empty leaves the store ring, sits out
     in the class's store wheel and rejoins at the round its next slot is due, credited the quanta
     those rounds gave; it leaves the store wheel early when a flow of it gets work and is not in
-    debt, or when its last parked flow is removed or closed. A store out of the ring for its cap
+    debt, or when its last parked flow is removed or closed. A store out of the ring for its cap while it has queued work
     never sits out.
   - A `Done` that shrinks a parked flow's debt moves it to the slot its remaining debt needs, net
     of the quanta given since it parked; its sitting-out store moves only to an earlier slot, or
@@ -727,8 +728,14 @@ test/suites.yaml           T3.8  FuzzSched in the fuzz suite's commands
   round 20 on one sitting-out store, then a `Done` moving B to round 10: A is still dispatched at
   round 5 (catches a store moved to a later slot, R22). 1, 10, 100 and 1,000 stores, each with one
   flow parked to the same round, store ring empty: the operations of the `Next` that jumps are equal
-  (catches a jump that walks the slot, R20). A capped store whose last queued flow is removed, with a flow still parked: it is in the
-  store wheel at once. D4's
+  (catches a jump that walks the slot, R20). A capped store whose last queued flow is removed, with a flow still parked: it sits out in the
+  store wheel at once, and at its slot's round, still capped, it rejoins only as a capped store does
+  (catches a capped store spliced past its cap, R26). A capped store whose slot comes due, then the
+  other stores empty: it is dispatched with no `Done` (catches a capped store that waits for its own
+  transfer to end while workers idle, R26). Store A's flow parked about 10 rounds out while store B
+  keeps the ring busy; after 6 rounds a `Done` moves it to 3 rounds out: it is dispatched within one
+  round (catches a moved flow left behind its wheel's cursor, and a move not net of the quanta
+  given, R22). D4's
   buckets: the quantum is at least the largest estimate and at most twice it, for estimates across
   every bucket and at exact powers of two, and after a store leaves a bucket another still holds
   (catches a bit cleared too early, R19).
