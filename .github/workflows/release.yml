@@ -8,11 +8,12 @@ on:
 permissions: {}
 
 jobs:
-  # decision: "latest" (Docker :latest and the major tag, the Homebrew casks,
+  # decision: "latest" (Docker :latest, the Homebrew casks,
   # the Scoop manifests, the S3 latest file and install script, GitHub's latest
   # release, the operator's :latest and the docs site's Latest) goes only to the
   # highest non-rc version tag in the repository, so a hotfix of an older line
-  # never takes it over. The versioned artifacts always publish.
+  # never takes it over. Docker's major tag goes to the highest version of its
+  # major. The versioned artifacts always publish.
   latest:
     name: Is this the latest version
     runs-on: ubuntu-latest
@@ -20,6 +21,7 @@ jobs:
       contents: read
     outputs:
       is_latest: ${{ steps.latest.outputs.is_latest }}
+      is_latest_major: ${{ steps.latest.outputs.is_latest_major }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
@@ -33,10 +35,14 @@ jobs:
           TAG="${GITHUB_REF#refs/tags/}"
           git fetch --force --tags
           TOP=$(git tag --list 'v*' --sort=-v:refname | grep -v -- - | head -n 1 || true)
-          IS_LATEST=false
+          MAJOR="${TAG#v}"; MAJOR="${MAJOR%%.*}"
+          TOP_MAJOR=$(git tag --list "v${MAJOR}.*" --sort=-v:refname | grep -v -- - | head -n 1 || true)
+          IS_LATEST=false IS_LATEST_MAJOR=false
           [ "$TAG" = "$TOP" ] && IS_LATEST=true
-          echo "$TAG; highest non-rc tag $TOP; latest: $IS_LATEST"
+          [ "$TAG" = "$TOP_MAJOR" ] && IS_LATEST_MAJOR=true
+          echo "$TAG; highest non-rc tag $TOP, of v$MAJOR $TOP_MAJOR; latest: $IS_LATEST, latest of its major: $IS_LATEST_MAJOR"
           echo "is_latest=$IS_LATEST" >> "$GITHUB_OUTPUT"
+          echo "is_latest_major=$IS_LATEST_MAJOR" >> "$GITHUB_OUTPUT"
 
   release:
     name: Create Release
@@ -50,6 +56,7 @@ jobs:
       S3_ENDPOINT: https://s3.cubbit.eu
       # Read by .goreleaser.yml's latest conditions and the S3 steps below.
       IS_LATEST: ${{ needs.latest.outputs.is_latest }}
+      IS_LATEST_MAJOR: ${{ needs.latest.outputs.is_latest_major }}
 
     steps:
       - name: Checkout code

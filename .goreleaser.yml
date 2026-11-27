@@ -184,14 +184,15 @@ dockers_v2:
       - dfs
     images:
       - "marmos91c/dittofs"
-    # decision: latest and the major tag move only when release.yml's IS_LATEST
-    # says this tag is the highest non-rc version, so a hotfix of an older line
-    # never takes them over. The minor tag stays: a hotfix is the newest patch
+    # decision: latest moves only when release.yml's IS_LATEST says this tag is
+    # the highest non-rc version, and the major tag only when IS_LATEST_MAJOR
+    # says it is the highest of its major, so a hotfix of an older line never
+    # takes over a newer one. The minor tag stays: a hotfix is the newest patch
     # of its minor. Empty tags are dropped.
     tags:
       - "{{ .Tag }}"
       - '{{ if eq (index .Env "IS_LATEST") "true" }}latest{{ end }}'
-      - '{{ if eq (index .Env "IS_LATEST") "true" }}v{{ .Major }}{{ end }}'
+      - '{{ if eq (index .Env "IS_LATEST_MAJOR") "true" }}v{{ .Major }}{{ end }}'
       - "{{ if not .Prerelease }}v{{ .Major }}.{{ .Minor }}{{ end }}"
     platforms:
       - linux/amd64
