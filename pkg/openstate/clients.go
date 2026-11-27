@@ -69,11 +69,12 @@ type Clients interface {
 	// Propose answers a protocol's first client call: it changes no state,
 	// and holds the proposal at this node until Connect confirms it, a later
 	// proposal for the name replaces it, or a lease period passes. A name a
-	// record holds under another owner is refused ErrClientInUse, and a
-	// proposal past this node's or its source's cap ErrDelay.
+	// record holds under another owner is refused ErrClientInUse, and so is
+	// one a protected record holds when c.Proved is not set; a proposal past this node's or its source's cap ErrDelay.
 	Propose(ctx context.Context, c Client, from netip.Addr) (Proposal, error)
 	// Connect makes a client current: a confirm of p, or with a nil p a
-	// client that confirms in one step. A new Boot under a known name is a
+	// client that confirms in one step; Propose's refusal holds here too, by
+	// c.Proved for a nil p. A new Boot under a known name is a
 	// reboot: the old ID ends as the new one appears, and a known name whose
 	// lease has lapsed ends its old ID first. The waiters the ended ID's
 	// release frees are served under each file's admission lock, which the
@@ -186,6 +187,7 @@ type pending struct {
 	Pending
 	source netip.Prefix
 	known  bool // ID was an existing record's when proposed
+	proved bool // the proposer proved the credential a Protect record stands on
 }
 
 func keyOf(rec entity.ClientRecord) nameKey { return nameKey{rec.Protocol, string(rec.Name)} }
@@ -230,6 +232,8 @@ func source(a netip.Addr) netip.Prefix {
 	return p
 }
 
+// Propose answers ErrClientInUse for a name another principal holds, and for a
+// name whose record is protected when c.Proved is false.
 func (v clients) Propose(ctx context.Context, c Client, from netip.Addr) (Proposal, error) {
 	t := v.t
 	if _, err := t.running(); err != nil {
@@ -260,7 +264,12 @@ func (v clients) Propose(ctx context.Context, c Client, from netip.Addr) (Propos
 	switch {
 	case err != nil:
 		return Proposal{}, err
-	case found && refuses(cur, rec.Owner):
+	case found && (refuses(cur, rec.Owner) || cur.Protect && !c.Proved):
+		// decision: the caller's proof is read here, from a flag the service
+		// sets, not from a by-name read of the stored record by the service
+		// before it proposes, which no service surface offers yet. Overturned
+		// when it does; the field and the refusal here go with the proof the
+		// adapter reads from the stored record then.
 		return Proposal{}, ErrClientInUse
 	case found && cur.Boot == rec.Boot:
 		p.ID, known = cur.ID, true
@@ -284,7 +293,7 @@ func (v clients) Propose(ctx context.Context, c Client, from netip.Addr) (Propos
 	}
 	t.sources[src]++
 	p.Expires = t.d.Clock.Elapsed() + leasePeriod
-	t.pending[key] = pending{p, src, known}
+	t.pending[key] = pending{p, src, known, c.Proved}
 	return Proposal{Client: p.ID, Confirm: p.Confirm}, nil
 }
 
@@ -301,7 +310,7 @@ func (v clients) Connect(ctx context.Context, c Client, p *Proposal) (entity.Cli
 	out := outbox{timer: true}
 	var gen uint64
 	t.cstep.Lock()
-	ended, err := t.connect(ctx, &rec, p, &out)
+	ended, err := t.connect(ctx, &rec, p, c.Proved, &out)
 	if err == nil && rec.Recovery == entity.RecoverReconnect {
 		// Listed under the client step, so a last Disconnect's release, which
 		// holds it, runs wholly before or after: a session set up while the
@@ -349,9 +358,11 @@ func (v clients) listNode(ctx context.Context, id entity.ClientID) (uint64, erro
 // connect makes rec current, under the client step, and returns the record a
 // reboot replaced or a lapsed lease ended, the latter on an error too; what
 // releasing its state raised goes to out.
-func (t *Table) connect(ctx context.Context, rec *entity.ClientRecord, p *Proposal, out *outbox) (*entity.ClientRecord, error) {
+func (t *Table) connect(ctx context.Context, rec *entity.ClientRecord, p *Proposal, proved bool, out *outbox) (*entity.ClientRecord, error) {
 	var id entity.ClientID
 	known := false
+	// with no proposal the caller's own proof stands: a Connect that finds a
+	// protected record is refused the name as Propose would
 	if p != nil {
 		key := keyOf(*rec)
 		t.cmu.Lock()
@@ -365,7 +376,7 @@ func (t *Table) connect(ctx context.Context, rec *entity.ClientRecord, p *Propos
 		if !ok {
 			return nil, ErrStaleClient
 		}
-		id, known, rec.Boot, rec.Adapter = pd.ID, pd.known, pd.Boot, pd.Adapter
+		id, known, proved, rec.Boot, rec.Adapter = pd.ID, pd.known, pd.proved, pd.Boot, pd.Adapter
 	}
 
 	cur, found, err := t.byName(ctx, *rec)
@@ -384,7 +395,8 @@ func (t *Table) connect(ctx context.Context, rec *entity.ClientRecord, p *Propos
 	switch {
 	case err != nil:
 		return nil, err
-	case found && refuses(cur, rec.Owner):
+	case found && (refuses(cur, rec.Owner) || cur.Protect && !proved):
+		// the second term catches a record protected between the proposal and now
 		return nil, ErrClientInUse
 	case known && (!found || cur.ID != id):
 		return ended, ErrStaleClient // the proposed client ended since the proposal

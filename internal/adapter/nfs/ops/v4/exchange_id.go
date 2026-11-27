@@ -117,6 +117,12 @@ const (
 	flagUseNonPNFS       = 0x00010000 // EXCHGID4_FLAG_USE_NON_PNFS
 )
 
+// argFlags is every eia_flags bit a client may set: SUPP_MOVED_REFER,
+// SUPP_MOVED_MIGR, BIND_PRINC_STATEID, the pNFS mask and UPD_CONFIRMED_REC_A.
+// Any bit outside it is NFS4ERR_INVAL (RFC 8881 section 18.35.3), CONFIRMED_R
+// too, which the RFC says is always off in what a client sends.
+const argFlags = 0x00000103 | 0x00070000 | flagUpdConfirmedRecA
+
 // recoverStatus is the recovery kind of an NFSv4.1 client: its loss of state
 // is told it by a status.
 //
@@ -156,6 +162,8 @@ func (h *Handlers) ExchangeID(
 	mach := a.Protect.How == sp4MachCred
 
 	switch {
+	case a.Flags&^argFlags != 0:
+		return exchangeIDRes{}, errBadFlags
 	case a.Protect.How == sp4SSV:
 		return exchangeIDRes{}, errEncrAlgUnsupp
 	case mach && !provesMachine(r.Call.Identity):
@@ -194,6 +202,13 @@ func (h *Handlers) ExchangeID(
 		Recovery: recoverStatus,
 	}
 
+	// decision: every EXCHANGE_ID goes through Propose, since open state
+	// cannot read a confirmed record by name, so the answers that need that
+	// read are not the RFC's: under UPD_CONFIRMED_REC_A a new verifier is
+	// NOENT, not NOT_SAME, and a caller that does not prove the credential of
+	// a protected owner is PERM, not NOT_SAME. Open state refuses that caller
+	// the protected name, so no later check of the stored record is needed.
+	// Overturned when open state reads a confirmed record by name.
 	proposal, err := h.VFS.Propose(ctx, r.Call, info)
 	if errors.Is(err, &vfs.StateError{Kind: vfs.StateClientInUse}) && update {
 		return exchangeIDRes{}, errPerm
@@ -260,17 +275,19 @@ func (h *Handlers) confirmed(
 		return exchangeIDRes{}, err
 	}
 
-	if stored.Protect && !provesMachine(r.Call.Identity) {
-		if update {
-			return exchangeIDRes{}, errPerm
-		}
-
-		return exchangeIDRes{}, &vfs.StateError{Kind: vfs.StateClientInUse}
-	}
-
 	flags := uint32(flagConfirmedR | flagUseNonPNFS)
 
 	return h.reply(uint64(stored.ID), rec.NFS4.SessionSeq+1, flags, a), nil
+}
+
+// withOp returns the bitmap with the bit of operation op set, without changing
+// the one it was given.
+func withOp(bitmap []uint32, op int) []uint32 {
+	out := make([]uint32, max(len(bitmap), op/32+1))
+	copy(out, bitmap)
+	out[op/32] |= 1 << (op % 32)
+
+	return out
 }
 
 // reply is EXCHANGE_ID4resok: the client ID and sequence ID, the protection
@@ -280,8 +297,17 @@ func (h *Handlers) reply(id uint64, seq, flags uint32, a exchangeIDArgs) exchang
 	installation := h.Server.Installation[:]
 	protect := stateProtectR{How: a.Protect.How}
 
+	// decision: the reply names CREATE_SESSION among the operations to
+	// enforce, whatever list the client sent, since CREATE_SESSION refuses a
+	// caller that is not the owner's proved machine credential even where the
+	// list lacks it; RFC 8881 section 18.35.3 lets the reply differ from the
+	// request. The record keeps the list as sent. Overturned when
+	// CREATE_SESSION enforces only the operations the list names.
 	if a.Protect.How == sp4MachCred {
-		protect.MachOps = a.Protect.MachOps
+		protect.MachOps = stateProtectOps{
+			MustEnforce: withOp(a.Protect.MachOps.MustEnforce, opCreateSession),
+			MustAllow:   a.Protect.MachOps.MustAllow,
+		}
 	}
 
 	return exchangeIDRes{Ok: &exchangeIDResOk{

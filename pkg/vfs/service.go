@@ -37,8 +37,9 @@ type Clients interface {
 	// Connect registers info, confirming info.Proposal where set, with cb as
 	// the client's one Callbacks, the latest Connect's replacing any earlier.
 	// Again on another node it moves them there; for an NFSv4 client, refused
-	// StateError ClientInUse for any principal but the client's own. An SMB
-	// client is connected once per node, at its first authenticated session
+	// StateError ClientInUse for any principal but the client's own, and for
+	// its own when the record is protected and the call does not prove the
+	// machine credential. An SMB client is connected once per node, at its first authenticated session
 	// there, whatever its principal, and never by a null or guest one, and
 	// again at each new node epoch while the node holds a session of it:
 	// that lists the node in the record's sessions and answers the entry's

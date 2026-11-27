@@ -199,8 +199,8 @@ func (s *Sessions) Drop(cl vfs.ClientID) {
 }
 
 // Sweep drops every proposal past its lease and releases its charges.
-// Propose and Drop sweep first, so an idle node holds its expired entries
-// until its next call of either.
+// Propose, Drop and Create sweep first, so an idle node holds its expired
+// entries until its next call of any of them.
 func (s *Sessions) Sweep() {
 	s.mu.Lock()
 
@@ -210,8 +210,9 @@ func (s *Sessions) Sweep() {
 }
 
 // sweep drops every entry past its lease, releasing its charge. Propose and
-// Drop run it before they change the table; Confirm never does, since the
-// sweep alone may drop an entry a delayed confirm comes back for.
+// Drop run it before they change the table, and Create before it charges the
+// pool; Confirm never does, since the sweep alone may drop an entry a delayed
+// confirm comes back for.
 func (s *Sessions) sweep() {
 	now := s.clk.Now()
 	for cl, e := range s.table {
@@ -443,6 +444,12 @@ func cost(n, cached uint32) int64 {
 // service's own step is per client. Split it per client ID when a profile of
 // 64 sessions shows its contention.
 func (s *Sessions) Create(cl vfs.ClientID, sp Spec) (*Session, error) {
+	s.mu.Lock()
+
+	defer s.mu.Unlock()
+
+	s.sweep() // an expired proposal's charge is not a reason to delay
+
 	fore, back := grant(sp.Fore, maxForeSlots), grant(sp.Back, maxBackSlots)
 
 	backSlots := uint32(0)
@@ -465,10 +472,6 @@ func (s *Sessions) Create(cl vfs.ClientID, sp Spec) (*Session, error) {
 		// no attributes of a channel it was not given.
 		back.Slots = max(backSlots, 1) // a back channel with no slot is none
 	}
-
-	s.mu.Lock()
-
-	defer s.mu.Unlock()
 
 	sess := &Session{
 		Client:      cl,

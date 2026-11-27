@@ -106,6 +106,18 @@ their error rows and golden files; `core`'s third ask of a member's `Bound` hook
 - NLM and NSM, the callbacks value's `LockWaitOver` and NLM `Revoked` (E11's T11.4 and T11.7), and
   `nlm.Handlers`' field for the callbacks value: E11's T11.3, which writes the NLM arm T8.2 defines.
 - The hold budget per session, from T8.4's slot count: E12's T12.4.
+- The by-name read of a confirmed client record, the one `vfs.Clients` lacks: its code (open
+  state's read, the `vfs` surface and `vfstest`) is owned by the RFC 14 and RFC 17 plans. Until it
+  lands `EXCHANGE_ID` goes through `Propose` first. R76's refusal of a caller that does not prove a
+  protected record's credential does not wait for it: open state refuses that name at `Propose`
+  at a `Connect` with no proposal, and again at the `Connect` that confirms a proposal (`Client.Proved`), with no `Pending` and no
+  change. R67's other new-verifier answers are not given as written until it lands. A `decision:`
+  marker at `EXCHANGE_ID`'s `Propose` call names it.
+- `Deps.Server` filled by the node at build (Q1(a)), from the node identity RFC 13's epic 2 reads
+  and the installation's ID (RFC 16 §2.3): T8.3's file table lists that fill, which waits for RFC 13's
+  identity read, not in the code yet. Until then every node answers a zero `server_scope`, `so_major_id` and
+  `so_minor_id`, where R16 has the installation's and the node's own. A `decision:` marker at
+  `adapterDeps` names it.
 - `RPCSEC_GSS`, a machine principal's Kerberos sign-in and `ErrExpired`'s row: E13. "no file
   spelling"'s step with a Kerberos machine principal: E16's T16.3, on the composed node.
 - `lease_time`, `supported_attrs` without the layout attributes and the not-supported layout and
@@ -176,7 +188,7 @@ cited by number and title and not copied.
 | rule 10, a test must be able to fail | all | each test names the break it catches; none asserts a stub's answer, so T8.1's not-yet-built methods have no test of their own |
 | rule 11, a symbol is exported only if an interface uses it | T8.1, T8.2, T8.4, T8.5 | exported: `wire.ClientRec` and its codec for `ops/v4` and E11's `ops/nlm`; `protocol.Sessions`, `Session`, `SessionID`, `Pending`, `Channel` and `BackChannel` for `ops/v4`; `v4.Handlers`' new fields for `nfs.go`; `adaptertest.FlowConformance` for each protocol's `Flow`. `core` gains none but through RFC 20 first (Q2, Q3) |
 | rule 12, each subtask creates only what it declares | all | the callbacks value lands with `CREATE_SESSION`'s `Connect`, its first caller, in the same pull request; `nlm.Handlers`' field waits for E11's first NLM row (§9); each operation's row lands with its handler and golden files |
-| rule 13, translate, never decide | all | each handler makes at most one mutating service call; `CREATE_SESSION`'s sequence check is RFC 21 §3.5's own rule over the record's bytes, which open state never reads; the slot table is the adapter's by RFC 21 Appendix D; confirm, ownership and busy checks are the service's |
+| rule 13, translate, never decide | all | each handler makes at most one mutating service call, `CREATE_SESSION`'s `AddSession` aside, which a `Connect` for the callbacks of a known client or of a back channel may follow (R30); `CREATE_SESSION`'s sequence check is RFC 21 §3.5's own rule over the record's bytes, which open state never reads; the slot table is the adapter's by RFC 21 Appendix D; confirm, ownership and busy checks are the service's |
 | rule 14, nothing deferred is lost | all | §1.2 names the owner of each part of an obligation this epic leaves out; §9 names the gaps |
 
 ## 3. Requirements and invariants
@@ -206,12 +218,12 @@ numbered so that subtasks and tests can cite them.
 | R11 | A confirm from another principal than the proposal's is `NFS4ERR_CLID_INUSE` and leaves the proposal for its own principal | MUST | RFC 21 §3.5 | T8.4, T8.10 |
 | R66 | A `SETCLIENTID_CONFIRM` that finds no proposal but names a confirmed NFSv4.0 record with the same confirm verifier, from the record's principal, is `NFS4_OK` and writes nothing; the verifier is kept in the record's NFSv4.0 bytes (D2), written into the proposal's bytes before `Propose` (D3) | MUST | RFC 7530 §16.34.5 (from memory); pynfs `CIDCF3` | T8.2, T8.10 |
 | R12 | One record kind for both minor versions: a `SETCLIENTID` for a name `EXCHANGE_ID` confirmed, or the reverse, is a new `Boot`, a reboot confirmed as any is | MUST | RFC 21 §3.5 (one record kind) | T8.3, T8.10 |
-| R67 | An `EXCHANGE_ID` with `EXCHGID4_FLAG_UPD_CONFIRMED_REC_A` never makes a proposal: with no confirmed record for the owner it is `NFS4ERR_NOENT`, with another verifier `NFS4ERR_NOT_SAME`, from another principal `NFS4ERR_PERM`, and otherwise answers the confirmed client ID as R7 does, `eir_sequenceid` included | MUST | RFC 8881 §18.35.4, items 6 to 9; pynfs `EID6` to `EID6h` | T8.3 |
-| R76 | An `EXCHANGE_ID` or a `SETCLIENTID` naming an owner whose confirmed record has `Protect` set runs Q4's proof check before principals are compared; a caller that fails it is another principal, so R9 answers it `NFS4ERR_CLID_INUSE` whatever its verifier, and under `UPD_CONFIRMED_REC_A` R67 answers it `NFS4ERR_PERM`, or `NFS4ERR_NOT_SAME` with another verifier, which item 8 answers any principal; none leaves a `Pending` or a mutating call. `SETCLIENTID_CONFIRM` needs no check of its own: a failing caller has no proposal to confirm, and the protected client's own ID is NFSv4.1's, which R74 refuses it | MUST | RFC 8881 §18.35.3 (`SP4_MACH_CRED`: "MUST also use the same machine credential"), §18.35.4, items 8 and 9 | T8.3, T8.10 |
+| R67 | An `EXCHANGE_ID` with `EXCHGID4_FLAG_UPD_CONFIRMED_REC_A` makes no proposal once §1.2's by-name read exists: with no confirmed record for the owner it is `NFS4ERR_NOENT`, with another verifier `NFS4ERR_NOT_SAME`, from another principal `NFS4ERR_PERM`, and otherwise answers the confirmed client ID as R7 does, `eir_sequenceid` included; until that read, `Propose` runs first and another verifier is `NFS4ERR_NOENT` | MUST | RFC 8881 §18.35.4, items 6 to 9; pynfs `EID6` to `EID6h` | T8.3 |
+| R76 | An `EXCHANGE_ID` or a `SETCLIENTID` naming an owner whose confirmed record has `Protect` set runs Q4's proof check before principals are compared; a caller that fails it is another principal, so R9 answers it `NFS4ERR_CLID_INUSE` whatever its verifier, and under `UPD_CONFIRMED_REC_A` R67 answers it `NFS4ERR_PERM`, or `NFS4ERR_NOT_SAME` with another verifier, which item 8 answers any principal; none leaves a `Pending` or a mutating call, the new-verifier case too: open state refuses a protected name to a caller that does not prove it, at `Propose` and again at the `Connect` that confirms, so only the `NFS4ERR_NOT_SAME` of `UPD_CONFIRMED_REC_A` waits on §1.2's by-name read. `SETCLIENTID_CONFIRM` needs no check of its own: a failing caller's proposal, if it has one, is refused at the `Connect` (one made before the record was protected too), as is a `Connect` with no proposal; the protected client's own ID is NFSv4.1's, which R74 refuses it | MUST | RFC 8881 §18.35.3 (`SP4_MACH_CRED`: "MUST also use the same machine credential"), §18.35.4, items 8 and 9 | T8.3, T8.10 |
 | R13 | The client fields map as §11.4 says: `Name` from `co_ownerid` or the `nfs_client_id4` id, `Boot` from the verifier, the adapter's own confirm (D3), drawn before `Propose` and kept in the proposal's bytes, sent as the NFSv4.0 confirm verifier or, its low 32 bits, as `eir_sequenceid` (§11.4's two `Pending.Confirm` rows amended, §9), `Protect` set for `SP4_MACH_CRED`, and `Recovery` the adapter's pick, `RecoverStatus` for NFSv4.1 and `RecoverRefusal` for NFSv4.0, since `Connect` refuses a zero one `ErrInvalid` and `ReclaimComplete` acts only for `RecoverStatus` | MUST | RFC 21 §4.1, §11.4 (client table, amended); RFC 17 §3.0 (`ClientInfo.Recovery`); RFC 14 §2.9 (`Pending.Adapter`) | T8.3, T8.4, T8.10 |
 | R14 | `SP4_NONE` and `SP4_MACH_CRED` are accepted (`SP4_MACH_CRED` over a flavor other than `RPCSEC_GSS` as Q5 settles); `SP4_SSV` is refused `NFS4ERR_ENCR_ALG_UNSUPP` | MUST | RFC 21 §3.3 | T8.3 |
-| R15 | Under `SP4_MACH_CRED`, an operation in `spo_must_enforce` from any caller but `Owner` proved under `RPCSEC_GSS` integrity or privacy is `NFS4ERR_ACCESS` (an `AUTH_SYS` caller whose uid maps to `Owner` included), `CREATE_SESSION` on its new and its replay path included, and `EXCHANGE_ID` answered as R76 says; whatever the bitmap, `DESTROY_SESSION` and `DESTROY_CLIENTID` are refused `NFS4ERR_WRONG_CRED`, the status RFC 8881's error table lists for each, and `BIND_CONN_TO_SESSION` `NFS4ERR_ACCESS` (where the check runs as Q4 settles) | MUST | RFC 21 §11.4 (`Adapter` bytes, `Protect`); RFC 8881 §18.34.3, §18.37.3 ("using RPCSEC_GSS privacy or integrity"), §15.2; for `DESTROY_CLIENTID`, open state's `Destroy`, which checks `Owner` whatever the bitmap (R52) | T8.3, T8.4, T8.9 |
-| R16 | Every gateway node returns the same `server_scope` and `so_major_id`, the installation's, and a `so_minor_id` of its own (single-node half) | MUST | RFC 21 §3.3, §12 (N2); RFC 16 §2.3 (`Installation`) | T8.3 |
+| R15 | Under `SP4_MACH_CRED`, an operation in `spo_must_enforce` from any caller but `Owner` proved under `RPCSEC_GSS` integrity or privacy is `NFS4ERR_ACCESS` (an `AUTH_SYS` caller whose uid maps to `Owner` included), `CREATE_SESSION` on its new and its replay path included, which the reply's `spo_must_enforce` names whatever the client sent (RFC 8881 §18.35.3: the result may differ from the request), and `EXCHANGE_ID` answered as R76 says; whatever the bitmap, `DESTROY_SESSION` and `DESTROY_CLIENTID` are refused `NFS4ERR_WRONG_CRED`, the status RFC 8881's error table lists for each, and `BIND_CONN_TO_SESSION` `NFS4ERR_ACCESS` (where the check runs as Q4 settles) | MUST | RFC 21 §11.4 (`Adapter` bytes, `Protect`); RFC 8881 §18.34.3, §18.37.3 ("using RPCSEC_GSS privacy or integrity"), §15.2; for `DESTROY_CLIENTID`, open state's `Destroy`, which checks `Owner` whatever the bitmap (R52) | T8.3, T8.4, T8.9 |
+| R16 | Every gateway node returns the same `server_scope` and `so_major_id`, the installation's, and a `so_minor_id` of its own (single-node half); the node fills `Deps.Server` once §1.2's identity read exists, a zero one until then | MUST | RFC 21 §3.3, §12 (N2); RFC 16 §2.3 (`Installation`) | T8.3 |
 | R17 | `EXCHANGE_ID` sets `EXCHGID4_FLAG_USE_NON_PNFS` and, on a single node, never `EXCHGID4_FLAG_USE_PNFS_MDS` or `EXCHGID4_FLAG_USE_PNFS_DS` | MUST NOT | RFC 21 §3.3, §12 (N20) | T8.3 |
 | R18 | Everything `EXCHANGE_ID`, `SETCLIENTID` and `DESTROY_CLIENTID` decide is in the durable client record, never in one node's memory, a proposal before its confirm excepted | MUST | RFC 21 §3.3, §11.4, §12 (N18) | T8.3, T8.9 |
 | R19 | §13's "§3.5 confirm *(1 node)*": a confirm from another principal `NFS4ERR_CLID_INUSE` over both minor versions, an `EXCHANGE_ID` for a confirmed owner from another principal `NFS4ERR_CLID_INUSE`, and a confirmed NFSv4.0 client's repeated `SETCLIENTID` with a new callback confirmed with its client ID unchanged and the callback taken; and the single-node steps of "§3.5 confirm", 10^4 confirm verifiers all distinct among them | test row | RFC 21 §13 | T8.3, T8.4, T8.10 |
@@ -232,7 +244,7 @@ numbered so that subtasks and tests can cite them.
 | R27 | The reply cache is held in the memory of the node that holds the session and never written to the store or replicated; sessions are never stored | MUST NOT | RFC 21 §3.2, §12 (N3) | T8.4, T8.5 |
 | R28 | A session is bound only to this node's connections: a `BIND_CONN_TO_SESSION` or `SEQUENCE` naming a session this node does not hold, one lost with a restart included, is `NFS4ERR_BADSESSION`; binding several connections to one session here is allowed | MUST | RFC 21 §3.2, §3.3, §12 (N3) | T8.5, T8.9 |
 | R29 | The back channel's security is `AUTH_NONE` or `AUTH_SYS`, as the client asked in `csa_sec_parms`; `RPCSEC_GSS` is not offered on it | MUST | RFC 21 §3.4 | T8.4 |
-| R30 | A back channel bound by `CREATE_SESSION` with `CREATE_SESSION4_FLAG_CONN_BACK_CHAN`, by `BIND_CONN_TO_SESSION` or by `BACKCHANNEL_CTL` re-registers through `Connect` before the reply, replacing the earlier registration (single-node half) | MUST | RFC 21 §3.4, §12 (N6), App. D (`BIND_CONN_TO_SESSION`, `BACKCHANNEL_CTL`); RFC 17 §3.2 | T8.4, T8.9 |
+| R30 | A back channel bound by `CREATE_SESSION` with `CREATE_SESSION4_FLAG_CONN_BACK_CHAN`, by `BIND_CONN_TO_SESSION` or by `BACKCHANNEL_CTL` re-registers through `Connect` before the reply, replacing the earlier registration, and a `CREATE_SESSION` of a client confirmed before registers its callbacks the same way when it binds no back channel (single-node half) | MUST | RFC 21 §3.4, §12 (N6), App. D (`BIND_CONN_TO_SESSION`, `BACKCHANNEL_CTL`); RFC 17 §3.2 | T8.4, T8.9 |
 | R31 | On each `Connect` or `AddSession` that answers a `Gen`, the adapter decides again under its per-client step, and sends `Disconnect` with `Last` and that `Gen` if the node then holds no session of the client | MUST | RFC 21 §11.4 (`SessionEnd.Last`, `Gen`); RFC 17 §3.1 | T8.4, T8.9 |
 | R32 | `ConnInfo`'s `Session` names the NFSv4.1 sessions a connection is bound to, each as text, and is empty where none | MUST | RFC 20 §3.4 (`ConnInfo`) | T8.5 |
 | R33 | The router builds an NFSv4.1 compound's `r.Call` with the `Session` its `SEQUENCE` names and that session's `Client` | MUST | RFC 20 §4.4 (the `Call`) | T8.5 |
@@ -740,7 +752,7 @@ internal/adapter/nfs/
     client ID unchanged, and its reply names the proposal's client ID, `eir_sequenceid` the
     low 32 bits of the adapter's confirm (D3), not of open state's.
   - A confirmed owner's `EXCHANGE_ID` with its verifier and principal answers its client ID with
-    `CONFIRMED_R` and calls nothing that writes.
+    `CONFIRMED_R`; it calls nothing that writes once §1.2's by-name read exists, a `Propose` first until then.
   - From another principal, `NFS4ERR_CLID_INUSE`, and the table holds no proposal for the name.
   - `Confirm` with the client ID of a new owner's proposal, the only thing its confirm carries,
     finds it; after a second proposal for the same name, `Confirm` with the first's client ID finds
@@ -754,9 +766,11 @@ internal/adapter/nfs/
     ID; none leaves a proposal or a mutating call.
   - On an owner whose confirmed record has `Protect` set, an `AUTH_SYS` caller whose uid T7.1 maps
     to the owner is `NFS4ERR_CLID_INUSE` with the record's verifier and with a new one, and under
-    `UPD_CONFIRMED_REC_A` `NFS4ERR_PERM` with the record's verifier and `NFS4ERR_NOT_SAME` with a
-    new one; none leaves a proposal or a mutating call, and the record and its client ID are
-    unchanged.
+    `UPD_CONFIRMED_REC_A` `NFS4ERR_PERM` with the record's verifier, and with a new one
+    `NFS4ERR_PERM` until §1.2's by-name read exists, `NFS4ERR_NOT_SAME` after; none leaves a
+    proposal or a mutating call, and the record and its client ID are unchanged. With a new
+    verifier the refusal is open state's, at `Propose`, at a `Connect` with no proposal and at the `Connect` that confirms a
+    proposal made before the record was protected.
   - A confirmed owner's `eir_sequenceid`, with and without `UPD_CONFIRMED_REC_A`, is the record's
     `SessionSeq` + 1, and 0 after a `SessionSeq` of 0xFFFFFFFF.
   - A proposal is gone one lease period later on the injected clock, its pool charge released.
@@ -769,14 +783,14 @@ internal/adapter/nfs/
   verifier: a proposal, not its ID (catches one record kind per minor version, R12); the flags and
   scope of the reply (catch a pNFS flag set, R17, a scope that is not the installation's, R16);
   `SP4_SSV`, and `SP4_MACH_CRED` under `AUTH_SYS` (R14, Q5); the four `UPD_CONFIRMED_REC_A` cases, as pynfs `EID6` to `EID6h` send them,
-  the table and `vfstest.Mutations` read after each (catches the flag ignored and a proposal made,
+  the table and `vfstest.Mutations` read after each (catches the flag ignored and, once §1.2's by-name read exists, a proposal made,
   R67); the four protected-owner cases, the caller's user added with `PutUser`, the table, the
   record and `vfstest.Mutations` read after each (catches principals compared before the proof,
   which lets an `AUTH_SYS` host's new verifier expire the protected client at its confirm, R76;
   the same owner sent `SETCLIENTID` is T8.10's);
   the confirmed owner's `eir_sequenceid` and its wrap (catches a sequence the client cannot use for
   a later `CREATE_SESSION`, R7); `SP4_MACH_CRED`'s two bitmaps kept in the proposal's bytes as sent
-  and answered in the reply (catches a set dropped before the confirm, R3, R15's half here; RFC 8881
+  and answered in the reply, `CREATE_SESSION` added to the first (catches a set dropped before the confirm, R3, R15's half here; RFC 8881
   §18.35.3 names `EXCHANGE_ID` and `CREATE_SESSION` first among the operations a client puts in
   `spo_must_enforce`, so `EXCHANGE_ID`'s refusal is the protected-owner cases above, R76,
   `CREATE_SESSION`'s T8.4's, and the others' T8.9's); the Pending
@@ -916,7 +930,9 @@ internal/adapter/nfs/
   No session or reply reaches a store write (`vfstest.Mutations` holds no call carrying a slot,
   R27). Mutex and block profiles of `Create` under 64 sessions reported (rule 4).
 - **Rules:** rule 9's two `ponytail:` notes and D11's `decision:`; rule 13: `AddSession` is the
-  one mutating call, `Connect` before it the confirm's, which RFC 21 Appendix D names.
+  one mutating call, `Connect` before it the confirm's, which RFC 21 Appendix D names, and a
+  `Connect` after it for the callbacks of a known client with no back channel (R30), under a
+  `decision:` marker.
 
 ### T8.5 `SEQUENCE`'s slots and reply cache
 
@@ -1394,7 +1410,7 @@ Questions pending the user's answer. Each recommended option is written in place
     `DESTROY_CLIENTID` of an `SP4_MACH_CRED` client, answering `NFS4ERR_ACCESS` (`DESTROY_SESSION`
     and `DESTROY_CLIENTID` `NFS4ERR_WRONG_CRED`, R15, R52; an `EXCHANGE_ID` or `SETCLIENTID` failing
     the proof check `NFS4ERR_CLID_INUSE`, or under `UPD_CONFIRMED_REC_A` `NFS4ERR_PERM` or
-    `NFS4ERR_NOT_SAME`, R76); an error from `Owns` refuses the operation with that error's row, never runs it;
+    `NFS4ERR_NOT_SAME`, R76, whose refusal of an unproved caller of a protected record is open state's, the rest of the new-verifier answers wait on §1.2's by-name read); an error from `Owns` refuses the operation with that error's row, never runs it;
     `Destroy` keeps its own check, mapped to `NFS4ERR_WRONG_CRED`. The bitmap is read from the
     session, copied from the record's bytes at `CREATE_SESSION`, not from the record each compound:
     a confirmed record's bitmaps change only with a new client ID, which ends its sessions, and

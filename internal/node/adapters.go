@@ -117,6 +117,11 @@ func listenPort(addr string) uint16 {
 // that moves the node's clock past 60 s while an adapter serves finds
 // liveness failed, so the node's tests serve none while they do. Overturned
 // when a test must, and then by a clock in Deps.
+//
+// decision: Server is zero too, so an NFSv4.1 client is answered a zero
+// server_scope, so_major_id and so_minor_id from every node, where RFC 21
+// section 3.3 has the installation's and the node's own. Overturned when the
+// node fills it from the identity it reads at start and the installation's ID.
 func adapterDeps(fs vfs.Service, b *resources.Budgets, m *metrics.Registry, log *slog.Logger, w *health.Watchdog) adapter.Deps {
 	return adapter.Deps{
 		VFS:     fs,

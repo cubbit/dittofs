@@ -84,9 +84,9 @@ func (hostClock) Now() time.Time {
 // ponytail: nothing sweeps the proposals but the calls that touch the table,
 // since core gives a protocol no hook at Stop to end a ticker with; an idle
 // node keeps at most the 4 MiB its 4,096 proposals are charged until the next
-// EXCHANGE_ID, and after a Stop the charges of the proposals still held never
-// come back to the budget. Add the ticker and a release at Stop when core has
-// that hook.
+// EXCHANGE_ID or CREATE_SESSION, and after a Stop the charges of the proposals
+// still held never come back to the budget. Add the ticker and a release at
+// Stop when core has that hook.
 func handlers(d adapter.Deps) *v4.Handlers {
 	sessions := protocol.NewSessions(d.Budgets, hostClock{}, rand.Reader)
 

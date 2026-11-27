@@ -102,11 +102,10 @@ func (a ask) bytes() []byte {
 	return append(b, slices.Concat(a.sec...)...)
 }
 
-// node is one node's handlers over the runner's service, with callbacks
-// that record the clients they were built for.
+// node is one node's handlers over the runner's service, with a callbacks
+// constructor.
 type node struct {
 	*exchange
-	built []vfs.ClientID
 }
 
 // newNode is newExchange with a callbacks constructor.
@@ -114,9 +113,7 @@ func newNode(t *testing.T, rn *adaptertest.Runner, id uint64) *node {
 	t.Helper()
 
 	n := &node{exchange: newExchange(t, rn, id)}
-	n.h.Callbacks = func(cl vfs.ClientID, _ vfs.Protocol) vfs.Callbacks {
-		n.built = append(n.built, cl)
-
+	n.h.Callbacks = func(vfs.ClientID, vfs.Protocol) vfs.Callbacks {
 		return &vfstest.Callbacks{}
 	}
 
@@ -718,7 +715,7 @@ func TestCreateSessionLastDisconnectOfAGoneClient(t *testing.T) {
 
 // A last Disconnect that fails for any other reason is not a client that is
 // gone: its error comes back after one attempt. The repeat is the node's
-// retrier's (T8.9).
+// retrier's.
 func TestCreateSessionLastDisconnectFailureComesBack(t *testing.T) {
 	rn := adaptertest.NewRunner(t)
 	n := newNode(t, rn, 7)
@@ -783,6 +780,20 @@ func TestCreateSessionBackChannelConnectFailureComesBack(t *testing.T) {
 		)
 	}
 
+	n.sawOps(t, vfs.OpAddSession, vfs.OpConnect)
+}
+
+// A client the service holds already, asking no back channel, still has its
+// callbacks registered with Connect by the node that builds its session: a
+// node restarted since the client's last CREATE_SESSION holds none, and
+// Revoked would never end the session without it. A confirm over a proposal
+// has made that Connect already, and makes no second one.
+func TestCreateSessionRegistersTheCallbacksOfAKnownClient(t *testing.T) {
+	rn := adaptertest.NewRunner(t)
+	n := newNode(t, rn, 7)
+	cl := n.confirmed(t, plain(rn), "c1", 5)
+
+	wantCreated(t, n.create(t, plain(rn), plainAsk(cl, 6), builds))
 	n.sawOps(t, vfs.OpAddSession, vfs.OpConnect)
 }
 
@@ -916,6 +927,10 @@ func TestCreateSessionProtectedClient(t *testing.T) {
 	}
 
 	wantStatus(t, n.create(t, plain(rn), plainAsk(cl, seq), refuse), statusAccess)
+
+	// a second session of the proved owner is served too: its Connect proves
+	// the machine as the first call did
+	wantCreated(t, n.create(t, owner, plainAsk(cl, seq+1), builds))
 }
 
 // A CREATE_SESSION is a mutation of the client record like EXCHANGE_ID's

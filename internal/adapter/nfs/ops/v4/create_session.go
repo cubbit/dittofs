@@ -290,7 +290,7 @@ func (h *Handlers) build(
 		return createSessionRes{}, false, err
 	}
 
-	if err := h.attach(ctx, r, sess, b.info); err != nil {
+	if err := h.attach(ctx, r, sess, b.info, b.proposal != nil); err != nil {
 		return createSessionRes{}, false, err
 	}
 
@@ -476,23 +476,37 @@ func (h *Handlers) settle(
 }
 
 // attach binds the connection the call came on to the session's fore channel,
-// and to its back channel where the client asked to be called, registering
-// the callbacks again so the service sees the back channel the session has.
+// and to its back channel where the client asked to be called, and registers
+// the callbacks with Connect: again, so the service sees the back channel the
+// session has, or for the first time on this node, where the client was
+// confirmed before and no Connect of this call ran. A confirm already ran its
+// Connect, so a session with no back channel makes none more (connected).
 func (h *Handlers) attach(
 	ctx context.Context,
 	r *core.Request,
 	sess *protocol.Session,
 	info vfs.ClientInfo,
+	connected bool,
 ) error {
 	if st, ok := r.State.(*protocol.State); ok && st.Bound != nil {
 		h.Sessions.Bind(sess, st.Bound)
 	}
 
-	if sess.Back == nil || r.Conn == nil {
-		return nil
+	back := sess.Back != nil && r.Conn != nil
+	if back {
+		sess.Back.Bind(r.Conn)
 	}
 
-	sess.Back.Bind(r.Conn)
+	// decision: a known client's CREATE_SESSION makes a Connect after its
+	// AddSession, to register its callbacks, which the node may never have
+	// seen if it restarted since the client's confirm; one handler making two
+	// mutating calls is the rule's exception, as a back channel's second
+	// Connect is. A confirm already ran its Connect, so it makes none more
+	// unless a back channel is bound. Overturned when the service registers
+	// the callbacks of a client it holds a record for without a Connect.
+	if connected && !back {
+		return nil
+	}
 
 	_, _, err := h.VFS.Connect(ctx, r.Call, info, h.Callbacks(sess.Client, vfs.ProtocolNFSv4))
 

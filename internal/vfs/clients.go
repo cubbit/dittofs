@@ -65,7 +65,9 @@ func (fs *Filesystem) Propose(ctx context.Context, c vfs.Call, info vfs.ClientIn
 	if err != nil {
 		return vfs.Proposal{}, err
 	}
-	p, err := fs.clients.Propose(ctx, record(c, info, who.Principal), c.Identity.Client)
+	cl := record(c, info, who.Principal)
+	cl.Proved = c.Identity.Proof >= vfs.ProofTicket && c.Identity.Protection >= vfs.ProtectionIntegrity
+	p, err := fs.clients.Propose(ctx, cl, c.Identity.Client)
 	return p, openErr(err)
 }
 
@@ -102,7 +104,9 @@ func (fs *Filesystem) Connect(ctx context.Context, c vfs.Call, info vfs.ClientIn
 	if err != nil {
 		return 0, 0, err
 	}
-	id, gen, err := fs.clients.Connect(ctx, record(c, info, who.Principal), info.Proposal)
+	cl := record(c, info, who.Principal)
+	cl.Proved = c.Identity.Proof >= vfs.ProofTicket && c.Identity.Protection >= vfs.ProtectionIntegrity
+	id, gen, err := fs.clients.Connect(ctx, cl, info.Proposal)
 	if err != nil {
 		return 0, 0, openErr(err)
 	}

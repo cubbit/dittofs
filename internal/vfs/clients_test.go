@@ -780,6 +780,41 @@ func TestAnNFSv4ClientIsOwnedByItsMappedPrincipal(t *testing.T) {
 	}
 }
 
+// A protected client's name is refused to its own principal unless the call
+// proves the machine (a ticket under integrity), at a Connect with no
+// proposal as at Propose; a call that proves it reboots the client.
+func TestAProtectedClientsNameNeedsTheMachineProof(t *testing.T) {
+	s := newShares(t, nil, nil)
+	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
+	ctx := t.Context()
+	info := vfs.ClientInfo{Protocol: entity.ProtocolNFSv4, Name: []byte("linux-host"), Boot: [8]byte{1}, Protect: true, Recovery: entity.RecoverStatus}
+
+	proved := s.as(t, 1000, inLab)
+	unproved := s.as(t, 1000, inLab)
+	unproved.Identity.Protection = vfs.ProtectionNone // a ticket without integrity does not prove the machine
+
+	p, err := s.Propose(ctx, proved, info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info.Proposal = &p
+	id, _, err := s.Connect(ctx, proved, info, &vfstest.Callbacks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	info.Proposal, info.Boot = nil, [8]byte{2}
+	if _, _, err := s.Connect(ctx, unproved, info, &vfstest.Callbacks{}); !clientInUse(err) {
+		t.Fatalf("an unproved Connect with a new Boot answered %v, want ClientInUse", err)
+	}
+	if rec, err := s.Record(ctx, proved, id); err != nil || rec.Boot != [8]byte{1} {
+		t.Fatalf("after the refusal: %+v, %v; want the record kept", rec, err)
+	}
+	if again, _, err := s.Connect(ctx, proved, info, &vfstest.Callbacks{}); err != nil || again == id {
+		t.Fatalf("a proved Connect with a new Boot: id %d, %v; want a reboot to a new ID", again, err)
+	}
+}
+
 // An NFSv4 client proposed by a call proving nothing, which maps to the
 // well-known anonymous, holds no Owner and is unprotected, as every
 // anonymous caller maps alike: a signed-in principal naming it is not

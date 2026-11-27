@@ -18,6 +18,7 @@ var (
 	errNoEnt         = errors.New("nfs4: no confirmed client of that owner")
 	errInval         = errors.New("nfs4: a machine credential not proved by integrity or privacy")
 	errEncrAlgUnsupp = errors.New("nfs4: SP4_SSV is not served")
+	errBadFlags      = errors.New("nfs4: an eia_flags bit a client may not set")
 )
 
 // The refusals CREATE_SESSION answers that no service error stands for (RFC
@@ -76,6 +77,7 @@ func memberErrors() *core.ErrorTable {
 		core.ErrorRow{Err: errPerm, Status: core.Status(wire.NFS4ErrPerm)},
 		core.ErrorRow{Err: errNoEnt, Status: core.Status(wire.NFS4ErrNoEnt)},
 		core.ErrorRow{Err: errInval, Status: core.Status(wire.NFS4ErrInval)},
+		core.ErrorRow{Err: errBadFlags, Status: core.Status(wire.NFS4ErrInval)},
 		core.ErrorRow{Err: errEncrAlgUnsupp, Status: core.Status(wire.NFS4ErrEncrAlgUnsupp)},
 		core.ErrorRow{Err: errTooSmall, Status: core.Status(wire.NFS4ErrTooSmall)},
 		core.ErrorRow{Err: errSeqMisordered, Status: core.Status(wire.NFS4ErrSeqMisordered)},

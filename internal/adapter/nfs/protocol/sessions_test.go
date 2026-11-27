@@ -482,6 +482,36 @@ func TestCreateRefusesWhenNoSlotFits(t *testing.T) {
 	}
 }
 
+// Create sweeps first, as Propose and Drop do: the charge of a proposal past
+// its lease does not make a CREATE_SESSION wait for the next EXCHANGE_ID. A
+// proposal inside its lease keeps its charge, and the same call is a delay.
+func TestCreateSweepsExpiredProposals(t *testing.T) {
+	clk := &fakeClock{}
+	room := pendingCost + wantSessionCost + wantSlot8K - 1
+	b := &resources.Budgets{Connection: resources.NewBudget("t8.4-createsweep", room)}
+	s := NewSessions(b, clk, &ramp{})
+	propose(t, s, "old", Pending{Proposal: vfs.Proposal{Client: 1}, Minor: 1})
+
+	spec := Spec{Fore: ask(1, 4096, 8<<10, 8)}
+
+	_, err := s.Create(2, spec)
+
+	var d *vfs.Delay
+	if !errors.As(err, &d) || d.Cause != vfs.DelayResources {
+		t.Fatalf("Create inside the proposal's lease = %v, want a delay of resources", err)
+	}
+
+	clk.advance(leasePeriod + time.Second)
+
+	if _, err := s.Create(2, spec); err != nil {
+		t.Fatalf("Create past the proposal's lease = %v, want the session built", err)
+	}
+
+	if _, ok := s.Confirm(1); ok {
+		t.Error("the expired proposal is still held after Create")
+	}
+}
+
 // End returns the session's whole charge and says whether it was the client's
 // last on the node; a second End of the same session changes nothing.
 func TestEndReturnsTheChargeAndSaysLast(t *testing.T) {

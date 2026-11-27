@@ -500,6 +500,33 @@ func TestExchangeIDFlagsAndScope(t *testing.T) {
 	}
 }
 
+// An eia_flags with a bit RFC 8881 section 18.35.1 does not define, or with
+// CONFIRMED_R, which only eir_flags carries, is INVAL (section 18.35.3);
+// every bit a client may set is accepted.
+func TestExchangeIDUndefinedFlags(t *testing.T) {
+	rn := adaptertest.NewRunner(t)
+	e := newExchange(t, rn, 7)
+
+	for name, flags := range map[string]uint32{
+		"bit 2":                        0x00000004,
+		"bit 3":                        0x00000008,
+		"a bit above the pNFS":         0x00080000,
+		"a bit under the update":       0x20000000,
+		"CONFIRMED_R":                  flagsConfirmed &^ flagsNonPNFS,
+		"USE_NON_PNFS and CONFIRMED_R": flagsConfirmed,
+	} {
+		got := e.do(t, plain(rn), args("client-"+name, verifier1, flags, spNone()))
+		wantStatus(t, got, statusInval)
+	}
+
+	// The bits a client may set: SUPP_MOVED_REFER, SUPP_MOVED_MIGR,
+	// BIND_PRINC_STATEID and the pNFS mask.
+	const defined = 0x00000103 | 0x00070000
+
+	got := e.do(t, plain(rn), args("client-defined", verifier1, defined, spNone()))
+	wantStatus(t, got, statusOK)
+}
+
 // SP4_SSV is refused ENCR_ALG_UNSUPP, SP4_MACH_CRED without a ticket under
 // integrity or privacy INVAL, and under one a proposal that protects its
 // client (RFC 8881 section 18.35.3).
@@ -573,9 +600,8 @@ func TestExchangeIDUpdConfirmed(t *testing.T) {
 }
 
 // A confirmed owner under a machine credential, asked by a caller that does
-// not prove one, is another principal, whatever the verifier or the flag:
-// CLID_INUSE, or PERM under UPD_CONFIRMED_REC_A. The same with another
-// verifier waits on the service reading a record by name.
+// not prove one, is another principal, whatever the flag: CLID_INUSE, or
+// PERM under UPD_CONFIRMED_REC_A. The new verifier has its own test below.
 func TestExchangeIDProtectedOwner(t *testing.T) {
 	rn := adaptertest.NewRunner(t)
 	e := newExchange(t, rn, 7)
@@ -621,8 +647,60 @@ func TestExchangeIDProtectedOwner(t *testing.T) {
 	}
 }
 
-// The two bitmaps of SP4_MACH_CRED are kept in the proposal's record bytes
-// and echoed in the reply as sent.
+// A confirmed owner under a machine credential, asked with a new verifier by
+// a caller of the same principal that proves no machine credential, is not
+// replaced: CLID_INUSE, or PERM under UPD_CONFIRMED_REC_A, no proposal is
+// held and the stored record is untouched. The owner under its credential
+// still replaces it.
+func TestExchangeIDProtectedOwnerNewVerifier(t *testing.T) {
+	rn := adaptertest.NewRunner(t)
+	e := newExchange(t, rn, 7)
+	info := vfs.ClientInfo{
+		Protocol: vfs.ProtocolNFSv4,
+		Name:     []byte("client-a"),
+		Boot:     boot1Minor1,
+		Protect:  true,
+		Adapter:  recBytes(t, 1, 7),
+		Recovery: recoverStatus,
+	}
+	call := protected(rn, vfs.ProtectionIntegrity)
+
+	p, err := rn.Mem.Propose(t.Context(), call, info)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	info.Proposal = &p
+
+	id, _, err := rn.Mem.Connect(t.Context(), call, info, &vfstest.Callbacks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wantStatus(t, e.do(t, plain(rn), args("client-a", verifier2, 0, spNone())), statusInUse)
+	wantStatus(
+		t,
+		e.do(t, plain(rn), args("client-a", verifier2, flagUpdConfirmedRecA, spNone())),
+		statusPerm,
+	)
+	e.nothingHeld(t, id)
+
+	rec, err := rn.Mem.Record(t.Context(), call, id)
+	if err != nil || rec.Boot != boot1Minor1 {
+		t.Errorf("the stored record is %+v (err %v), want boot %x kept", rec, err, boot1Minor1)
+	}
+
+	got := e.do(t, call, args("client-a", verifier2, 0, spNone()))
+	wantStatus(t, got, statusOK)
+
+	if clientID(got) == id {
+		t.Errorf("the owner's new verifier was answered the old client ID %d", id)
+	}
+}
+
+// The two bitmaps of SP4_MACH_CRED are kept in the proposal's record bytes as
+// sent, and echoed in the reply with CREATE_SESSION added to the operations
+// to enforce.
 func TestExchangeIDMustAllowKept(t *testing.T) {
 	rn := adaptertest.NewRunner(t)
 	e := newExchange(t, rn, 7)
@@ -655,13 +733,51 @@ func TestExchangeIDMustAllowKept(t *testing.T) {
 		)
 	}
 
-	wantEcho := words(1, 3, 1, 0, 0x800, 1, 0x40000000)
+	wantEcho := words(1, 3, 1, 0x800, 0x800, 1, 0x40000000)
 	if !bytes.Equal(got[offProtect:offProtect+len(wantEcho)], wantEcho) {
 		t.Errorf(
 			"the protection echoed is %x, want %x",
 			got[offProtect:offProtect+len(wantEcho)],
 			wantEcho,
 		)
+	}
+}
+
+// The reply names CREATE_SESSION among the operations to enforce, whatever
+// list the client sent, since CREATE_SESSION refuses a caller that is not the
+// owner's proved machine credential either way (RFC 8881 section 18.35.3 lets
+// the reply differ from the request).
+func TestExchangeIDEnforcesCreateSession(t *testing.T) {
+	cases := []struct {
+		name    string
+		enforce []uint32
+		want    []byte
+	}{
+		{"none sent", nil, words(1, 2, 0, 0x800, 0)},
+		{"one word", []uint32{1}, words(1, 2, 1, 0x800, 0)},
+		{"already named", []uint32{0, 0x800}, words(1, 2, 0, 0x800, 0)},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rn := adaptertest.NewRunner(t)
+			e := newExchange(t, rn, 7)
+
+			got := e.do(
+				t,
+				protected(rn, vfs.ProtectionPrivacy),
+				args("client-a", verifier1, 0, spMach(c.enforce, nil)),
+			)
+			wantStatus(t, got, statusOK)
+
+			if !bytes.Equal(got[offProtect:offProtect+len(c.want)], c.want) {
+				t.Errorf(
+					"the protection echoed is %x, want %x",
+					got[offProtect:offProtect+len(c.want)],
+					c.want,
+				)
+			}
+		})
 	}
 }
 
