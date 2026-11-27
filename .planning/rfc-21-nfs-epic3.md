@@ -155,7 +155,7 @@ cited by number and title and not copied.
 | rule 8, real dependencies for properties of those dependencies | T3.2, T3.4, T3.6 | golden files written by hand from RFC 5531, RFC 1813 and RFC 9289, or cut from knfsd's captures, never vectors the encoder under test made; real TCP over loopback; real TLS 1.3 with certificates generated per test under `t.TempDir()` |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T3.1, T3.3, T3.4, T3.5, T3.6 | `decision:` and `ponytail:` markers named in §4 at their code sites; `stages.go`'s marker on `RPCSEC_GSS` kept as it is, for E13 to withdraw; `settings.go`'s comment on `StartTLS` rewritten; `nfs.go`'s marker on its empty tables removed with the last of them |
 | rule 10, a test must be able to fail | all | each test names the break it catches; none asserts a stub's answer; a row whose status is the fault is asserted as a matched row, which the fault alone would not show |
-| rule 11, a symbol is exported only if an interface uses it | T3.1, T3.2, T3.3, T3.4, T3.5 | `core.Conn.Remote` and `StartTLS` for `nfs/protocol`, through an RFC 20 pull request first (Q2); `vfs.ProtocolNFSv3`, `ProtocolNFSv4`, `ProtocolNLM` for the label `nfs/protocol` returns and `core.Request.Protocol`, which `core` sets with `vfs.WithProtocol`, through Q2's RFC 20 pull request; `nfsclient`'s surface for every NFS epic's tests; each `ops` package's `Table` for `nfs.go`; `protocol.ErrorTable` for the `ops` packages; `protocol.New`'s new argument for `nfs.go`. Nothing in `wire` is exported for a later epic (D11) |
+| rule 11, a symbol is exported only if an interface uses it | T3.1, T3.2, T3.3, T3.4, T3.5 | `core.Conn.Remote` and `StartTLS` for `nfs/protocol`, through an RFC 20 pull request first (Q2); `vfs.ProtocolNFSv3`, `ProtocolNFSv4`, `ProtocolNLM` for the label `nfs/protocol` returns and `core.Request.Protocol`, which the Router sets and `core` reads to label the context with `vfs.WithProtocol`, through the follow-up RFC 20 pull request (Q2, not #6239); `nfsclient`'s surface for every NFS epic's tests; each `ops` package's `Table` for `nfs.go`; `protocol.ErrorTable` for the `ops` packages; `protocol.New`'s new argument for `nfs.go`. Nothing in `wire` is exported for a later epic (D11) |
 | rule 12, each subtask creates only what it declares | all | each `ops` package arrives with its `NULL` row and test; `nfsclient` with its first loopback rows; no `Security` stage, since nothing here verifies a message (D1) |
 | rule 13, translate, never decide | T3.1, T3.3 | the credential becomes a neutral `Identity` by a pure, total function (R4); the adapter maps no id, squashes nothing and decides no privilege (R7); the cache answers only what was already decided for that call |
 | rule 14, nothing deferred is lost | all | §1.2 names the owner of each part of an obligation this epic leaves out; §9 the gaps |
@@ -263,10 +263,10 @@ row (E8); RFC 20 §4.4's `gss` package, but for D1's reading of it (Q1).
   `NLMCaps` for NLM and NSM. A whole profile, never a bit alone: privilege fails closed, so NFS's root
   keeps its privilege only through `PrivilegeOnEveryCall`, which every one of them sets. The protocol
   is a label on the call's context, `vfs.WithProtocol`, which `core` sets where it builds that
-  context, as it sets `vfs.WithHold`, from `core.Request.Protocol`, a field `Route` fills from
-  `callProtocol(prog uint32) vfs.Protocol`: `ProtocolNFSv3` for NFS v3 and MOUNT, `ProtocolNLM` for
-  NLM and NSM, both labelled `nfs3`, and `ProtocolNFSv4`. The field is `core`'s, so it joins Q2's
-  RFC 20 pull request. `pkg/vfs` gets the three constants as aliases of `entity`'s, as it already
+  context, as it sets `vfs.WithHold`, from `core.Request.Protocol`, a field the Router (NFS's
+  `Route`) sets from `callProtocol(prog uint32) vfs.Protocol`: `ProtocolNFSv3` for NFS v3 and MOUNT, `ProtocolNLM` for
+  NLM and NSM, both labelled `nfs3`, and `ProtocolNFSv4`. The field is `core`'s, so RFC 20 §4.7 gets
+  it in the follow-up RFC 20 pull request (Q2), not in #6239, which carries `Conn.Remote` but not `Request.Protocol`. `pkg/vfs` gets the three constants as aliases of `entity`'s, as it already
   aliases identity's enumerations, since an adapter imports `pkg/vfs` alone; `vfs.Caps` and its
   profiles are #5734's, which T3.1 waits for. Prior art: none found. A `decision:` marker at
   `callCaps`, naming RFC 17 §4.9's ceiling: admission fails open for a call that states `HostCall`
@@ -905,7 +905,7 @@ A suggestion only: one pull request per subtask works as well; PR 2 and PR 3 can
 
 ## 9. Open points
 
-Questions, each with its answer. Q1, Q2, Q5 and Q6 are settled (a), written into RFC 20 by #6239;
+Questions, each with its answer. Q1, Q5 and Q6 are settled (a), written into RFC 20 by #6239, and Q2 too, `Conn.Remote` by #6239 and `Request.Protocol` by the follow-up RFC 20 pull request;
 Q4 is settled by RFC 17; Q3 is pending the user's answer. Each chosen or recommended option is
 written in place above.
 
@@ -921,8 +921,9 @@ written in place above.
   - (b) This epic creates `internal/adapter/gss` with `SysCred` and `Identity`'s `AUTH_SYS` arm,
     which RFC 22's epic 4 extends; the RFC unchanged, two plans touching one package.
   - (c) This epic waits for S6c; every loopback row that reads `r.Call` waits too.
-- **Q2. `Conn.Remote`, and when `StartTLS` is asked for** (D3, D7). Settled (a), RFC 20 §4.7 and
-  §5.5 in #6239. Rule 11 adds a symbol `core`
+- **Q2. `Conn.Remote`, and when `StartTLS` is asked for** (D3, D7). Settled (a): `Conn.Remote`
+  in RFC 20 §4.7 and §5.5's sentence in #6239; `Request.Protocol` in §4.7 by the follow-up RFC 20
+  pull request. Rule 11 adds a symbol `core`
   lacks to RFC 20 §4.7 first, and `StartTLS`'s timing is RFC 20 §5.5's text.
   - (a) **Chosen:** one RFC 20 pull request adding `func (c *Conn) Remote() netip.Addr // the
     client's address as it reached this node, unmapped` to §4.7's `Conn` list, and changing §5.5's
@@ -933,8 +934,8 @@ written in place above.
     is called after the reply with `core`'s reader told separately not to read on; each writes or
     splits what RFC 20 gives one stage.
 - **Q3. How `Reconfigure` reaches the certificate files** (D9). RFC 20 §3.6 leaves it to RFC 21 with
-  its `NULL` handler; RFC 21 §2.2 does not state it, so Q2's RFC pull request, which also amends RFC 21, proposes the
-  sentence.
+  its `NULL` handler; RFC 21 §2.2 does not state it, so the sentence is proposed for an RFC 21 pull request not yet
+  opened, once Q3 is answered.
   - (a) **Recommended:** the adapter `nfs.New` returns wraps `Reconfigure`, loading the next
     settings' certificates before `core`'s, and each connection takes the configuration its snapshot
     names. Proposed for RFC 21 §2.2: "The adapter loads the certificate files `adapters.nfs.tls` names
@@ -986,22 +987,27 @@ Gaps, not questions:
   charged past a quarter of the reply pool, which an NFSv3 `READ` could meet. E4's RFC 21 pull
   request proposes its NFSv3 row (E4's §9, point 3), and E4's T4.3 adds it once agreed; E16's
   totality test (T16.11) fails until it has one.
-- Which pull request carries which RFC amendment: Q2's RFC 20 pull request carries `Conn.Remote`
-  and `Request.Protocol` in §4.7, §5.5's `StartTLS` sentence and RFC 21 §11's "once per member" clause, Q5's sentence of
-  §4.7, Q6's text, Q3's sentence for RFC 21 §2.2, §11.5's NSM and MOUNT cases below and §11.2's key
-  below; this pull request adds only a `.planning/` file and carries no RFC text. Q1's option (a)
-  rewords RFC 20 §4.4.
+- Which pull request carries which RFC amendment: #6239 carries `Conn.Remote` in RFC 20 §4.7 and §5.5's
+  `StartTLS` sentence (verified on develop). The follow-up RFC 20 pull request (Q2's) carries
+  `Request.Protocol` in §4.7, the §4.4 wording that takes `Protocol` out of `r.Call`, RFC 17 §3.0's
+  label sentence, and RFC 21 §11's "once per member" clause, rewritten to "once for the whole
+  `COMPOUND`". Q1's option (a), the §4.4 rewording, is in #6239 (its AUTH_SYS translation is
+  verified on develop; its `Protocol` in `r.Call` is not, and the follow-up removes it). Q3's sentence
+  for RFC 21 §2.2 has no pull request yet, since Q3 is pending the user's answer. §11.5's NSM and
+  MOUNT cases (bullet below) go in T3.4's RFC 21 pull request and §11.2's key (bullet below) in
+  T3.3's, each opened before its subtask's code; neither is on develop. This plan's own pull
+  request adds only a `.planning/` file and carries no RFC text.
   Its RFC 20 pull request also carries E8's Q1 to Q3, E11's Q2, E13's Q3 and E16's Q3. E5's pull
   request touches RFC 20 §4.10, and E4's and E5's other rows of RFC 21 §11.5.
 - RFC 21 §11.5 sends `ErrMoved` to no reply in NFSv3's, MOUNT's and NLM's tables and names
   `ErrLogonFailure`'s fault for NFSv3 and NLM only; NSM and MOUNT follow the same rule (R16, R19,
-  R22), and Q2's RFC pull request adds them to §11.5's text.
+  R22), and T3.4's RFC 21 pull request adds them to §11.5's text.
 - RFC 21 §11.2 keys the cache "by the NFSv3 or NFSv4.0 row's retry identity", (client address, XID,
   procedure, checksum of the arguments). D5's key adds the program and version, the caller's
   `Identity` fields, which RFC 20 §4.4 requires of any cache keyed on identity (R46), and the
   connection's TLS state (R43), and checksums a bounded prefix of the arguments; a key with more
   fields only splits entries §11.2's would share. The request ID §11.2 derives from the retry
-  identity is unaffected and deferred. Q2's RFC pull request rewords §11.2's sentence to "keyed by
+  identity is unaffected and deferred. T3.3's RFC 21 pull request rewords §11.2's sentence to "keyed by
   the retry identity, the program, version and caller".
 - What sends no reply is counted nowhere: D8's close under `require`, and `ErrDraining` and
   `ErrMoved` where they send none. A reason label on an existing `core` series is RFC 20 §10's to

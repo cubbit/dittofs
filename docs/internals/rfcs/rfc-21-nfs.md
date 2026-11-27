@@ -2179,8 +2179,11 @@ echoes the tag; its members are decoded one by one, each by its own row's decode
 A member that does not decode is `NFS4ERR_BADXDR`; a `COMPOUND` whose own
 arguments do not, and a procedure of any other program, `GARBAGE_ARGS` (§11.5). The credential is decoded with the RPC header,
 which means its `opaque_auth` envelope, and
-the `Identity` and `r.Call` of §11.1 are built by the pipeline once per
-member, never by a handler, NFSv4's included.
+the `Identity` and `r.Call` of §11.1 are built by the Router once for the whole
+`COMPOUND`, its members passing that one `r.Call`, and the `needs` check runs
+once per member through the compound row's `Op.Members`
+([RFC 20 §4.4](rfc-20-adapters.md#4.4%20Identity)), never by a handler,
+NFSv4's included.
 
 ### 11.1 Identity
 
