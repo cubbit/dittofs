@@ -186,8 +186,10 @@ dockers_v2:
       - "marmos91c/dittofs"
     # decision: latest moves only when release.yml's IS_LATEST says this tag is
     # the highest non-rc version, and the major tag only when IS_LATEST_MAJOR
-    # says it is the highest of its major, so a hotfix of an older line never
-    # takes over a newer one. The minor tag stays: a hotfix is the newest patch
+    # says it is the highest of its major. hotfix.sh patches only the newest
+    # final release, so these are a safety net against a tag pushed out of
+    # order, not a way to release an older line. The minor tag stays: a hotfix
+    # is the newest patch
     # of its minor. Empty tags are dropped.
     tags:
       - "{{ .Tag }}"
@@ -239,8 +241,9 @@ homebrew_casks:
     homepage: "https://github.com/cubbit/dittofs"
     description: "DittoFS server daemon: modular virtual filesystem with pluggable storage"
     # decision: only the highest non-rc version updates the tap and the bucket
-    # (release.yml's IS_LATEST); any other tag, a hotfix of an older line or an
-    # rc, leaves the manifest in dist/.
+    # (release.yml's IS_LATEST); an rc, or a lower tag pushed out of order,
+    # leaves the manifest in dist/. A safety net: hotfix.sh releases only the
+    # next patch of the newest final release.
     skip_upload: '{{ if eq (index .Env "IS_LATEST") "true" }}false{{ else }}true{{ end }}'
 
   - name: dfsctl
@@ -272,8 +275,9 @@ homebrew_casks:
     homepage: "https://github.com/cubbit/dittofs"
     description: "DittoFS CLI client — remote management for DittoFS servers"
     # decision: only the highest non-rc version updates the tap and the bucket
-    # (release.yml's IS_LATEST); any other tag, a hotfix of an older line or an
-    # rc, leaves the manifest in dist/.
+    # (release.yml's IS_LATEST); an rc, or a lower tag pushed out of order,
+    # leaves the manifest in dist/. A safety net: hotfix.sh releases only the
+    # next patch of the newest final release.
     skip_upload: '{{ if eq (index .Env "IS_LATEST") "true" }}false{{ else }}true{{ end }}'
 
 # Scoop bucket manifests for Windows distribution
@@ -293,8 +297,9 @@ scoops:
     description: "DittoFS server daemon — modular virtual filesystem with pluggable storage backends"
     license: "MIT"
     # decision: only the highest non-rc version updates the tap and the bucket
-    # (release.yml's IS_LATEST); any other tag, a hotfix of an older line or an
-    # rc, leaves the manifest in dist/.
+    # (release.yml's IS_LATEST); an rc, or a lower tag pushed out of order,
+    # leaves the manifest in dist/. A safety net: hotfix.sh releases only the
+    # next patch of the newest final release.
     skip_upload: '{{ if eq (index .Env "IS_LATEST") "true" }}false{{ else }}true{{ end }}'
 
   - name: dfsctl
@@ -312,8 +317,9 @@ scoops:
     description: "DittoFS CLI client — remote management for DittoFS servers"
     license: "MIT"
     # decision: only the highest non-rc version updates the tap and the bucket
-    # (release.yml's IS_LATEST); any other tag, a hotfix of an older line or an
-    # rc, leaves the manifest in dist/.
+    # (release.yml's IS_LATEST); an rc, or a lower tag pushed out of order,
+    # leaves the manifest in dist/. A safety net: hotfix.sh releases only the
+    # next patch of the newest final release.
     skip_upload: '{{ if eq (index .Env "IS_LATEST") "true" }}false{{ else }}true{{ end }}'
 
 release:
@@ -325,7 +331,8 @@ release:
   prerelease: auto
 
   # decision: GitHub's "latest" release goes only to the highest non-rc version
-  # (release.yml's IS_LATEST), so a hotfix of an older line never takes it.
+  # (release.yml's IS_LATEST), a safety net against a lower tag pushed out of
+  # order.
   make_latest: '{{ if eq (index .Env "IS_LATEST") "true" }}true{{ else }}false{{ end }}'
 
   # Release notes
@@ -437,7 +444,11 @@ release:
 
     Multi-architecture images are available for `linux/amd64` and `linux/arm64`:
     - `marmos91c/dittofs:{{ .Tag }}` - This specific version
+    {{- if eq (index .Env "IS_LATEST") "true" }}
     - `marmos91c/dittofs:latest` - Latest stable release
+    {{- end }}
+    {{- if eq (index .Env "IS_LATEST_MAJOR") "true" }}
     - `marmos91c/dittofs:v{{ .Major }}` - Latest v{{ .Major }}.x.x
+    {{- end }}
     - `marmos91c/dittofs:v{{ .Major }}.{{ .Minor }}` - Latest v{{ .Major }}.{{ .Minor }}.x
     - `marmos91c/dittofs:{{ .Tag }}-foundationdb` - This version, built with the FoundationDB metadata backend

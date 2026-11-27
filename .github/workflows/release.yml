@@ -7,13 +7,23 @@ on:
 
 permissions: {}
 
+# decision: release runs one at a time, so the latest job's tag comparison and
+# the uploads it gates happen in the same serialized run, and two tags pushed
+# close together cannot both claim "latest". GitHub keeps one pending run per
+# group and cancels an older pending one when a third arrives: rerun a
+# cancelled tag's workflow by hand.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   # decision: "latest" (Docker :latest, the Homebrew casks,
   # the Scoop manifests, the S3 latest file and install script, GitHub's latest
   # release, the operator's :latest and the docs site's Latest) goes only to the
-  # highest non-rc version tag in the repository, so a hotfix of an older line
-  # never takes it over. Docker's major tag goes to the highest version of its
-  # major. The versioned artifacts always publish.
+  # highest non-rc version tag in the repository, and Docker's major tag to the
+  # highest version of its major. hotfix.sh releases only the next patch of the
+  # newest final release, so this is a safety net against a lower tag pushed
+  # out of order. The versioned artifacts always publish.
   latest:
     name: Is this the latest version
     runs-on: ubuntu-latest
