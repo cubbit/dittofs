@@ -2,27 +2,62 @@
 // pass's chunks into block plans. It does no I/O, keeps nothing between passes
 // and declares no interface. Only the node's content wiring imports it.
 //
-// Every body is a stub behind its final signature: a function with an error
-// returns errors.ErrUnsupported, one without returns its zero value.
+// Add and Finish are stubs behind their final signatures, returning their zero
+// values.
 package assembler
 
 import (
-	"errors"
+	"fmt"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/carver"
 )
+
+// decision: a block holds at most maxChunks carried chunks because that is the
+// count cap N of block format version one (RFC 2 P4), which bounds the block
+// header the remote tier's codec writes. It changes only with a block format
+// version that raises it, beside that codec.
+const maxChunks = 1024
 
 // Fold packs one pass's chunks into block plans (RFC 2 §5). One Fold serves
 // one pass and does no I/O; the plans it returns inherit the pass's namespace
 // and chunk-ID key, which the pass, not the plan, records.
 type Fold struct{}
 
-// New starts a pass's fold. It refuses a BlockTarget outside
-// carver.MinBlockTarget to carver.MaxBlockTarget with
-// carver.ErrInvalidSettings, never clamping it.
+// New starts a pass's fold. It refuses, with carver.ErrInvalidSettings naming
+// the field, a BlockTarget outside carver.MinBlockTarget to
+// carver.MaxBlockTarget, a MaxChunks under 1 or above the block format's count
+// cap, a KeyBudget under 1, a negative BlockKeys, FileKeys or MaxAge. A refused
+// setting is never clamped or replaced by a default, and a refused New returns
+// a nil Fold.
+//
+// decision: the BlockTarget range's upper bound is derived from P4 and the
+// default chunking Target: 1,024 chunks of the default 64 KiB Min. The 4 MiB
+// default and the 1 MiB floor are proposals, not measurements; the default is
+// confirmed per service by the block-size benchmark (RFC 4 Appendix B), and the
+// floor is lowered if it finds a supported service whose put cost per byte is
+// flat below 1 MiB.
+//
+// decision: New does not refuse a KeyBudget too small to hold the per-block
+// and per-file keys and one chunk's: that is RFC 6 §5.2's floor on K, which is
+// derived from the backend, never configured, and checked when the store
+// starts. New refuses only what no fold could honour.
 func New(c carver.AssemblerConfig) (*Fold, error) {
-	return nil, errors.ErrUnsupported
+	switch {
+	case c.BlockTarget < carver.MinBlockTarget || c.BlockTarget > carver.MaxBlockTarget:
+		return nil, fmt.Errorf("%w: BlockTarget %d is outside %d to %d bytes", carver.ErrInvalidSettings, c.BlockTarget, carver.MinBlockTarget, carver.MaxBlockTarget)
+	case c.MaxChunks < 1 || c.MaxChunks > maxChunks:
+		return nil, fmt.Errorf("%w: MaxChunks %d is outside 1 to %d", carver.ErrInvalidSettings, c.MaxChunks, maxChunks)
+	case c.KeyBudget < 1:
+		return nil, fmt.Errorf("%w: KeyBudget %d is under 1", carver.ErrInvalidSettings, c.KeyBudget)
+	case c.BlockKeys < 0:
+		return nil, fmt.Errorf("%w: BlockKeys %d is negative", carver.ErrInvalidSettings, c.BlockKeys)
+	case c.FileKeys < 0:
+		return nil, fmt.Errorf("%w: FileKeys %d is negative", carver.ErrInvalidSettings, c.FileKeys)
+	case c.MaxAge < 0:
+		return nil, fmt.Errorf("%w: MaxAge %v is negative", carver.ErrInvalidSettings, c.MaxAge)
+	}
+	return &Fold{}, nil
 }
 
 // Add folds in the next chunk, in file order, and returns the plans it closed
