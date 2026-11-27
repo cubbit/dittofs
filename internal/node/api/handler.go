@@ -180,10 +180,14 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request, rows []route) {
 	}
 	ctx, span := s.tracer.Start(ctx, op)
 	var a answer
-	release, err := s.enter(rt)
+	var release func()
+	done, err := s.accept(rt)
 	if err == nil {
-		defer release()
-		a, err = s.run(ctx, r, rt, id)
+		defer done()
+		if release, err = s.enter(rt); err == nil {
+			defer release()
+			a, err = s.run(ctx, r, rt, id)
+		}
 	}
 	if err == nil && a.park != nil {
 		// A parked poll holds no call slot: it gives its slot back here,

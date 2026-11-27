@@ -151,9 +151,16 @@ type Server struct {
 	// startRights is the right that may start each kind of operation, which
 	// a cancel of one asks.
 	startRights map[apiv1.OpKind]auth.Right
-	// quit closes once the API listener shuts down, so a parked poll
-	// answers rather than holding Stop until its wait has passed.
-	quit chan struct{}
+	// quit closes once the server stops accepting calls or the API
+	// listener shuts down, so a parked poll answers rather than holding
+	// Close or Stop until its wait has passed; endPolls closes it once.
+	quit     chan struct{}
+	endPolls func()
+	// closing guards closed, set by Close, and running, the calls accepted
+	// before it, which Close waits for.
+	closing sync.RWMutex
+	closed  bool
+	running sync.WaitGroup
 
 	// seen, nil but in a test, is handed each write's body as read, then
 	// its decoded body, so a test can see each cleared once the write
@@ -267,7 +274,8 @@ func newServer(d Deps, rows []route) *Server {
 		},
 	}
 	s.met = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second}
-	s.api.RegisterOnShutdown(sync.OnceFunc(func() { close(s.quit) }))
+	s.endPolls = sync.OnceFunc(func() { close(s.quit) })
+	s.api.RegisterOnShutdown(s.endPolls)
 	return s
 }
 
@@ -353,6 +361,21 @@ func (s *Server) serve(srv *http.Server, l net.Listener) {
 	if err := srv.Serve(l); !errors.Is(err, http.ErrServerClosed) {
 		s.d.Logger.Error("node api: listener failed", "addr", l.Addr().String(), "err", err)
 	}
+}
+
+// Close stops the server accepting calls, as RFC 23 §2.2's stop step 3 does
+// before the operation runner stops: every call accepted after it is
+// refused 503 but a row that answers before ready, a parked poll answers its
+// last read at once, and Close returns once every call accepted before it
+// has answered. The listeners stay open, so the health probes answer until
+// Stop.
+func (s *Server) Close(context.Context) error {
+	s.closing.Lock()
+	s.closed = true
+	s.closing.Unlock()
+	s.endPolls()
+	s.running.Wait()
+	return nil
 }
 
 // Stop closes the listeners, waiting for the requests in flight until ctx

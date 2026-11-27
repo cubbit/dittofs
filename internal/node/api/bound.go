@@ -15,7 +15,29 @@ var (
 	// again, so a retry is answered the same way until the node is restarted.
 	errStartFailed = &refusal{code: apiv1.CodeUnavailable, detail: "the node's start failed; it serves no call until it is restarted", wait: -1}
 	errBusy        = &refusal{code: apiv1.CodeUnavailable, detail: "the node runs as many API calls as it may"}
+	errStopping    = &refusal{code: apiv1.CodeUnavailable, detail: "the node is stopping"}
 )
+
+// accept admits a call on rt while the server takes calls and returns what
+// marks it answered, which Close waits for. Once Close ran, a call on a row
+// that answers before ready is still admitted, untracked, so the health and
+// version rows answer a stopping node, and a failed start's, until Stop
+// closes the listeners; every other call is refused, as a failed start's
+// calls are refused before it.
+func (s *Server) accept(rt *route) (done func(), err error) {
+	s.closing.RLock()
+	defer s.closing.RUnlock()
+	switch {
+	case !s.closed:
+		s.running.Add(1)
+		return s.running.Done, nil
+	case rt != nil && rt.beforeReady:
+		return func() {}, nil
+	case s.d.Served != nil && !s.d.Served():
+		return nil, errStartFailed
+	}
+	return nil, errStopping
+}
 
 // enter admits a call on rt into one of the 64 slots and returns what gives it back once.
 //

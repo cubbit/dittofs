@@ -182,7 +182,7 @@ func TestStartAndStopInOrder(t *testing.T) {
 		"adapters":        {ready: starting, metrics: scraped, registered: true, address: api, epoch: 1, incarnation: before + 2},
 		"reconcile":       {ready: starting, metrics: scraped, registered: true, address: api, epoch: 1, incarnation: before + 2},
 	}
-	steps := []string{"refuse", "listeners", "register", "apply", "engine", "identity", "filesystem", "runner", "first reconcile", "adapters", "reconcile"}
+	steps := []string{"refuse", "listeners", "register", "apply", "engine", "identity", "filesystem", "runner", "api", "first reconcile", "adapters", "reconcile"}
 	if got := s.reported(); !slices.Equal(got, steps) {
 		t.Fatalf("start steps: got %v, want %v", got, steps)
 	}
@@ -201,7 +201,7 @@ func TestStartAndStopInOrder(t *testing.T) {
 	if err := h.Node().Stop(t.Context()); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	stops := []string{"stop reconcile", "stop adapters", "stop runner", "stop filesystem", "stop budgets", "stop identity", "stop engine", "stop listeners", "stop store"}
+	stops := []string{"stop reconcile", "stop adapters", "stop api", "stop runner", "stop filesystem", "stop budgets", "stop identity", "stop engine", "stop listeners", "stop store"}
 	if got := s.reported()[len(steps):]; !slices.Equal(got, stops) {
 		t.Fatalf("stop steps: got %v, want %v", got, stops)
 	}
@@ -317,13 +317,13 @@ func TestStartFailureUndoesTheEarlierSteps(t *testing.T) {
 			}
 		}, registered: true, epoch: 1, undone: []string{"stop engine"}, want: "before any State was applied"},
 		{step: "filesystem", fault: func(string) sim.Rule { return failOn(kvtest.OpSet, "SH‖*", 2) }, registered: true, epoch: 1, undone: []string{"stop identity", "stop engine"}},
-		{step: "first reconcile", fault: func(string) sim.Rule { return failOn(kvtest.OpGet, "CFGGEN", 4) }, registered: true, epoch: 1, undone: []string{"stop runner", "stop filesystem", "stop budgets", "stop identity", "stop engine"}, want: "first reconcile: injected"},
+		{step: "first reconcile", fault: func(string) sim.Rule { return failOn(kvtest.OpGet, "CFGGEN", 4) }, registered: true, epoch: 1, undone: []string{"stop api", "stop runner", "stop filesystem", "stop budgets", "stop identity", "stop engine"}, want: "first reconcile: injected"},
 		// The first status write fails the start rather than being logged, or
 		// the node would read ready while the store holds the last start's
 		// status, ports a restart has released.
 		{step: "reconcile", fault: func(k string) sim.Rule {
 			return failOn(kvtest.OpSet, k+hex.EncodeToString([]byte{keys.NSt}), 1)
-		}, registered: true, epoch: 1, undone: []string{"stop adapters", "stop runner", "stop filesystem", "stop budgets", "stop identity", "stop engine"}, want: "write the node status: injected"},
+		}, registered: true, epoch: 1, undone: []string{"stop adapters", "stop api", "stop runner", "stop filesystem", "stop budgets", "stop identity", "stop engine"}, want: "write the node status: injected"},
 	} {
 		t.Run(tc.step, func(t *testing.T) {
 			var h *nodetest.Harness
@@ -450,7 +450,7 @@ func TestStopWithAnEndedContext(t *testing.T) {
 	if err := h.Node().Stop(ctx); err != nil {
 		t.Errorf("Stop with an ended context: got %v, want nil", err)
 	}
-	stops := []string{"stop reconcile", "stop adapters", "stop runner", "stop filesystem", "stop budgets", "stop identity", "stop engine", "stop listeners", "stop store"}
+	stops := []string{"stop reconcile", "stop adapters", "stop api", "stop runner", "stop filesystem", "stop budgets", "stop identity", "stop engine", "stop listeners", "stop store"}
 	if got := stopsIn(s.reported()); !slices.Equal(got, stops) {
 		t.Errorf("parts stopped with an ended context: got %v, want %v", got, stops)
 	}
@@ -815,7 +815,7 @@ func TestStopStepPastItsBound(t *testing.T) {
 	if stopErr == nil || !strings.Contains(stopErr.Error(), "stop runner: not stopped within") || !strings.Contains(stopErr.Error(), "stop store: left open") {
 		t.Errorf("Stop with the runner held: got %v, want the runner named past its bound and the store left open", stopErr)
 	}
-	stops := []string{"stop reconcile", "stop adapters", "stop filesystem", "stop budgets", "stop identity", "stop engine", "stop listeners"}
+	stops := []string{"stop reconcile", "stop adapters", "stop api", "stop filesystem", "stop budgets", "stop identity", "stop engine", "stop listeners"}
 	if got := stopsIn(s.reported()); !slices.Equal(got, stops) {
 		t.Errorf("parts stopped with the runner held: got %v, want %v", got, stops)
 	}
@@ -870,7 +870,7 @@ func TestStopStoreClosePastItsBound(t *testing.T) {
 	if stopErr == nil || !strings.Contains(stopErr.Error(), "stop store: not stopped within 30s") {
 		t.Errorf("Stop with the store's close held: got %v, want the store named past its bound", stopErr)
 	}
-	stops := []string{"stop reconcile", "stop adapters", "stop runner", "stop filesystem", "stop budgets", "stop identity", "stop engine", "stop listeners"}
+	stops := []string{"stop reconcile", "stop adapters", "stop api", "stop runner", "stop filesystem", "stop budgets", "stop identity", "stop engine", "stop listeners"}
 	if got := stopsIn(s.reported()); !slices.Equal(got, stops) {
 		t.Errorf("parts stopped with the store's close held: got %v, want %v", got, stops)
 	}
@@ -935,7 +935,7 @@ func TestStopLeavesTheEngineUnderAHeldFilesystem(t *testing.T) {
 			t.Errorf("Stop with the filesystem's call held: got %v, want it to say %q", stopErr, want)
 		}
 	}
-	stops := []string{"stop reconcile", "stop adapters", "stop runner", "stop listeners"}
+	stops := []string{"stop reconcile", "stop adapters", "stop api", "stop runner", "stop listeners"}
 	if got := stopsIn(s.reported()); !slices.Equal(got, stops) {
 		t.Errorf("parts stopped with the filesystem held: got %v, want %v", got, stops)
 	}
