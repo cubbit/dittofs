@@ -18,7 +18,7 @@ func (x *void) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(void)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -29,7 +29,7 @@ func (x *void) EncodeWire(v uint32, out *resources.Buf) error {
 func (x *void) decodeXDR(d *wire.Decoder, v uint32) {
 }
 
-func (x *void) encodeXDR(e *wire.Encoder, v uint32) {
+func (x *void) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
 }
 
 func (*void) MaxWire(v uint32) int {

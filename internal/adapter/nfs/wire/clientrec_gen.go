@@ -17,7 +17,7 @@ func (x *ClientRec) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(ClientRec)
 	}
 	e := Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -37,13 +37,13 @@ func (x *ClientRec) decodeXDR(d *Decoder, v uint32) {
 	}
 }
 
-func (x *ClientRec) encodeXDR(e *Encoder, v uint32) {
+func (x *ClientRec) encodeXDR(e *Encoder, out *resources.Buf, v uint32) {
 	e.Uint32(x.Kind)
 	switch {
 	case x.Kind == 2:
-		x.NFS4.encodeXDR(e, v)
+		x.NFS4.encodeXDR(e, out, v)
 	case x.Kind == 3:
-		x.NLM.encodeXDR(e, v)
+		x.NLM.encodeXDR(e, out, v)
 	default:
 		e.NoArm(uint32(x.Kind))
 	}
@@ -73,7 +73,7 @@ func (x *ClientRecNFS4) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(ClientRecNFS4)
 	}
 	e := Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -107,7 +107,7 @@ func (x *ClientRecNFS4) decodeXDR(d *Decoder, v uint32) {
 	}
 }
 
-func (x *ClientRecNFS4) encodeXDR(e *Encoder, v uint32) {
+func (x *ClientRecNFS4) encodeXDR(e *Encoder, out *resources.Buf, v uint32) {
 	e.Uint32(x.Minor)
 	e.Uint32(x.SessionSeq)
 	e.Opaque(x.SessionReply, 256)
@@ -121,11 +121,11 @@ func (x *ClientRecNFS4) encodeXDR(e *Encoder, v uint32) {
 	}
 	e.Bool(x.Callback != nil)
 	if x.Callback != nil {
-		x.Callback.encodeXDR(e, v)
+		x.Callback.encodeXDR(e, out, v)
 	}
 	e.Bool(x.Confirm != nil)
 	if x.Confirm != nil {
-		x.Confirm.encodeXDR(e, v)
+		x.Confirm.encodeXDR(e, out, v)
 	}
 }
 
@@ -157,7 +157,7 @@ func (x *CBClient4) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(CBClient4)
 	}
 	e := Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -172,7 +172,7 @@ func (x *CBClient4) decodeXDR(d *Decoder, v uint32) {
 	x.Ident = d.Uint32()
 }
 
-func (x *CBClient4) encodeXDR(e *Encoder, v uint32) {
+func (x *CBClient4) encodeXDR(e *Encoder, out *resources.Buf, v uint32) {
 	e.Uint32(x.Program)
 	e.String(x.NetID, 16)
 	e.String(x.Addr, 64)
@@ -201,7 +201,7 @@ func (x *ClientRecConfirm) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(ClientRecConfirm)
 	}
 	e := Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -213,7 +213,7 @@ func (x *ClientRecConfirm) decodeXDR(d *Decoder, v uint32) {
 	d.Fixed(x.Verifier[:])
 }
 
-func (x *ClientRecConfirm) encodeXDR(e *Encoder, v uint32) {
+func (x *ClientRecConfirm) encodeXDR(e *Encoder, out *resources.Buf, v uint32) {
 	e.Fixed(x.Verifier[:])
 }
 
@@ -236,7 +236,7 @@ func (x *ClientRecNLM) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(ClientRecNLM)
 	}
 	e := Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -251,7 +251,7 @@ func (x *ClientRecNLM) decodeXDR(d *Decoder, v uint32) {
 	x.Server = d.Opaque(16)
 }
 
-func (x *ClientRecNLM) encodeXDR(e *Encoder, v uint32) {
+func (x *ClientRecNLM) encodeXDR(e *Encoder, out *resources.Buf, v uint32) {
 	e.String(x.MonName, 1024)
 	e.Fixed(x.Priv[:])
 	e.Opaque(x.Host, 16)

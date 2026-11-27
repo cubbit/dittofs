@@ -249,7 +249,7 @@ func TestGenerateInsideWire(t *testing.T) {
 				":= " + q + "Decoder{B: b}",
 				":= " + q + "Encoder{B: out.B}",
 				"(d *" + q + "Decoder, v uint32)",
-				"(e *" + q + "Encoder, v uint32)",
+				"(e *" + q + "Encoder, out *resources.Buf, v uint32)",
 			} {
 				if !bytes.Contains(out, []byte(want)) {
 					t.Errorf("no %q in:\n%s", want, out)

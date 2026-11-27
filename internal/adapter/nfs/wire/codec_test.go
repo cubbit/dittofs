@@ -89,6 +89,7 @@ func vectors(t testing.TB) []struct {
 		{"codec-post-op-fh-absent", 0, &PostOpFH{}},
 		{"codec-write-args", 0, &Write4Args{StateID: stateID(1), Offset: 4 << 30, Stable: 2, Data: []byte("hello")}},
 		{"codec-void", 0, &Void{}},
+		{"codec-segmented", 0, &Segmented{EOF: true, Data: &resources.Buf{B: []byte("segment")}}},
 		{"codec-sample-v0", 0, &sample},
 		{"codec-sample-v1", 1, &sampleV1},
 	}
@@ -112,9 +113,14 @@ func TestCodecGoldenVectors(t *testing.T) {
 			if err := c.want.EncodeWire(c.v, &out); err != nil {
 				t.Fatal(err)
 			}
-			if !bytes.Equal(out.B, b) {
-				t.Errorf("encoded\n  %x\nwant\n  %x", out.B, b)
+			var flat []byte
+			for _, part := range out.AppendBuffers(nil) {
+				flat = append(flat, part...)
 			}
+			if !bytes.Equal(flat, b) {
+				t.Errorf("encoded\n  %x\nwant\n  %x", flat, b)
+			}
+			out.Release()
 		})
 	}
 }
@@ -331,7 +337,7 @@ func TestCodecIsZero(t *testing.T) {
 			t.Fatalf("no value set for a %s", v.Type())
 		}
 	}
-	for _, c := range []codec{&SetClientIDArgs{}, &SetattrArgs{}, &ACL{}, &OpenClaim{}, &SetTime{}, &PostOpFH{}, &Write4Args{}, &Void{}, &Sample{}} {
+	for _, c := range []codec{&SetClientIDArgs{}, &SetattrArgs{}, &ACL{}, &OpenClaim{}, &SetTime{}, &PostOpFH{}, &Write4Args{}, &Void{}, &Sample{}, &Segmented{}} {
 		if !fresh(c).IsZero() {
 			t.Errorf("a zero %T is not zero", c)
 		}
@@ -353,7 +359,7 @@ func TestCodecIsZero(t *testing.T) {
 // a nil reply, the answer of a request refused before its call, and writes its
 // fail arm whole from an empty one.
 func TestCodecNilEncodesAsEmpty(t *testing.T) {
-	for _, c := range []codec{&SetClientIDArgs{}, &SetattrArgs{}, &ACL{}, &OpenClaim{}, &SetTime{}, &PostOpFH{}, &Write4Args{}, &Void{}, &Sample{}} {
+	for _, c := range []codec{&SetClientIDArgs{}, &SetattrArgs{}, &ACL{}, &OpenClaim{}, &SetTime{}, &PostOpFH{}, &Write4Args{}, &Void{}, &Sample{}, &Segmented{}} {
 		var empty, null resources.Buf
 		if err := fresh(c).EncodeWire(1, &empty); err != nil {
 			t.Fatalf("%T: the empty one: %v", c, err)

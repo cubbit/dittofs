@@ -49,6 +49,8 @@ func (g *gen) size(t *xtype) (int, string) {
 		return t.n * n, ""
 	case kOpaque, kString:
 		return 4 + pad4(t.n), ""
+	case kSegment:
+		return 4 + pad4(t.n), ""
 	case kArray:
 		n, expr := g.size(t.elem)
 		if expr == "" {
@@ -78,6 +80,8 @@ func goType(t *xtype) string {
 	switch {
 	case t.name != "":
 		return t.name
+	case t.kind == kSegment:
+		return "*resources.Buf"
 	case t.kind == kFixed:
 		return fmt.Sprintf("[%d]byte", t.n)
 	case t.kind == kVector:
@@ -109,6 +113,8 @@ func (g *gen) decode(b *bytes.Buffer, lv string, t *xtype, depth int) {
 		fmt.Fprintf(b, "d.Fixed(%s[:])\n", lv)
 	case kOpaque:
 		fmt.Fprintf(b, "%s = d.Opaque(%d)\n", lv, t.n)
+	case kSegment:
+		fmt.Fprintf(b, "%s = &resources.Buf{B: d.Opaque(%d)}\n", lv, t.n)
 	case kString:
 		fmt.Fprintf(b, "%s = d.String(%d)\n", lv, t.n)
 	case kVector:
@@ -141,6 +147,10 @@ func (g *gen) encode(b *bytes.Buffer, lv string, t *xtype, depth int) {
 		fmt.Fprintf(b, "e.Fixed(%s[:])\n", lv)
 	case kOpaque:
 		fmt.Fprintf(b, "e.Opaque(%s, %d)\n", lv, t.n)
+	case kSegment:
+		// A nil segment is the field's zero: an empty opaque, decoder-symmetric
+		// where a zero count decodes to a non-nil empty buffer.
+		fmt.Fprintf(b, "if %s != nil {\ne.Count(len(%s.B), %d)\nout.B = e.B\nout.Attach(%s)\ne.B = out.B\nfor i := (4 - len(%s.B) %% 4) %% 4; i > 0; i-- {\n e.B = append(e.B, 0)\n}\n} else {\ne.Count(0, %d)\n}\n", lv, lv, t.n, lv, lv, t.n)
 	case kString:
 		fmt.Fprintf(b, "e.String(%s, %d)\n", lv, t.n)
 	case kVector:
@@ -152,12 +162,12 @@ func (g *gen) encode(b *bytes.Buffer, lv string, t *xtype, depth int) {
 		g.encode(b, fmt.Sprintf("%s[i%d]", lv, depth), t.elem, depth+1)
 		b.WriteString("}\n")
 	case kOptional:
-		fmt.Fprintf(b, "e.Bool(%[1]s != nil)\nif %[1]s != nil {\n%[1]s.encodeXDR(e, v)\n}\n", lv)
+		fmt.Fprintf(b, "e.Bool(%[1]s != nil)\nif %[1]s != nil {\n%[1]s.encodeXDR(e, out, v)\n}\n", lv)
 	case kArm:
 		// No discriminant: the status before the reply selects the arm.
-		fmt.Fprintf(b, "if %[1]s != nil {\n%[1]s.encodeXDR(e, v)\n}\n", lv)
+		fmt.Fprintf(b, "if %[1]s != nil {\n%[1]s.encodeXDR(e, out, v)\n}\n", lv)
 	case kStruct:
-		fmt.Fprintf(b, "%s.encodeXDR(e, v)\n", lv)
+		fmt.Fprintf(b, "%s.encodeXDR(e, out, v)\n", lv)
 	}
 }
 
@@ -171,7 +181,7 @@ func zero(lv string, t *xtype) string {
 		return "len(" + lv + ") == 0"
 	case kFixed, kVector:
 		return lv + " == " + goType(t) + "{}"
-	case kOptional, kArm:
+	case kOptional, kArm, kSegment:
 		return lv + " == nil"
 	case kStruct:
 		return lv + ".IsZero()"
@@ -217,7 +227,7 @@ func (x *%[1]s) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(%[1]s)
 	}
 	e := %[2]sEncoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -240,7 +250,7 @@ func (x *%[1]s) EncodeWire(v uint32, out *resources.Buf) error {
 	}
 	b.WriteString("}\n")
 
-	fmt.Fprintf(b, "\nfunc (x *%s) encodeXDR(e *%sEncoder, v uint32) {\n", s.name, g.q)
+	fmt.Fprintf(b, "\nfunc (x *%s) encodeXDR(e *%sEncoder, out *resources.Buf, v uint32) {\n", s.name, g.q)
 	for _, f := range fields {
 		since(b, f.since, func() { g.encode(b, "x."+f.name, f.t, 0) })
 	}

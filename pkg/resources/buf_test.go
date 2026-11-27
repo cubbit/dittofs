@@ -1,8 +1,10 @@
 package resources
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"net"
 	"net/netip"
 	"runtime"
 	"runtime/debug"
@@ -617,5 +619,99 @@ func TestJoinOfOneAndItsRefusals(t *testing.T) {
 			}()
 			Join(c.n, bufs...)
 		}()
+	}
+}
+
+// Attach ends the buf's current segment and lends seg as the next one: the
+// bytes held at the call answer as their own part, seg's follow, and what is
+// appended after starts a new part. The lent seg is retained, its bytes held
+// until the buf's own last Release, which is what keeps a READ's data to its
+// reply's send; AppendBuffers answers the parts in order, the unattached
+// buf's bytes whole as they always were.
+func TestAttachLendsAndAppendBuffersSendsInOrder(t *testing.T) {
+	budget := NewWaitBudget("test", 1<<30)
+	p := NewBufPool(budget)
+	ctx := context.Background()
+	head, err := p.Get(ctx, netip.Addr{}, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head.B = append(head.B[:0], "head"...)
+	// The service fills its data and lets it go: the reply's Attach holds
+	// the bytes to its send.
+	data, err := p.Get(ctx, netip.Addr{}, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data.B = append(data.B[:0], "data"...)
+	c := data.Charge()
+	head.Attach(data)
+	data.Release()
+	head.B = append(head.B, "tail"...)
+
+	var bufs net.Buffers
+	bufs = head.AppendBuffers(bufs)
+	want := []byte("head" + "data" + "tail")
+	var flat []byte
+	for _, part := range bufs {
+		flat = append(flat, part...)
+	}
+	if !bytes.Equal(flat, want) {
+		t.Errorf("the segments read %q, want %q", flat, want)
+	}
+	// The lend holds the segment's reservation past the service's release:
+	// the data a reply carries is not pooled under its send.
+	if r := budget.Reserved(); r < c {
+		t.Errorf("after the service's release %d is reserved, under the lent segment's %d", r, c)
+	}
+	head.Release()
+	if r := budget.Reserved(); r != 0 {
+		t.Errorf("after the attaching buf's release %d is still reserved, want 0", r)
+	}
+}
+
+// A second segment and a tail keep their places in the send: each Attach ends
+// what came before it, and the parts read in the order they were made. The
+// segments' bytes are held by the reply alone once the service has let them
+// go, and answer their pool only at the reply's release.
+func TestAttachSegmentsReleaseWithTheBuf(t *testing.T) {
+	budget := NewWaitBudget("test", 1<<30)
+	p := NewBufPool(budget)
+	ctx := context.Background()
+	msg, err := p.Get(ctx, netip.Addr{}, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg.B = append(msg.B[:0], "m"...)
+	held := int64(0)
+	for i := range 2 {
+		seg, err := p.Get(ctx, netip.Addr{}, 128)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seg.B = append(seg.B[:0], 'a'+byte(i))
+		held += seg.Charge()
+		msg.Attach(seg)
+		seg.Release()
+	}
+	msg.B = append(msg.B, 'z')
+
+	var bufs net.Buffers
+	bufs = msg.AppendBuffers(bufs)
+	want := []byte{'m', 'a', 'b', 'z'}
+	var flat []byte
+	for _, part := range bufs {
+		flat = append(flat, part...)
+	}
+	if !bytes.Equal(flat, want) {
+		t.Errorf("two segments and a tail read %q, want %q", flat, want)
+	}
+	// The reply alone holds both segments past the service's releases.
+	if r := budget.Reserved(); r < held {
+		t.Errorf("after the service's releases %d is reserved, under the lent segments' %d", r, held)
+	}
+	msg.Release()
+	if r := budget.Reserved(); r >= held {
+		t.Errorf("after the reply's release %d is still reserved, want the segments' %d gone", r, held)
 	}
 }

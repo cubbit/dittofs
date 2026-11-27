@@ -3,6 +3,7 @@ package resources
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/netip"
 	"sync"
 	"sync/atomic"
@@ -77,10 +78,17 @@ type Buf struct {
 	// decision: the pool keeps its own slice of the bytes Get took, since a
 	// holder may cut or reassign B: the last Release poisons and pools these,
 	// not whatever B holds by then.
+	// ended holds each ended segment's bytes in send order and segs the
+	// buffers Attach lent, retained until the last Release: a reply's own
+	// bytes, then its lent segments, then the tail appended after the last
+	// one, which is B. All are nil until the first Attach, and a Buf that
+	// reaches its last Release with none is pooled as it always was.
 	mem   []byte
 	pool  *BufPool // nil on a literal Buf, which has no bytes to return
 	class int
 	res   Reservation
+	ended [][]byte
+	segs  []*Buf
 
 	// decision: borrowers counts the holders beyond the first, so a literal
 	// Buf, as a codec test builds one, is one reference like a buffer from
@@ -305,10 +313,68 @@ func (b *Buf) Charge() int64 {
 	return b.res.n
 }
 
+// Attach ends b's current segment and lends seg as the next one (RFC 20
+// §5.3): a READ's data joins its reply as a segment of its own, never copied.
+// The reply it builds is for the writer's gather alone: nothing else reads a
+// message whole — join it, cache it, wrap it, count it as the span's sent
+// bytes, or rewrite a compound's head in place over reply.B — until the
+// segments ride a copy of their own, as a replay cache must before a
+// cachethis READ lends.
+// The bytes b held at the call end as one part, seg's follow it, and what the
+// caller appends to b afterwards — the padding and any later result — starts
+// b's bytes over past the part just ended, in b's own charged bytes: appending
+// there never overwrites what ended, and neither the parts' slices nor the
+// tail allocates on a pooled reply, whose lists keep their capacity across
+// its releases. seg is retained here and released with b, so its bytes go back
+// to their pool only once the reply's own last Release runs, after the writer
+// sent it. Attach of a nil seg panics.
+func (b *Buf) Attach(seg *Buf) {
+	if seg == nil {
+		panic("resources: Attach of a nil segment")
+	}
+	b.ended = append(b.ended, b.B, seg.B)
+	b.segs = append(b.segs, seg.Retain())
+	// The tail continues past the part just ended: appending there never
+	// overwrites it, and keeps the tail in b's own charged bytes.
+	b.B = b.B[len(b.B):]
+}
+
+// AppendBuffers appends b's bytes to dst in send order with no copy: the
+// bytes b held before each Attach, every segment Attach lent, and the tail
+// appended after the last one, which is b.B. A reply the writer queues goes
+// out with its parts in this order inside the record's framing (RFC 20
+// §6.2). A Buf that never attached is its one part, b.B, as it always was.
+func (b *Buf) AppendBuffers(dst net.Buffers) net.Buffers {
+	if len(b.segs) == 0 {
+		return append(dst, b.B)
+	}
+	for _, part := range b.ended {
+		if len(part) > 0 {
+			dst = append(dst, part)
+		}
+	}
+	if len(b.B) > 0 {
+		dst = append(dst, b.B)
+	}
+	return dst
+}
+
 // Release drops a borrower; the last release returns the bytes and the
-// reservation. One more panics.
+// reservation. One more panics. The last release also releases every segment
+// Attach lent, which is what keeps a READ's buffer until its reply was sent
+// (RFC 20 §5.3).
 func (b *Buf) Release() {
-	if b.borrow(-1, "resources: release of a released buffer") > 0 || b.pool == nil {
+	if b.borrow(-1, "resources: release of a released buffer") > 0 {
+		return
+	}
+	for _, seg := range b.segs {
+		seg.Release()
+	}
+	// The parts' lists keep their capacity for the next pooled holder.
+	clear(b.segs)
+	clear(b.ended)
+	b.segs, b.ended = b.segs[:0], b.ended[:0]
+	if b.pool == nil {
 		return
 	}
 	poison(b.mem)

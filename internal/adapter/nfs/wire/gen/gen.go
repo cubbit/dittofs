@@ -36,6 +36,7 @@ const (
 	kVector // [N]T, T of a basic kind: a fixed-length array
 	kOpaque // []byte: a variable-length opaque
 	kString
+	kSegment  // *resources.Buf, tagged max=N: a lent reply segment, its bytes never copied in (RFC 20 §5.3)
 	kArray    // []T, T of a basic kind or a struct: a variable-length array
 	kOptional // *T, T a struct: optional data
 	kArm      // *T, T a struct, tagged arm: a reply's arm its status selects
@@ -368,6 +369,12 @@ func (g *gen) xdrType(e ast.Expr, max int) (t *xtype, took bool, err error) {
 		}
 		return &xtype{kind: kArray, n: max, elem: elem}, true, nil
 	case *ast.StarExpr:
+		if sel, ok := e.X.(*ast.SelectorExpr); ok && types.ExprString(sel) == "resources.Buf" {
+			if max == 0 {
+				return nil, false, errors.New("a lent segment with no maximum: tag it max=N")
+			}
+			return &xtype{kind: kSegment, n: max}, true, nil
+		}
 		elem, _, err := g.xdrType(e.X, 0)
 		if err != nil || elem.kind != kStruct {
 			return nil, false, errors.New("optional data of a type other than a struct")
@@ -428,7 +435,7 @@ func (g *gen) bounds() {
 			return uint64(pad4(t.n))
 		case kVector:
 			return mul(uint64(t.n), size(t.elem))
-		case kOpaque, kString:
+		case kOpaque, kString, kSegment:
 			return add(4, uint64(pad4(t.n)))
 		case kArray:
 			return add(4, mul(uint64(t.n), size(t.elem)))

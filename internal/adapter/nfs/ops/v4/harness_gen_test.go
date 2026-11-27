@@ -18,7 +18,7 @@ func (x *write4Args) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(write4Args)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -33,8 +33,8 @@ func (x *write4Args) decodeXDR(d *wire.Decoder, v uint32) {
 	x.Data = d.Opaque(1048576)
 }
 
-func (x *write4Args) encodeXDR(e *wire.Encoder, v uint32) {
-	x.Stateid.encodeXDR(e, v)
+func (x *write4Args) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
+	x.Stateid.encodeXDR(e, out, v)
 	e.Uint64(x.Offset)
 	e.Uint32(x.Stable)
 	e.Opaque(x.Data, 1048576)
@@ -64,7 +64,7 @@ func (x *stateid4) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(stateid4)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -77,7 +77,7 @@ func (x *stateid4) decodeXDR(d *wire.Decoder, v uint32) {
 	d.Fixed(x.Other[:])
 }
 
-func (x *stateid4) encodeXDR(e *wire.Encoder, v uint32) {
+func (x *stateid4) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
 	e.Uint32(x.Seqid)
 	e.Fixed(x.Other[:])
 }
@@ -102,7 +102,7 @@ func (x *write4Res) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(write4Res)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -114,9 +114,9 @@ func (x *write4Res) decodeXDR(d *wire.Decoder, v uint32) {
 	d.StatusArm()
 }
 
-func (x *write4Res) encodeXDR(e *wire.Encoder, v uint32) {
+func (x *write4Res) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
 	if x.Ok != nil {
-		x.Ok.encodeXDR(e, v)
+		x.Ok.encodeXDR(e, out, v)
 	}
 }
 
@@ -141,7 +141,7 @@ func (x *write4ResOk) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(write4ResOk)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -155,7 +155,7 @@ func (x *write4ResOk) decodeXDR(d *wire.Decoder, v uint32) {
 	d.Fixed(x.Verf[:])
 }
 
-func (x *write4ResOk) encodeXDR(e *wire.Encoder, v uint32) {
+func (x *write4ResOk) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
 	e.Uint32(x.Count)
 	e.Uint32(x.Committed)
 	e.Fixed(x.Verf[:])
