@@ -77,7 +77,7 @@ func mutating(t *testing.T, versions settings.VersionRange) (*memory.Service, ne
 			"mount",
 			"nlm",
 			"nsm",
-		}, Network: "tcp", Protocol: protocol.New(ts),
+		}, Network: "tcp", Protocol: protocol.New(ts, d.Budgets),
 	})
 	if err != nil {
 		t.Fatal(err)

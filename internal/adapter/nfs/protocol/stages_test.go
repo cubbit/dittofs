@@ -16,6 +16,7 @@ import (
 	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/adapter/settings"
 	"github.com/cubbit/dittofs/pkg/resources"
+	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
 // tables builds one empty table per program, so a routed table is a pointer the
@@ -566,6 +567,25 @@ func TestTheNonCalls(t *testing.T) {
 	}
 	if h, err := s.Decode(&resources.Buf{B: make([]byte, 7)}, 0); h != nil || !errors.Is(err, wire.ErrUnaddressable) || errors.Is(err, core.ErrDecode) {
 		t.Errorf("a seven-byte record: %v, %v; want no header and the wire's own error", h, err)
+	}
+}
+
+// The stages answer a delay of the resources cause nothing, wherever core
+// meets it before Route: a retransmission whose copy is still waiting on the
+// reply pool holds no reply of its own to hand out. A delay met after Route
+// is read from the program's table, not from this one.
+func TestTheResourcesDelayIsAnsweredNothing(t *testing.T) {
+	s := stageOf(settings.VersionRange{Min: "3", Max: "4.2"})
+	call := nullCall(wire.ProgNFS, 3, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil)
+
+	h, err := decode(t, s, call)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	st, answer, _ := s.errs.Map(&vfs.Delay{Cause: vfs.DelayResources}, nil, h.Version())
+	if answer {
+		t.Errorf("the resources delay is answered %#x, want the NoReply row", uint32(st))
 	}
 }
 

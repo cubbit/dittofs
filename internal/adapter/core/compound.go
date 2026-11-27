@@ -270,11 +270,13 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 	headLen := len(reply.B) - head
 
 	var (
-		status       Status
-		count        int
-		last         error
-		failed       bool
-		ranCacheable bool // a member that ran has a Cacheable row, whatever the members after it answered
+		status Status
+		count  int
+		last   error
+		failed bool
+		// a member that ran has a Cacheable row, whatever the members after
+		// it answered
+		ranCacheable bool
 	)
 	for _, m := range ms {
 		s, send, notFailure, ran, merr := p.member(tr, mts, mt.Errors, m, r, v, drained, &sum)
@@ -365,7 +367,10 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 // error, or one its table maps to a status other than the fault, ErrDelay
 // and a refusal before the handler never counted among them (§4.7). Its
 // runs of route, resolve_ids and map_error are added to sum.
-func (p *pipeline) member(tr *track, mts *tableSeries, errs *ErrorTable, m member, r *Request, v Version, drained error, sum *sums) (s Status, send, notFailure, ran bool, err error) {
+func (p *pipeline) member(
+	tr *track, mts *tableSeries, errs *ErrorTable, m member,
+	r *Request, v Version, drained error, sum *sums,
+) (s Status, send, notFailure, ran bool, err error) {
 	var called bool
 	err = p.check(m.op, r)
 	sum.add(stageRoute, p.since(tr))
@@ -402,8 +407,11 @@ func (p *pipeline) member(tr *track, mts *tableSeries, errs *ErrorTable, m membe
 	default:
 		s, send, notFailure = p.mapped(tr, errs, err, m.op, v, true)
 	}
+
 	ran = called && !errors.Is(err, vfs.ErrDelay) && (err == nil || s != errs.fault)
+
 	sum.add(stageMapError, p.since(tr))
+
 	return s, send && tr.ctx.Err() == nil, notFailure, ran, err
 }
 

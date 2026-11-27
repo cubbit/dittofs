@@ -315,11 +315,25 @@ func checkAuth(c wire.Call) (flavour uint32, sys wire.AuthSysParms, err error) {
 
 // newErrors is the stages' error table: the refusals above, GARBAGE_ARGS for a
 // record that does not decode, and the fault for anything else (RFC 21 section
-// 11.5).
+// 11.5). The reply cache's two answers send nothing: a copy the reply budget
+// could not reserve, which the client retries, and a duplicate of a call still
+// running, which it retries once the first has ended.
+//
+// decision: the resources delay row maps every ErrDelay raised before Route,
+// which is where this table applies: core reads it only until Route finds the
+// program's table and then reads that table's own rows. A delay raised later
+// by a row's handler is answered by the fault status, since the program
+// tables have no delay row, and later delays of other stages inherit this row
+// only where they are raised before Route. An NFSv4 refusal before Route
+// that needs the same silence must close the connection as Lookup does,
+// since RFC 7530 section 3.1.1 forbids a silent drop on TCP. Overturned if a
+// delay of another cause needs an answer its cause does not choose.
 func newErrors() *core.ErrorTable {
 	return core.NewErrorTable(
 		core.Status(wire.StatusAccept|wire.AcceptSystemErr),
 		core.ErrorRow{Err: errNotCall, NoReply: true},
+		core.ErrorRow{Err: &vfs.Delay{Cause: vfs.DelayResources}, NoReply: true},
+		core.ErrorRow{Err: errReplaying, NoReply: true},
 		core.ErrorRow{Err: errRPCMismatch, Status: statusRPCMismatch},
 		core.ErrorRow{Err: errProgUnavail, Status: statusProgUnavail},
 		core.ErrorRow{Err: core.ErrVersion, Status: statusProgMismatch},

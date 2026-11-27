@@ -198,7 +198,10 @@ func dial(t *testing.T, srv *core.Server) net.Conn {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = c.Close() })
+
+	t.Cleanup(func() {
+		_ = c.Close()
+	})
 	if err := c.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
@@ -298,40 +301,76 @@ func TestEachRefusalIsAnswered(t *testing.T) {
 		call, want  []byte
 		served      bool // no refusal of core's: answered by its members
 	}{
-		{"MOUNT's NULL from its empty table", "nfs3",
-			call(1, progMount, 3, 0, none), accepted(1, procUnavail), false},
-		{"NLM's NULL from its empty table", "nfs3",
-			call(31, progNLM, 4, 0, none), accepted(31, procUnavail), false},
-		{"NSM's NULL from its empty table", "nfs3",
-			call(32, progNSM, 1, 0, none), accepted(32, procUnavail), false},
-		{"NFS v2 from the stages' table", "nfs3",
-			call(2, progNFS, 2, 0, none), accepted(2, progMismatch, 3, 4), false},
-		{"an AUTH_SYS credential of 17 groups", "nfs3",
+		{
+			"MOUNT's NULL from its empty table", "nfs3",
+			call(1, progMount, 3, 0, none), accepted(1, procUnavail), false,
+		},
+		{
+			"NLM's NULL from its empty table", "nfs3",
+			call(31, progNLM, 4, 0, none), accepted(31, procUnavail), false,
+		},
+		{
+			"NSM's NULL from its empty table", "nfs3",
+			call(32, progNSM, 1, 0, none), accepted(32, procUnavail), false,
+		},
+		{
+			"NFS v2 from the stages' table", "nfs3",
+			call(2, progNFS, 2, 0, none), accepted(2, progMismatch, 3, 4), false,
+		},
+		{
+			"an AUTH_SYS credential of 17 groups", "nfs3",
 			call(3, progNFS, 3, 0, append(words(authSys), opaque(sys)...)),
-			words(3, 1, 1, 1, authBadCred), false}, // REPLY, MSG_DENIED, AUTH_ERROR
-		{"a COMPOUND of minor version 3 from the version 4 table", "nfs4",
-			call(4, progNFS, 4, 1, none, append(tag, words(3, 0)...)...),                          // COMPOUND: tag, minor version, no operations
-			append(append(accepted(4, 0, nfs4ErrMinorVersMismatch), tag...), words(0)...), false}, // SUCCESS, the status, the tag, no results
-		{"a verifier past the record", "nfs3",
-			words(5, 0, 2, progNFS, 3, 0, authNone, 0, authNone, 8), accepted(5, garbageArgs), false},
-		{"a NULL after it", "nfs3",
-			call(6, progNFS, 3, 0, none), accepted(6, procUnavail), false},
-		{name: "a COMPOUND of no operation", label: "nfs4", served: true,
-			call: golden(t, "rfc-nfs4-empty-call"), want: golden(t, "rfc-nfs4-empty-reply")},
-		{name: "a COMPOUND whose first operation is code 9999", label: "nfs4", served: true,
-			call: golden(t, "rfc-nfs4-illegal-call"), want: golden(t, "rfc-nfs4-illegal-reply")},
-		{name: "the same COMPOUND counting 128 operations", label: "nfs4", served: true,
-			call: golden(t, "rfc-nfs4-illegal-at-cap-call"), want: golden(t, "rfc-nfs4-illegal-at-cap-reply")},
-		{name: "a COMPOUND of 129 operations over NFSv4.1", label: "nfs4",
-			call: golden(t, "rfc-nfs4-too-many-ops-call"), want: golden(t, "rfc-nfs4-too-many-ops-reply")},
-		{name: "a COMPOUND of 129 operations over NFSv4.0", label: "nfs4",
-			call: golden(t, "rfc-nfs4-resource-call"), want: golden(t, "rfc-nfs4-resource-reply")},
-		{name: "a COMPOUND whose count runs past its bytes", label: "nfs4",
-			call: golden(t, "rfc-nfs4-badxdr-call"), want: golden(t, "rfc-nfs4-badxdr-reply")},
-		{name: "a COMPOUND of a READ no row serves", label: "nfs4",
-			call: golden(t, "rfc-nfs4-read-call"), want: golden(t, "rfc-nfs4-read-reply")},
-		{name: "a COMPOUND cut before its count", label: "nfs4",
-			call: golden(t, "rfc-nfs4-no-count-call"), want: golden(t, "rfc-nfs4-no-count-reply")},
+			words(3, 1, 1, 1, authBadCred), false,
+		}, // REPLY, MSG_DENIED, AUTH_ERROR
+		{
+			"a COMPOUND of minor version 3 from the version 4 table", "nfs4",
+			// COMPOUND: tag, minor version, no operations
+			call(4, progNFS, 4, 1, none, append(tag, words(3, 0)...)...),
+			append(append(accepted(4, 0, nfs4ErrMinorVersMismatch), tag...), words(0)...), false,
+		}, // SUCCESS, the status, the tag, no results
+		{
+			"a verifier past the record", "nfs3",
+			words(5, 0, 2, progNFS, 3, 0, authNone, 0, authNone, 8),
+			accepted(5, garbageArgs), false,
+		},
+		{
+			"a NULL after it", "nfs3",
+			call(6, progNFS, 3, 0, none), accepted(6, procUnavail), false,
+		},
+		{
+			name: "a COMPOUND of no operation", label: "nfs4", served: true,
+			call: golden(t, "rfc-nfs4-empty-call"), want: golden(t, "rfc-nfs4-empty-reply"),
+		},
+		{
+			name: "a COMPOUND whose first operation is code 9999", label: "nfs4", served: true,
+			call: golden(t, "rfc-nfs4-illegal-call"), want: golden(t, "rfc-nfs4-illegal-reply"),
+		},
+		{
+			name: "the same COMPOUND counting 128 operations", label: "nfs4", served: true,
+			call: golden(t, "rfc-nfs4-illegal-at-cap-call"),
+			want: golden(t, "rfc-nfs4-illegal-at-cap-reply"),
+		},
+		{
+			name: "a COMPOUND of 129 operations over NFSv4.1", label: "nfs4",
+			call: golden(t, "rfc-nfs4-too-many-ops-call"),
+			want: golden(t, "rfc-nfs4-too-many-ops-reply"),
+		},
+		{
+			name: "a COMPOUND of 129 operations over NFSv4.0", label: "nfs4",
+			call: golden(t, "rfc-nfs4-resource-call"), want: golden(t, "rfc-nfs4-resource-reply"),
+		},
+		{
+			name: "a COMPOUND whose count runs past its bytes", label: "nfs4",
+			call: golden(t, "rfc-nfs4-badxdr-call"), want: golden(t, "rfc-nfs4-badxdr-reply"),
+		},
+		{
+			name: "a COMPOUND of a READ no row serves", label: "nfs4",
+			call: golden(t, "rfc-nfs4-read-call"), want: golden(t, "rfc-nfs4-read-reply"),
+		},
+		{
+			name: "a COMPOUND cut before its count", label: "nfs4",
+			call: golden(t, "rfc-nfs4-no-count-call"), want: golden(t, "rfc-nfs4-no-count-reply"),
+		},
 	} {
 		other := map[string]string{"nfs3": "nfs4", "nfs4": "nfs3"}[tc.label]
 		before, otherBefore := recorded(t, d.Metrics, "adapter_refusals_total", tc.label), recorded(t, d.Metrics, "adapter_refusals_total", other)
@@ -422,7 +461,8 @@ func TestANullRowAnswersAsTheReferenceServer(t *testing.T) {
 			func(context.Context, *core.Request, void) (void, error) { return void{}, nil }))
 	v4.Protocol = "nfs4"
 	srv, err := core.NewServer(d, nfsSettings(allVersions), core.Listener{
-		Services: []string{"nfs"}, Network: "tcp", Protocol: protocol.New(protocol.Tables{V4: v4}),
+		Services: []string{"nfs"}, Network: "tcp",
+		Protocol: protocol.New(protocol.Tables{V4: v4}, d.Budgets),
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -1059,59 +1059,92 @@ func TestAnUnmappedErrorIsAnsweredTheFaultAndCounted(t *testing.T) {
 // error (RFC 20 §10.1).
 func TestAWaitTheCloseEndsIsNoError(t *testing.T) {
 	for _, c := range []struct {
-		name  string
-		first func(root vfs.Handle) [][]testproto.Msg // records served and answered, every reply ok, first
-		waits testproto.Msg                           // served with the pool full, its wait then ended by the close
+		name string
+		// records served and answered, every reply ok, first
+		first func(root vfs.Handle) [][]testproto.Msg
+		// served with the pool full, its wait then ended by the close
+		waits testproto.Msg
 		fill  func(s *seam, copies *resources.BufPool) func()
 	}{
-		{"the reply reservation", func(vfs.Handle) [][]testproto.Msg { return nil },
+		{
+			"the reply reservation",
+			func(vfs.Handle) [][]testproto.Msg {
+				return nil
+			},
 			testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 5},
-			func(s *seam, _ *resources.BufPool) func() { return s.full() }},
+			func(s *seam, _ *resources.BufPool) func() {
+				return s.full()
+			},
+		},
 		// The sequenced Create of the chain below ran, so its reply is cached
 		// over the copies' own pool: sent again alone, that pool full, its
 		// lookup waits for the copy's reservation, which the close ends (§4.7).
-		{"a replay copy",
+		{
+			"a replay copy",
 			func(root vfs.Handle) [][]testproto.Msg {
 				return [][]testproto.Msg{
 					{{Op: testproto.OpNegotiate, Version: 1, ID: 1}},
 					{{Op: testproto.OpSession, Version: 1, ID: 2, Session: 7}},
 					{{Op: testproto.OpTree, Version: 1, ID: 3, Session: 7, Tree: 1}},
 					{
-						{Op: testproto.OpPutFH, Version: 1, ID: 4, Session: 7, Tree: 1, Handle: root},
-						{Op: testproto.OpCreate, Version: 1, ID: 5, Session: inherited, Tree: 1, Name: "f", Related: true, Seq: 1},
+						{
+							Op: testproto.OpPutFH, Version: 1, ID: 4,
+							Session: 7, Tree: 1, Handle: root,
+						},
+						{
+							Op: testproto.OpCreate, Version: 1, ID: 5,
+							Session: inherited, Tree: 1, Name: "f", Related: true, Seq: 1,
+						},
 					},
 				}
 			},
-			testproto.Msg{Op: testproto.OpCreate, Version: 1, ID: 6, Session: 7, Tree: 1, Seq: 1, Name: "f"},
+			testproto.Msg{
+				Op: testproto.OpCreate, Version: 1, ID: 6,
+				Session: 7, Tree: 1, Seq: 1, Name: "f",
+			},
 			func(s *seam, copies *resources.BufPool) func() {
 				held, ok := copies.TryGet(peer, 0)
+
 				if !ok {
 					t.Fatal("the replay copies' budget is not free to fill")
 				}
+
 				return held.Release
-			}},
+			},
+		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				m, logs := metrics.New("v", "c"), &logSink{}
 				copies := resources.NewWaitBudget("reply", smallCharge)
 				svc := memory.New(t)
-				root, _, err := svc.Root(context.Background(), svc.Admin(), vfs.ShareRef{Name: svc.Store.Share.Name})
+				share := vfs.ShareRef{Name: svc.Store.Share.Name}
+
+				root, _, err := svc.Root(context.Background(), svc.Admin(), share)
 				if err != nil {
 					t.Fatal(err)
 				}
-				proto := testproto.New(adapter.Deps{VFS: svc, Budgets: &resources.Budgets{Reply: copies}}).WithCall(svc.Admin())
+
+				proto := testproto.New(
+					adapter.Deps{VFS: svc, Budgets: &resources.Budgets{Reply: copies}},
+				).WithCall(svc.Admin())
 				s := newSeamWith(t, proto, smallCharge, adapter.Deps{Metrics: m, Logger: logs.logger()})
+
 				for _, rec := range c.first(root) {
 					s.serve(rec...)
+
 					for range rec {
 						replies, err := s.client.Recv()
 						if err != nil {
 							t.Fatalf("reading the record's replies: %v", err)
 						}
+
 						for _, r := range replies {
 							if r.Status != testproto.StatusOK {
-								t.Fatalf("the message of ID %d is answered %d, want ok", r.ID, r.Status)
+								t.Fatalf(
+									"the message of ID %d is answered %d, want ok",
+									r.ID, r.Status,
+								)
 							}
 						}
 					}
@@ -1560,8 +1593,19 @@ func TestEachStageARequestRunsIsObservedOnce(t *testing.T) {
 		{"an Echo over Bare", p.Bare(), echo, slices.DeleteFunc(slices.Clone(order), func(st string) bool {
 			return st == "unwrap" || st == "admit" || st == "replay_check"
 		})},
-		{"a header the codec refuses", edited{p, func(st *core.Stages) { st.Header = faultyHeader{st.Header, errors.New("a bad field")} }}, echo,
-			slices.Concat(upTo("decode_header"), slices.DeleteFunc(slices.Clone(answer), func(st string) bool { return st == "wrap" }))},
+		{
+			"a header the codec refuses",
+			edited{p, func(st *core.Stages) {
+				st.Header = faultyHeader{st.Header, errors.New("a bad field")}
+			}},
+			echo,
+			slices.Concat(upTo("decode_header"), slices.DeleteFunc(
+				slices.Clone(answer),
+				func(st string) bool {
+					return st == "wrap"
+				},
+			)),
+		},
 		{"refused at admit", p, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1, Credits: 5}, slices.Concat(upTo("admit"), answer)},
 		{"refused at route", p, testproto.Msg{Op: 99, Version: 1, ID: 1}, slices.Concat(upTo("route"), answer)},
 		{"refused at resolve_ids", wrapRows(p, func(inv core.Invocation) core.Invocation {
