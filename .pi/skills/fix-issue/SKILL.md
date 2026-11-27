@@ -239,9 +239,10 @@ go run ./cmd/gendocs      # rewrites docs/guide/cli.md
 Follow `.github/instructions/pr-opening.instructions.md`: target, rebase, push,
 assignee, auto-merge and stacking all live there.
 
-The body's `Closes #<N>` matters here. On `develop`, the default branch, GitHub's
-native auto-close fires on merge and the issue closes itself — do not also close
-it by hand; on any other target it does not, and you close it after the merge. `gh issue close --comment` on an
+The body's `Closes #<N>` matters here. On `feat/storage-v2`, the default branch,
+GitHub's native auto-close fires on merge and the issue closes itself — do not also
+close it by hand; on any other target, `develop` included, it does not, and you
+close it after the merge. `gh issue close --comment` on an
 already-closed issue exits 0 and silently discards the comment, so verification
 notes posted that way are lost; use `gh issue comment` for those.
 `.github/workflows/close-linked-issues.yml` still runs at release time as a

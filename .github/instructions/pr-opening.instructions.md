@@ -25,13 +25,13 @@ cherry-picked from `develop` to `feat/storage-v2` for them.
 Follow [`.github/pull_request_template.md`](../pull_request_template.md), including the
 guidance in its comments, and the ground rules of
 [`pr-commenting.instructions.md`](pr-commenting.instructions.md). If the PR fixes an issue,
-the body carries `Closes #<N>`. That keyword fires only on `develop`, the default branch: on
-any other target, close the issue by hand after the PR merges. A PR that finishes a subtask
+the body carries `Closes #<N>`. That keyword fires only on `feat/storage-v2`, the default
+branch: on any other target, `develop` included, close the issue by hand after the PR merges. A PR that finishes a subtask
 of an epic closes that subtask's issue the same way, one `Closes #<N>` line per subtask, on
 any target: that line is what credits the PR to the subtask on the burn-up. A subtask
 finished only in part is named, not closed. On every target, also link the PR to each issue
 it closes from the issue's or the PR's sidebar ("Development"), so the issue shows the PR:
-on `develop` the keyword creates that link itself, so check it is there; on any other target
+on `feat/storage-v2` the keyword creates that link itself, so check it is there; on any other target
 the sidebar or the API creates it. From a script or an agent:
 
 ```bash

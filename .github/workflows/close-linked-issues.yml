@@ -3,14 +3,12 @@ name: Close linked issues on main
 # Closes issues linked to work that reaches main.
 #
 # Background: GitHub's built-in auto-close fires when a PR merges into the
-# DEFAULT branch. `develop` is now the default, so a PR body carrying `Closes #N`
-# closes its issue on merge and this workflow finds it already closed and skips
-# it. That is the normal outcome; the value here is the remaining gap.
+# DEFAULT branch, feat/storage-v2. A PR into develop does not close its issues
+# on merge, so this workflow closes them when the release reaches main. A PR into
+# feat/storage-v2 closes its issues itself.
 #
-# The gap is a closing keyword that appears in a COMMIT message but never in a
-# PR body — native auto-close reads only the PR body and its linked references,
-# so nothing else catches that case. This also still covers the window before
-# `develop` became the default, when neither mechanism fired for us at all.
+# It also catches a closing keyword that appears in a COMMIT message but never in
+# a PR body: native auto-close reads only the PR body and its linked references.
 #
 # It closes issues when the work lands on main, via two paths:
 #   1. Closing keywords ("Fixes #N") written directly in a commit message.

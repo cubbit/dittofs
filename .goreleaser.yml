@@ -212,6 +212,8 @@ homebrew_casks:
       - dfs
     # The binaries are not notarized, so Gatekeeper kills a quarantined copy
     # on launch (exit 137). Casks quarantine downloads; strip it after install.
+    # decision: this skips Gatekeeper, so the release's cosign signature is the
+    # only integrity check on macOS. Notarizing the binaries replaces the strip.
     hooks:
       post:
         install_steps: |
@@ -238,6 +240,8 @@ homebrew_casks:
       - dfsctl
     # The binaries are not notarized, so Gatekeeper kills a quarantined copy
     # on launch (exit 137). Casks quarantine downloads; strip it after install.
+    # decision: this skips Gatekeeper, so the release's cosign signature is the
+    # only integrity check on macOS. Notarizing the binaries replaces the strip.
     hooks:
       post:
         install_steps: |

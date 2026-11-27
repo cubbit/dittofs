@@ -4,8 +4,8 @@
 # plan lists the tier's cells with dt plan. Each cell runs as a job of its own,
 # dt run CELL, on the runner the plan names: the blocking cells in run, the
 # others in non-blocking, which nothing waits for. gate waits for plan and run,
-# always runs, and is the check that decides. post, after a merge and on the
-# schedule, posts the blocking cells' failures to the develop-status issue.
+# always runs, and is the check that decides. post, after a push to develop,
+# posts the blocking cells' failures to the develop-status issue.
 #
 # The suites move in from their own workflows one at a time. A conformance
 # suite runs here beside its old job until their results match on 5
@@ -120,27 +120,23 @@ jobs:
           # nothing, as such a pull request does.
           QUEUE_BASE: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || '' }}
           SUITE: ${{ inputs.suite }}
-          # decision: on feat/storage-v2 the data path answers unavailable until
-          # the adapters run on vfs.Service, so the data-path suites are skipped
-          # there, and of e2e the cells that mount: e2e itself, e2e/kerberos,
-          # e2e/cross-protocol and e2e/stress. e2e/second-user mounts nothing
-          # and runs. Each comes off the list with its first green test.
-          # unit/windows moves no file bytes but is skipped for its cost;
-          # journal-platforms.yml covers the journal on Windows. Delete V2 once
-          # the adapters run on vfs.Service. A merge queue run's ref is its
-          # queue branch and it has no base_ref, so its target is read from
-          # the merge_group event.
-          V2: ${{ github.ref == 'refs/heads/feat/storage-v2' || github.base_ref == 'feat/storage-v2' || github.event.merge_group.base_ref == 'refs/heads/feat/storage-v2' }}
         run: |
           set -o pipefail
           "$RUNNER_TEMP/dt" plan --tier "$TIER" ${BASE:+--base "$BASE"} ${QUEUE_BASE:+--docs-only-base "$QUEUE_BASE"} --json > "$RUNNER_TEMP/plan.json"
-          # The skip names the suites it drops on feat/storage-v2. The select
-          # after it keeps only the suites that have moved in (the header), so a
-          # new suite runs only once it is named there.
-          jq -c --arg suite "$SUITE" --arg v2 "$V2" '[(.cells // [])[] | select($suite == "" or .suite == $suite)
-              | select($v2 != "true" or ((IN(.suite; "pjdfstest", "pynfs", "wpts", "smbtorture", "cthon04",
+          # decision: the data path answers unavailable until the adapters run
+          # on vfs.Service, so the skip drops the data-path suites, and of e2e
+          # the cells that mount: e2e itself, e2e/kerberos, e2e/cross-protocol
+          # and e2e/stress. e2e/second-user mounts nothing and runs. Each comes
+          # off the list with its first green test; delete the skip once the
+          # adapters run on vfs.Service. unit/windows moves no file bytes but
+          # is skipped for its cost; journal-platforms.yml covers the journal
+          # on Windows. The select after the skip keeps only the suites that
+          # have moved in (the header), so a new suite runs only once it is
+          # named there.
+          jq -c --arg suite "$SUITE" '[(.cells // [])[] | select($suite == "" or .suite == $suite)
+              | select((IN(.suite; "pjdfstest", "pynfs", "wpts", "smbtorture", "cthon04",
                   "nfstest", "clients", "fio-verify", "bench-smoke", "system")
-                  or IN(.name; "unit/windows", "e2e", "e2e/kerberos", "e2e/cross-protocol", "e2e/stress")) | not))
+                  or IN(.name; "unit/windows", "e2e", "e2e/kerberos", "e2e/cross-protocol", "e2e/stress")) | not)
               | select(.job or .suite == "pynfs" or .suite == "pjdfstest" or .suite == "wpts" or .suite == "operator" or .suite == "e2e"
                 or .suite == "smbtorture" or (.suite == "system" and .place != "dedicated")
                 or .suite == "clients" or .suite == "cthon04" or .suite == "nfstest" or .suite == "fio-verify"
@@ -153,13 +149,12 @@ jobs:
               | .slug = (.name | gsub("/"; "-")) | .nix = ((.tools // []) | map(".#" + .) | join(" "))
               | .job_timeout_minutes = .timeout_minutes + 15]' "$RUNNER_TEMP/plan.json" > "$RUNNER_TEMP/cells.json"
           jq . "$RUNNER_TEMP/cells.json"
-          # The required checks run unit and integration, so on storage-v2 a
-          # plan that names either must keep it, unless a dispatch asked for
-          # another suite.
-          if [ "$V2" = true ] && ! jq -e --arg suite "$SUITE" --slurpfile kept "$RUNNER_TEMP/cells.json" \
+          # The required checks run unit and integration, so a plan that names
+          # either must keep it, unless a dispatch asked for another suite.
+          if ! jq -e --arg suite "$SUITE" --slurpfile kept "$RUNNER_TEMP/cells.json" \
             '[(.cells // [])[] | select($suite == "" or .suite == $suite) | select(.name == "unit" or .name == "integration") | .name] - [$kept[0][].name] == []' \
             "$RUNNER_TEMP/plan.json" > /dev/null; then
-            echo "::error::the storage-v2 plan lost unit or integration"
+            echo "::error::the plan lost unit or integration"
             exit 1
           fi
           {
@@ -707,6 +702,11 @@ jobs:
           jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
           jq -e '.plan.result == "success" and all(.[]; .result == "success" or .result == "skipped")' <<<"$NEEDS" >/dev/null
 
+  # decision: GitHub fires the schedule only on the default branch,
+  # feat/storage-v2, and only develop's runs post, so no nightly run posts:
+  # feat/storage-v2's nightly results show on its run alone. Posting them needs
+  # an issue of feat/storage-v2's own, as dt report --post writes develop's.
+  #
   # After the retry, on develop only, pushed or scheduled: dt report --post
   # writes the new failures and unexpected passes of every job gate waits for,
   # and the cells that failed or didn't run, to the develop-status issue, and
