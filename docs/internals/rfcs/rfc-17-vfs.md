@@ -747,11 +747,12 @@ The request fields that already carry an intent state the rest:
 | `ClientInfo.Recovery` | every adapter that registers a client | Status or refusal (NFSv4): the client renews a lease. Reconnect (SMB): it holds no lease, must have proved who it is to connect, lists the nodes holding its sessions and is released with its last one. Notice (NLM): it holds no lease and is sent a restart notice ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)). |
 
 **The protocol travels only as a context label for observability, and no
-rule reads it.** The adapter sets it once per request on the context it
-builds the call's context from, `vfs.WithProtocol(ctx, p)`, as `WithHold`
-sets a hold; `vfs.ProtocolFrom(ctx)` reads it back. Only the two emitters
-read it: the access event (§3.3), whose `Protocol` feeds RFC 25's audit
-`protocol` field ([RFC 25 §4.2](rfc-25-observability.md#4.2%20What%20a%20record%20carries)),
+rule reads it.** The adapter's Router sets it once per request on
+`Request.Protocol` ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)),
+and core puts it on the context the call's context is built from,
+`vfs.WithProtocol(ctx, p)`, as `WithHold` sets a hold; `vfs.ProtocolFrom(ctx)`
+reads it back. Only the two emitters read it: the access event (§3.3), whose
+`Protocol` feeds RFC 25's audit `protocol` field ([RFC 25 §4.2](rfc-25-observability.md#4.2%20What%20a%20record%20carries)),
 and `vfs_op_seconds`' `protocol` label ([RFC 25 §2.5](rfc-25-observability.md#2.5%20Cardinality)),
 each writing `Protocol.Label()`: `nfs3`, `nfs4` or `smb`, NLM, NSM and MOUNT
 under `nfs3`. A missing label is normal: a context without one is valid on
