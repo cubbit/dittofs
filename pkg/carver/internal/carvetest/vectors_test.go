@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	shared "github.com/cubbit/dittofs/internal/blake3"
 	"lukechampine.com/blake3"
 )
 
@@ -209,8 +210,10 @@ func TestVectorsWords(t *testing.T) {
 }
 
 // TestBLAKE3Modes holds lukechampine.com/blake3 to BLAKE3's published vectors
-// in its three modes, each with 131 bytes of extended output, over every input
-// length the BLAKE3 tree splits differently, from 0 to 102,400 bytes.
+// in its three modes, each with 131 bytes of extended output, and
+// internal/blake3 to the first 32 bytes of the keyed and derived ones, over
+// every input length the BLAKE3 tree splits differently, from 0 to 102,400
+// bytes.
 // testdata/blake3/test_vectors.json is test_vectors/test_vectors.json of
 // github.com/BLAKE3-team/BLAKE3 at tag 1.8.7 (commit f3149ec5bb54), unchanged
 // there since ae3e8e6b3a5a; it is dedicated to the public domain under CC0 1.0
@@ -284,6 +287,21 @@ func TestBLAKE3Modes(t *testing.T) {
 		got := make([]byte, len(derived))
 		if blake3.DeriveKey(got, file.Context, in); !bytes.Equal(got, derived) {
 			t.Errorf("derived key from %d bytes: got %x, want %x", c.InputLen, got, derived)
+		}
+
+		// internal/blake3, which chunk IDs and block names hash through, in
+		// its two modes, with its 32 bytes of output.
+		var h shared.Hasher
+		h.InitKeyed((*[32]byte)(key))
+		h.Write(in)
+		if got := h.Sum256(); !bytes.Equal(got[:], keyed[:32]) {
+			t.Errorf("internal/blake3 keyed hash of %d bytes: got %x, want %x", c.InputLen, got, keyed[:32])
+		}
+
+		h.InitDeriveKey(file.Context)
+		h.Write(in)
+		if got := h.Sum256(); !bytes.Equal(got[:], derived[:32]) {
+			t.Errorf("internal/blake3 derived key from %d bytes: got %x, want %x", c.InputLen, got, derived[:32])
 		}
 	}
 }
