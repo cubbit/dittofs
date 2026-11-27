@@ -226,13 +226,31 @@ func (s *Selector) claim(id core.SegmentID) bool {
 // decision: selection never consults a deferred-loss flag, so a segment holding
 // a dropped record whose loss is deferred is an ordinary candidate and its copy
 // carries the loss record. Withdraw if candidacy ever has to exclude it.
+//
+// decision: Select is called only by tests: the pass selects through
+// selectSkipping, so it can leave out the sources a retirement refused. It is
+// kept as the plain form of the selection those tests read. Withdraw it, and
+// move the tests to selectSkipping with a nil skip set, if it keeps no other
+// caller.
 func (s *Selector) Select(scope Scope, limit int) []Candidate {
+	return s.selectSkipping(scope, limit, nil)
+}
+
+// selectSkipping is Select that leaves out every segment in skip before it
+// tries the segment's claim, so a claim another holder took on one of them
+// is never touched.
+func (s *Selector) selectSkipping(
+	scope Scope, limit int, skip map[core.SegmentID]struct{},
+) []Candidate {
 	var out []Candidate
 	rows := s.segs.Snapshot()
 	if s.afterSnapshot != nil {
 		s.afterSnapshot()
 	}
 	for _, r := range rows {
+		if _, ok := skip[r.ID]; ok {
+			continue
+		}
 		if r.State != segment.Sealed && r.State != segment.Ended {
 			continue
 		}
