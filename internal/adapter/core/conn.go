@@ -287,13 +287,17 @@ func (c *Conn) Settings() settings.Settings { return c.snap }
 // closed connection (cancel called, replies dropped), and OnClose runs. err is
 // logged at the debug level, named with the connection's remote address.
 //
-// decision: Close records the error, cancels the connection's context, ends
-// what the writer takes, so a Send or a reply past its closed check is
-// dropped, and then stops the reader's read, in that order, so a reader
-// re-arming its deadline either sees the ended context or has its new
-// deadline overwritten by the stop; it then ends the pipeline and returns, so
-// a close from a handler or from the reader never waits on itself. The
-// reader's goroutine runs the rest of the teardown once its loop ends.
+// decision: Close records the error, marks the pipeline's holds and parks
+// closed, cancels the connection's context, ends what the writer takes, so a
+// Send or a reply past its closed check is dropped, and then stops the
+// reader's read, in that order, so a reader re-arming its deadline either
+// sees the ended context or has its new deadline overwritten by the stop; it
+// then ends the pipeline and returns, so a close from a handler or from the
+// reader never waits on itself. The reader's goroutine runs the rest of the
+// teardown once its loop ends. The pipeline's context is the connection's
+// child, so its holds and parks are marked closed before the cancel: a
+// handler the cancel wakes then reaches Park on a closed table, as the
+// pipeline's own close intends.
 // Overturned if the teardown needs its own goroutine.
 func (c *Conn) Close(err error) { c.close(err, false) }
 
@@ -315,6 +319,10 @@ func (c *Conn) close(err error, sendFirst bool) {
 	c.sendFirst.Store(sendFirst)
 	c.err.Store(&err)
 	c.closedAt.CompareAndSwap(0, c.sh.clock.Now().UnixNano())
+
+	if c.p != nil {
+		c.p.markClosed()
+	}
 	c.cancel()
 	if c.w != nil {
 		c.w.refuse()

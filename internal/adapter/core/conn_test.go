@@ -2581,6 +2581,24 @@ func TestAnUnwrapThatSaysCloseClosesTheConnection(t *testing.T) {
 // the teardown ends, and every budget is back at zero (RFC 20 sections 4.7
 // and 6.5).
 func TestAParkOnAConnectionAViolateClosedIsDropped(t *testing.T) {
+	parkThenViolate(t, nil)
+}
+
+// A Park whose handler the close's cancel wakes before the close marks the
+// pipeline closed is dropped all the same: a close ends the connection's
+// context, and the pipeline's is its child, so a handler waiting on it may
+// reach Park while the rest of the close still runs (RFC 20 sections 4.7 and
+// 6.5). Every goroutine the cancel woke runs before the close goes on.
+func TestAParkWokenByTheCloseIsDroppedBeforeTheTeardown(t *testing.T) {
+	parkThenViolate(t, synctest.Wait)
+}
+
+// parkThenViolate parks a request whose read before Park is held, closes its
+// connection with a Violate, and checks the park was dropped: no file made,
+// nothing answered, the teardown ended. afterCancel, when not nil, runs right
+// after the close cancels the connection's context.
+func parkThenViolate(t *testing.T, afterCancel func()) {
+	t.Helper()
 	synctest.Test(t, func(t *testing.T) {
 		b := budgets()
 		adaptertest.CheckLeaks(t, b)
@@ -2598,6 +2616,10 @@ func TestAParkOnAConnectionAViolateClosedIsDropped(t *testing.T) {
 		}
 		core.Serving(srv)
 		conn, peer := servedConn(t, srv, &l)
+		if afterCancel != nil {
+			core.AfterCancel(conn, afterCancel)
+		}
+
 		c := testproto.NewClient(peer)
 		for _, m := range []testproto.Msg{
 			{Op: testproto.OpNegotiate, Version: 2, ID: 1},
