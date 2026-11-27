@@ -65,15 +65,10 @@ func tables(d adapter.Deps) protocol.Tables {
 	}
 }
 
-// errorTable is a program's error table: the two refusals of core
-// every program meets, a procedure its table lacks PROC_UNAVAIL and arguments
-// that do not decode GARBAGE_ARGS; any other error is fault (RFC 21 section
-// 11.5).
+// errorTable is a program's error table: protocol's shared refusals, at
+// fault (RFC 21 section 11.5).
 func errorTable(fault core.Status) *core.ErrorTable {
-	return core.NewErrorTable(fault,
-		core.ErrorRow{Err: core.ErrNotSupported, Status: core.Status(wire.StatusAccept | wire.AcceptProcUnavail)},
-		core.ErrorRow{Err: core.ErrDecode, Status: core.Status(wire.StatusAccept | wire.AcceptGarbageArgs)},
-	)
+	return protocol.ErrorTable(fault)
 }
 
 // table is an empty table labeled label.
