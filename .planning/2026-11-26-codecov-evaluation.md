@@ -25,16 +25,27 @@ whether any of it earns its place in a workflow where tests land before their
 code, components are rewritten next to their predecessors, and PRs measure only
 the packages they changed.
 
-**Reshape, don't drop and don't replace yet.** Codecov's only defensible job here
-is a **per-component coverage trend, not a gate**: it is the cheapest way to
-answer "is the v2 component as covered as the v1 it will delete", a question this
-repository asks repeatedly (`feat/storage-v2` is live, and RFC 17 §9 migrates the
-adapters onto the VFS service). Everything else the issue lists either does not
-survive the workflow (project/patch statuses as gates), is already answered
-better in-repo (packages with no tests), or is not a Codecov feature at all
-(duplicate-test detection). One finding decides the sequence: **the dashboard is
-not merely silent, it is empty** — today's uploads are accepted and never
-indexed.
+**Reshape, don't drop and don't replace yet.** Codecov keeps two jobs, neither
+a gate:
+
+1. **A per-component team metric.** A weekly scheduled run of the whole suite
+   with coverage (unit, integration, the tagged suites, e2e and conformance via
+   a `-cover` `dfs`) is the **one** data source behind the component cards, so
+   the trend compares components with each other and cannot jump between full
+   and partial runs. The v1-vs-v2 cutover comparison of §3(a) stays available as
+   one reading of those cards, but it is no longer the load-bearing reason: v1
+   and v2 differ too much for one percentage to settle a cutover by itself.
+2. **An informational patch status on every non-docs PR**: which changed lines
+   no test executes. It gets its data from PR-side uploads of the changed
+   packages **plus the tagged suites** — without the tagged suites a family
+   whose coverage comes from `engine-conformance` would read as uncovered when
+   its code lands, which is exactly the noise #3483 silenced.
+
+Everything else the issue lists either does not survive the workflow (project
+status as a gate, PR comments), is already answered better in-repo (packages
+with no tests), or is not a Codecov feature at all (duplicate-test detection).
+One finding decides the sequence: **the dashboard is not merely silent, it is
+empty** — today's uploads are accepted and never indexed.
 
 ## 2. Finding 1: the upload succeeds, the coverage never arrives
 
@@ -84,18 +95,20 @@ nothing. The choice is fix-and-reshape, drop, or replace with `dt`.
 
 The issue names three. Measured against the repository:
 
-**(a) Is v2's coverage as good as v1's before v1 is deleted? — yes, this is a
-live decision.** v1 and v2 never share a branch, so (a) is always a develop
-line against a `feat/storage-v2` line. Where a component moved, the paths tell
+**(a) Is v2's coverage as good as v1's before v1 is deleted? — a live question,
+but a secondary read, not the verdict's load-bearing reason.** v1 and v2 never
+share a branch, so (a) is always a develop line against a `feat/storage-v2`
+line, and the two versions differ too much for one percentage to settle a
+cutover by itself. Where a component moved, the paths tell
 it apart: v2 `pkg/engine`, `pkg/journal`, `pkg/remote`, `pkg/syncer`,
 `pkg/carver`, `pkg/transform`, `pkg/workqueue` replace v1's `pkg/block` tree, and
 the control plane moved the same way (`pkg/controlplane`/`internal/controlplane`
 against `pkg/node`/`pkg/settings`/`internal/node`). `pkg/metadata` is the one
 rewritten in place, so its v1 and v2 halves split by subdirectory
 (`store`/`lock`/`acl` plus the root service package against `entity`/`kv`/
-`kvstore`). §8.1 encodes that split; the comparison is read across the two
-branches' cards. This is the one decision worth a dashboard, and it recurs with
-every component cutover.
+`kvstore`). §8.1 encodes that split; on the dashboard the two branches' cards
+are read side by side as one input among several to a cutover, next to how each
+component compares with its peers — the primary use the cards exist for.
 
 **(b) Which packages have no tests? — measurable, but not by subtracting.** At the
 profile's commit, **32 directories under `pkg/`, `internal/` and `cmd/` hold Go
@@ -211,16 +224,18 @@ coverage:
   status:
     project: off                # a repo-wide % hides per-component moves, and a
                                 # test landing before its code reads as a drop
-    patch: off                  # push runs upload whole reports; a per-commit
-                                # delta is the signal this config keeps off
+    patch:
+      default:
+        informational: true     # changed lines no test executes, per PR;
+                                # shown, never blocking
 
 flags:
-  unittests:
-    carryforward: true          # reuses the last flag upload when a run skips it
-  integration:
-    carryforward: true          # a push whose upload the retry check skipped
-  e2e:
-    carryforward: true          # the same, or while e2e runs nightly-only
+  full:                         # the weekly scheduled run of the whole suite
+    carryforward: true          # set — the cards' one data source, so
+                                # per-push partial runs cannot make the trend
+                                # jump between full and partial
+  pull:                         # a PR's changed packages + tagged suites, for
+    carryforward: true          # patch coverage alone
 
 component_management:
   individual_components:
@@ -327,17 +342,15 @@ Deliberate omissions:
   card emptying (and from the commit that removes the package), not as a step to
   zero; verify the rendering during the trial before relying on it.
 - **`develop` and `feat/storage-v2` write to different cards, one set of
-  flags.** The v1 cards are populated by develop's pushes and the v2 cards by
-  `feat/storage-v2`'s, because v1 and v2 never share a branch; the shared cards
+  flags.** The v1 cards are populated by develop's weekly run and the v2 cards
+  by `feat/storage-v2`'s, because v1 and v2 never share a branch; the shared cards
   (adapters, identity, `pkg/metadata/errors`) carry both branches' paths and are
   read per branch. Decision (a) is one card against the other, with per-branch
   filtering a dashboard query, not a config split.
-- **Decision (a) is compared on the `unittests` flag.** A component's card
-  merges every flag by default, and §8.2 lands the `integration` and `e2e` flags
-  on develop first, where those tests largely cover v1 paths — an unfiltered
-  comparison would favour v1. Read the comparison flag-filtered to `unittests`
-  until `feat/storage-v2` uploads the same flags, or skip the flag comparison
-  entirely.
+- **Every card reads the same `full` flag.** The weekly run is the cards' one
+  data source on both branches, so no card ever merges a partial or one-sided
+  flag set — the asymmetry that would have made a v1 card read higher than its
+  v2 counterpart cannot arise by configuration.
 
 ### 8.2 CI changes
 
@@ -352,20 +365,18 @@ Deliberate omissions:
    and reads `env.TIER != 'pr' && hashFiles('…/unit/go-test-*-retry-*.json') == ''
    && github.ref == 'refs/heads/feat/storage-v2'`. Without this the rest is
    unobservable.
-2. **Integration upload.** The `-coverprofile` goes in tier-scoped `args` —
-   `args: { merge: "-coverprofile={out}/coverage.txt", nightly:
-   "-coverprofile={out}/coverage.txt" }`, the same mechanism unit uses to scope
-   `-short` to `pr` — so a pull request's integration cell never pays the
-   recompilation for a profile its tier does not upload. A Codecov step uploads
-   the written profile with `flags: integration` under the same gate as the unit
-   step — `env.TIER != 'pr'`, a `develop` or `feat/storage-v2` ref, and its own
-   retry guard,
-   `hashFiles('test/harness/results/*/integration/go-test-*-retry-*.json') == ''`
-   — not a bare "not on PRs", which would let the merge queue and manual runs on
-   feature branches upload. Its options (`ad-dc`, `kerberos`, `portmap`) write
-   their own cell directories.
-3. **e2e upload (conditional).** The plumbing goes through `dt`, not the
-   workflow:
+2. **The weekly full-coverage run is the cards' one upload.** A new scheduled
+   workflow (weekly, `develop` and `feat/storage-v2`) runs the whole set with
+   coverage — unit, integration with tier-scoped
+   `args: { merge: "-coverprofile={out}/coverage.txt", nightly: same }`
+   (the mechanism unit uses for `-short`), the tagged suites, e2e per item 3,
+   and conformance against the `-cover` `dfs` — merges the profiles, and
+   uploads once, `flags: full`. Per-push unit uploads stop feeding the cards:
+   a changed-packages report between two full ones is exactly the jump the
+   single data source exists to prevent. frequency and budget are the weekly
+   run's own, not the merge path's, so the CI-time gate applies to it alone.
+3. **e2e coverage runs in that weekly job, unconditionally on the critical
+   path.** The plumbing goes through `dt`, not the workflow:
    - `buildBin` skips the build whenever `{bin}/dfs` already exists ("an earlier
      cell of this run built them"), so the `-cover` build is **keyed by name**:
      coverage builds write `dfs` to `{bin}/cover/dfs` (or `dfs.cover`). Anything
@@ -385,8 +396,8 @@ Deliberate omissions:
      missing directory means the runtime writes nothing.
    - `go tool covdata textfmt` runs **as `dt` work after the base cell's
      `go test` commands** — the registry rejects a go-json suite command that
-     does not begin with `go test` — writing `{out}/coverage.txt`, uploaded
-     with `flags: e2e` under item 2's gate.
+     does not begin with `go test` — writing `{out}/coverage.txt` into the
+     weekly run's merged upload.
    - The fixture's teardown is the first thing the trial fixes: `ForceKill`
      waits **2 s** after SIGTERM before SIGKILL, and `StopGracefully` waits
      only **10 s** — both shorter than `dfs`'s default `shutdown_timeout`
@@ -397,61 +408,60 @@ Deliberate omissions:
      `-cover` binary flushes its counters only on a clean exit, so a normal
      teardown losing the race loses the coverage, and an empty-looking
      `GOCOVERDIR` would be a teardown artifact, not a test result.
-   Landed only if the trial's measurement keeps the cell within ~2–3 min of
-   its 13.1 min baseline; otherwise the flag uploads from nightly alone.
-4. The unit step's upload condition keys on the tier and the ref, not on event
-   names: `env.TIER != 'pr' && matrix.name == 'unit' && hashFiles(…retry…) == ''`
-   and the ref is `develop` or `feat/storage-v2`. Excluding event names is not
-   enough — `workflow_dispatch` that **picks** the `pr` tier (its default is
-   `merge`) runs the `pr` tier on any branch, and the merge queue runs the `pr`
-   tier on the merged result; both would upload a `-short` profile under
-   `unittests` and read as a real drop on the cards. With the tier-gated
-   condition, no reduced profile is uploaded at all.
+   Off the merge path, the weekly job's cost ceiling is its own runner budget;
+   the trial still measures e2e with and without `-cover`, because a runaway
+   cost makes even a weekly job unaffordable.
+4. **PR-side uploads feed the patch status only.** On `pull_request`, upload
+   the changed-packages profiles the unit cell already writes **plus the
+   tagged suites that run on that PR** (a PR whose paths filter in
+   `engine-conformance` carries its profile too — without it, code whose
+   coverage comes from a tagged suite reads as uncovered when it lands, the
+   noise #3483 silenced), `flags: pull`. Patch coverage reads only the changed
+   lines, so a changed-packages report is sufficient data there; `carryforward`
+   keeps the rest from reading as a drop. Nothing else comes to the PR: no
+   comment (`comment: false`), no project status, one informational check.
+   The push-side unit upload step is **replaced by the weekly run** — that
+   retires the tier/ref-gate argument for the card feed entirely, though
+   `feat/storage-v2`'s own upload config still follows its dedicated `unit:`
+   job shape (no matrix, so no `matrix.name` guard).
 
 ## 9. Trial (what makes this a recommendation rather than a guess)
 
-Run for **one week of `develop` and `feat/storage-v2` pushes** after ingestion is
-fixed. PR-bound signals are out of scope by construction: the upload step
-excludes pull requests (and a changed-packages-only profile would misread as a
-drop), the merge queue is excluded as a reduced-profile source, and project,
-patch and comment are all off — so the issue's "actionable vs noise PR signals"
-tally is structurally **zero**, which is recorded here as the answer rather than
-left assumed; §12 holds the deferred work that would bring PR signals back.
+Run for **one week after ingestion is fixed**: two weekly full-coverage runs on
+each branch, and every PR that merges in that week.
 
-- Data lands for `cubbit/dittofs` on both branches: today's commit appears in
-  the API, the `unittests` flag updates on each push, and the v1 cards (develop)
-  and v2 cards (`feat/storage-v2`) both populate.
-- Use the component dashboard at least once for decision (a): compare a v2 card
-  against the v1 card it replaces and record whether the comparison changed a
-  cutover decision.
-- Record anything Codecov posts anyway — a status, a comment, an annotation.
-  None is configured to fire, so every appearance is either a misconfiguration
-  or a real signal, and each is judged as actionable or noise by the trial's
-  last day.
-- Measure the e2e cell with and without `-cover` on the same runner tier, and
+- Data lands for `cubbit/dittofs`: the weekly run appears in the API and the
+  component cards populate once per week on each branch — one stable trend line,
+  not a per-push zig-zag.
+- Use the component dashboard at least once for a real decision: a cutover
+  reads the v1 card against the v2 card alongside how each component compares
+  with its peers. Record whether the view changed the decision.
+- Tally the PR **patch** statuses, which now do fire (informational, from
+  `flags: pull`): actionable (an uncovered changed line its author then covered,
+  or that blocked review) versus noise (a known failure becoming a test whose profile the upload
+  missed, v1 drift, a family the tagged suites should have carried). Comments and annotations still cannot fire.
+- Measure the e2e portion of the weekly run with and without `-cover`, and
   confirm `GOCOVERDIR` holds data after a normal e2e teardown (§8.2, item 3,
   including the lengthened shutdown wait).
 
-**Pass:** data lands on both branches; the component view answers (a) without
-manual profile aggregation, compares like-shaped cards and is used in at least
-one decision. A single unexplained signal is judged as actionable or noise by
-the trial's last day; two or more unexplained → **drop**, the §11 trigger.
-**Fail either → drop**, with the `dt` floors in §10 as
-the alternative if decision (a) still needs a number. e2e overhead is a
-placement decision, not a pass/fail: ≤ 3 min keeps the flag on merge runs,
-more moves it to nightly (§11's third bullet), and nothing in that choice
-drops the reshape.
+**Pass:** the weekly run lands on both branches; the component view is used
+in at least one real decision; the patch statuses produce at least one
+actionable signal and no more than two judged noise. **Fail any of those →
+drop**, with the `dt` floors in §10 as the alternative if a coverage number is
+still wanted. The weekly job's own cost is a budget question, not a
+pass/fail: it replaces per-push uploads, so the CI-time gate applies to the
+job's runner budget (§11's third bullet names the cut).
 
-PR-side coverage signals return only if full, non-partial PR uploads become
-affordable; that is deferred in §12, not assumed here. The `comment: false` in
-§8.1 matches this: there is no PR upload to comment on, and a comment on a
-merge-queue run would be noise.
+The PR-side upload is partial on purpose — patch coverage reads only the
+changed lines, and `carryforward` fills the rest — but it feeds the patch
+status alone. The `comment: false` in §8.1 keeps the heavier PR surface off:
+one informational check, no comment thread, no annotations.
 
 ## 10. The alternatives, compared
 
 | | Drop | Reshape (chosen) | Replace with `dt` |
 | --- | --- | --- | --- |
-| Work | delete step + `codecov.yml`, document the `dt` recipe | fix token/slug, config, integration upload, conditional e2e | per-package floors in `test/suites.yaml`, a `dt` coverage check over its own profile, trend in `dt history`; profile-diff for duplicates |
+| Work | delete step + `codecov.yml`, document the `dt` recipe | fix token/slug, config on both branches, a weekly full-coverage workflow, PR-side uploads, the dt e2e plumbing | per-package floors in `test/suites.yaml`, a `dt` coverage check over its own profile, trend in `dt history`; profile-diff for duplicates |
 | Cost | ~zero | ~1 day config + 1–2 days e2e collection **in `dt`** (the name-keyed `-cover` build, the base-cell-only `GOCOVERDIR`, the teardown wait raised to `shutdown_timeout`, and the post-cell `covdata textfmt` step) — estimates | new Go in the harness (Go 1.26), floors that must not fire while a component is half-built, and a trend view that does not exist in `dt history` today; an estimate of 1–2 weeks |
 | Keeps | nothing | per-component trend, third party, no repo code | everything in-repo, one tool, one registry (RFC 29's shape) |
 | Loses | the only cheap answer to (a) | a dependency and a second place coverage is defined | the cheapest route to (a) now; duplicates still need the O(tests) scan |
@@ -468,15 +478,14 @@ tells us whether the question is still being asked.
 
 - **Ingestion cannot be fixed** (token/org constraints): drop, because a
   dashboard that receives nothing is not a dashboard.
-- **The view is not used, or something fires that should not**: no cutover
-  decision consults the component view in a week, or **two or more statuses,
-  comments or annotations appear that cannot be explained** (none is
-  configured; §9 makes one unexplained appearance a judgement call and two the
-  trigger). Either way the dashboard has become exactly the unopened noise
-  #3483 silenced: drop and revisit `dt`.
-- **e2e overhead exceeds ~3 minutes**: keep the reshape for unit+integration but
-  make e2e nightly-only; if even nightly is too slow, drop the e2e flag and note
-  that adapter numbers stay a lower bound.
+- **The view is not used, or the patch statuses are noise**: no real
+  decision consults the component view in a week, or the patch statuses produce
+  no actionable signal and more than two noise ones. Either way Codecov has
+  become again what #3483 silenced; drop and revisit `dt`.
+- **The weekly run does not fit its budget**: keep the reshape for the
+  components the cheaper profiles cover, and drop the e2e portion, noting that
+  adapter numbers stay a lower bound; if even that is unaffordable, the trial's
+  fail rule applies.
 - **A release needs an enforced floor**: move the floor to `dt` (§10), leaving
   Codecov as trend only — the "replace" option becomes the gate and Codecov the
   history.
@@ -488,7 +497,7 @@ tells us whether the question is still being asked.
 | Per-package coverage floors in `test/suites.yaml`, checked by `dt` | the reshape keeps Codecov as a trend; a floor is a gate, and a gate during a rewrite fires on known failures | unowned | the trial fails, or a release needs an enforced floor |
 | Duplicate-test detection via a `dt` profile-diff scan | O(tests) suite runs; detects coverage redundancy, not assertion redundancy; Codecov cannot do it | unowned | someone asks "which tests are redundant" with a budget for the runs |
 | Per-component enforced status once a v2 component is done | a Codecov component has no "done" state; flipping it early recreates the noise the issue is about | unowned | the component's known failures are gone and the trial passed |
-| PR-side coverage signals (patch status, comment) | the upload step excludes pull requests, and a changed-packages-only profile would read as a drop | unowned | full, non-partial PR uploads become affordable |
+| PR comments and annotations | one informational patch check is the whole PR surface; a comment or annotation is the noise #3483 silenced | unowned | reviewers ask for a per-PR summary the check cannot give |
 | A `new-package-tests.sh` guard for pre-existing packages | the script checks only directories new against the base; 32 untested directories predate it (§3b) | unowned | a rewrite touches one of the 32, or a cleanup pass adds their tests |
 
 Test Analytics is declined, not deferred: §5 records why it adds nothing over
