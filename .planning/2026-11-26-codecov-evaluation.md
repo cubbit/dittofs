@@ -196,7 +196,7 @@ scope.** Recorded as deferred work in §12.
 | Unit upload | 4.3 s, 2.4 MB sent (4.6 MB profile), on a 20.9 min cell | passes; keep |
 | Plan limits | public repo, free Codecov tier; no seat or private-repo cost | passes |
 | Integration `-coverprofile` | integration cell 3.4 min baseline; profiling re-instruments and recompiles the packages under test (separate build-cache keys), so cost is **estimated** at seconds to ~1 min, not the baseline; the flag is tier-scoped (§8.2), so the profile is only written on merge and nightly runs — measure those | write the flag at all, then measure in the trial |
-| e2e `go build -cover` | binary 78.3 MB vs 76.3 MB; build cost measured like for like on this host: warm **+0.06 s** (0.34 vs 0.28), cold **+2.9 s** (70.5 vs 67.6), separate GOCACHEs | passes: ~3 s of the build, once per cell |
+| e2e `go build -cover` | binary 78.3 MB vs 76.3 MB; the build is **in addition to** the plain `dfs`+`dfsctl` one, not instead of it; measured like for like on this host: warm **+0.06 s** (0.34 vs 0.28), cold **+2.9 s** (70.5 vs 67.6), separate GOCACHEs. CI runs `setup-go` with `cache: false`, so the **cold** figure is the CI number | weekly budget: ~3 s per covered build |
 | e2e runtime instrumentation | e2e cell **13.1 min**; rule-of-thumb coverage overhead is 5–15% CPU (no benchmark source), and e2e is dominated by mount/setup/IO, so **≈0.7–2.0 min estimated** | borderline: measure in the trial; if > 2–3 min, nightly-only or drop |
 | `GOCOVERDIR` collection | mechanism verified: built `dfs -cover`, ran a command, `go tool covdata percent` read the data; 581 KB meta per run | passes |
 
@@ -244,7 +244,11 @@ component_management:
       name: block (v1)
       paths: [pkg/block/**]
     # the fine-grained v1 cards overlap block-v1 and mirror the v2 cards'
-    # grouping, so decision (a) is one number against one number
+    # grouping where a v2 counterpart exists; blockcodec, chunker and gc
+    # have no v2 card yet and stay on block-v1
+    - component_id: block-middleware-v1
+      name: transform (v1)
+      paths: [pkg/block/middleware/**]
     - component_id: block-engine-v1
       name: engine + journal (v1)
       paths: [pkg/block/engine/**, pkg/block/journal/**]
@@ -356,33 +360,50 @@ Deliberate omissions:
 
 1. **Fix ingestion (prerequisite), on both branches.** Activate
    `cubbit/dittofs` on Codecov and update `CODECOV_TOKEN`; confirm the upload log
-   prints the `cubbit` slug and the commit appears in the API. `feat/storage-v2`
-   carries its **own** `codecov.yml` and its own upload step, and the v2 half of
-   decision (a) comes only from that branch's runs — so the same activation,
-   token and reshaped config must land there too, or the trial has nothing v2 to
-   compare against. That branch's upload step lives in a dedicated `unit:` job
-   (no matrix, unlike develop's), so its condition needs no `matrix.name` guard
-   and reads `env.TIER != 'pr' && hashFiles('…/unit/go-test-*-retry-*.json') == ''
-   && github.ref == 'refs/heads/feat/storage-v2'`. Without this the rest is
-   unobservable.
+   prints the `cubbit` slug and the commit appears in the API — the new upload
+   pins it: `slug: cubbit/dittofs` on the action, the action itself pinned by
+   SHA, `disable_search: true`, so a future slug regression cannot quietly
+   drift back to `marmos91/dittofs` as §2's failure did for 22 days behind
+   `continue-on-error: true`. `feat/storage-v2` carries its **own**
+   `codecov.yml` and its own upload step, and the v2 half of the evidence comes
+   only from that branch's weekly runs — so the reshaped config and the upload
+   step must be ported there (the `CODECOV_TOKEN` needs no porting; Actions
+   secrets are repository-wide, not per branch), or the cards have nothing v2
+   to read. That branch's step lives in a dedicated `unit:` job, so no matrix
+   guard; per item 4, what it uploads per push is now nothing — the weekly run
+   replaces it there too.
 2. **The weekly full-coverage run is the cards' one upload.** A new scheduled
-   workflow (weekly, `develop` and `feat/storage-v2`) runs the whole set with
-   coverage — unit, integration with tier-scoped
-   `args: { merge: "-coverprofile={out}/coverage.txt", nightly: same }`
-   (the mechanism unit uses for `-short`), the tagged suites, e2e per item 3,
-   and conformance against the `-cover` `dfs` — merges the profiles, and
-   uploads once, `flags: full`. Per-push unit uploads stop feeding the cards:
-   a changed-packages report between two full ones is exactly the jump the
-   single data source exists to prevent. frequency and budget are the weekly
-   run's own, not the merge path's, so the CI-time gate applies to it alone.
-3. **e2e coverage runs in that weekly job, unconditionally on the critical
-   path.** The plumbing goes through `dt`, not the workflow:
-   - `buildBin` skips the build whenever `{bin}/dfs` already exists ("an earlier
-     cell of this run built them"), so the `-cover` build is **keyed by name**:
-     coverage builds write `dfs` to `{bin}/cover/dfs` (or `dfs.cover`). Anything
-     else lets cell order decide which build every later cell runs, and a
-     cross-cell run hands a `-cover` dfs to cells that never set `GOCOVERDIR`. A
-     stamp, or the separate directory alone, is the check.
+   workflow (weekly cron, `develop` and `feat/storage-v2`) runs the nightly
+   tier's set with coverage and uploads the merged profiles once, `flags:
+   full`:
+   - unit and integration get `-coverprofile={out}/coverage.txt` **in their
+     `cmd`, unit's way** — dt expands `{out}` and `{packages}` in a `cmd`, but
+     an `args` item goes to `go test` verbatim with no placeholder
+     substitution, and integration's `cmd` carries no `{args}` at all, so a
+     tier-scoped args flag writes nothing. The upload then reads
+     `test/harness/results/*/integration/coverage.txt`, the same pattern as
+     unit's. A cmd-level flag runs in every tier that runs the suite,
+     including PRs, whose recompilation cost the §7 row already measures.
+   - the tagged suites and the unit cell need
+     `-coverpkg=./pkg/...,./internal/...` beside the profile flag: without it
+     Go credits coverage only to the packages under test, so `pkg/engine`
+     exercised by `engine-conformance`'s tests still reads as uncovered — the
+     #3483 noise this item exists to avoid. The same widening applies to the
+     weekly merged upload, or the cards under-count cross-package tests. Its
+     cost is real: more packages recompile with instrumentation and the
+     profile grows; the trial measures it.
+   Per-push unit uploads stop feeding the cards: a changed-packages report
+   between two full ones is exactly the jump the single data source exists to
+   prevent. The weekly job's budget is its own, not the merge path's.
+3. **e2e coverage runs in that weekly job, off the merge path.** The plumbing
+   goes through `dt`, not the workflow:
+- `buildBin` skips the build whenever `{bin}/dfs` already exists ("an
+     earlier cell of this run built them"), so the `-cover` build is **keyed by
+     name**: the base e2e cell's binaries live in `{bin}/cover/` — `dfs` built
+     with `-cover` and `dfsctl` beside it, because `Prebuilt` looks up
+     `$DITTOFS_E2E_BIN/<name>`, so the cell's `DITTOFS_E2E_BIN` must point
+     there, not at `{bin}`. A directory key means cell order cannot decide
+     which build every later cell runs.
    - The suite's env cannot carry `GOCOVERDIR`: `Registry.Units` merges each
      option over the suite (`merge(base, o)`), so `e2e/kerberos` and
      `e2e/stress` inherit `Env.ByTier` too, and tiers are cumulative
@@ -406,8 +427,10 @@ Deliberate omissions:
      least `shutdown_timeout` whenever `GOCOVERDIR` is set, or the e2e
      fixture's config sets a `shutdown_timeout` shorter than the wait — a
      `-cover` binary flushes its counters only on a clean exit, so a normal
-     teardown losing the race loses the coverage, and an empty-looking
-     `GOCOVERDIR` would be a teardown artifact, not a test result.
+     teardown losing the race loses the coverage. The check is on
+     **`covcounters.*`** — a `-cover` binary writes `covmeta.*` at startup, so
+     a directory whose every server was killed still looks populated — at
+     least one per server start, read before the trial judges anything else.
    Off the merge path, the weekly job's cost ceiling is its own runner budget;
    the trial still measures e2e with and without `-cover`, because a runaway
    cost makes even a weekly job unaffordable.
@@ -424,6 +447,15 @@ Deliberate omissions:
    retires the tier/ref-gate argument for the card feed entirely, though
    `feat/storage-v2`'s own upload config still follows its dedicated `unit:`
    job shape (no matrix, so no `matrix.name` guard).
+5. **Hardening, before the `ci:` PR lands:** the two `codecov.yml` copies
+   (develop and `feat/storage-v2`) need something that keeps them in sync; a
+   check that no package matching `./pkg/...` or `./internal/...` falls
+   outside every card; the hard-coded `refs/heads/feat/storage-v2` and the
+   `go-test-*-retry-*.json` retry-glob are dt's naming, and follow it if it
+   changes; and a scheduled step, beside §12's row, that fails when the
+   weekly commit does not appear in the Codecov API — `continue-on-error`
+   hid §2's failure for 22 days, and `carryforward` would now freeze the cards
+   instead of emptying them.
 
 ## 9. Trial (what makes this a recommendation rather than a guess)
 
@@ -441,8 +473,14 @@ each branch, and every PR that merges in that week.
   or that blocked review) versus noise (a known failure becoming a test whose profile the upload
   missed, v1 drift, a family the tagged suites should have carried). Comments and annotations still cannot fire.
 - Measure the e2e portion of the weekly run with and without `-cover`, and
-  confirm `GOCOVERDIR` holds data after a normal e2e teardown (§8.2, item 3,
-  including the lengthened shutdown wait).
+  count **`covcounters.*`** after a normal e2e teardown — at least one per
+  server start, since `covmeta.*` is written even when every server was
+  killed (§8.2, item 3).
+- Two sanity checks before any number is trusted: the card totals will not
+  reproduce the 59.71%/54.34% figures, because the `ignore` list drops
+  `cmd/**` and `test/**`; and `metadata-v1`'s `pkg/metadata/*.go` must match
+  the root service files only, not the `store/` subtree its other paths
+  already carry.
 
 **Pass:** the weekly run lands on both branches; the component view is used
 in at least one real decision; the patch statuses produce at least one
@@ -480,7 +518,7 @@ tells us whether the question is still being asked.
   dashboard that receives nothing is not a dashboard.
 - **The view is not used, or the patch statuses are noise**: no real
   decision consults the component view in a week, or the patch statuses produce
-  no actionable signal and more than two noise ones. Either way Codecov has
+  no actionable signal, or more than two noise ones. Either way Codecov has
   become again what #3483 silenced; drop and revisit `dt`.
 - **The weekly run does not fit its budget**: keep the reshape for the
   components the cheaper profiles cover, and drop the e2e portion, noting that
@@ -498,6 +536,7 @@ tells us whether the question is still being asked.
 | Duplicate-test detection via a `dt` profile-diff scan | O(tests) suite runs; detects coverage redundancy, not assertion redundancy; Codecov cannot do it | unowned | someone asks "which tests are redundant" with a budget for the runs |
 | Per-component enforced status once a v2 component is done | a Codecov component has no "done" state; flipping it early recreates the noise the issue is about | unowned | the component's known failures are gone and the trial passed |
 | PR comments and annotations | one informational patch check is the whole PR surface; a comment or annotation is the noise #3483 silenced | unowned | reviewers ask for a per-PR summary the check cannot give |
+| A scheduled check that the weekly commit appears in the Codecov API | §2's failure was invisible for 22 days behind continue-on-error, and carryforward now masks a broken upload by freezing the cards | unowned | the first weekly uploads, or before the ci PR merges |
 | A `new-package-tests.sh` guard for pre-existing packages | the script checks only directories new against the base; 32 untested directories predate it (§3b) | unowned | a rewrite touches one of the 32, or a cleanup pass adds their tests |
 
 Test Analytics is declined, not deferred: §5 records why it adds nothing over
