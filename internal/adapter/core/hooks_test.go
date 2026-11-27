@@ -540,6 +540,17 @@ func HoldServed(c *Conn) (release func()) {
 	}
 }
 
+// AfterCancel runs f right after c's close cancels the connection's context,
+// before the rest of the close: a test settles there what the cancel woke.
+func AfterCancel(c *Conn, f func()) {
+	cancel := c.cancel
+
+	c.cancel = func() {
+		cancel()
+		f()
+	}
+}
+
 // RecordHeld reports whether the connection's reader still holds bytes of a
 // record: a test waits it out before advancing, so a deadline firing into the
 // record's tail closes instead of re-arming.
