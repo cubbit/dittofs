@@ -254,9 +254,58 @@ config). Note: Docker `userns-remap` setups can't read the bind-mounted
 password file (a subordinate uid can't read a mode-600 file owned by you).
 
 Ports can be overridden with `MONITORING_GRAFANA_PORT` (default `3000`)
-and `MONITORING_NODE_EXPORTER_PORT` (default `9100`). Only Docker is supported
-(rootful; Docker 28+ recommended for the loopback-port publishing fix) —
-rootless daemons and podman would show the VM, not the host.
+and `MONITORING_NODE_EXPORTER_PORT` (default `9100`).
+
+**Rootful podman** works too, through its API socket (the CLI then runs in
+remote mode against the local host — the unprivileged `podman` binary alone is
+always rootless and **refused**, since it would show a user namespace, not the
+host):
+
+```bash
+sudo systemctl enable --now podman.socket
+sudo systemctl edit podman.socket        # [Socket] SocketGroup=<your group>
+export MONITORING_RUNTIME=podman
+export CONTAINER_HOST=unix:///run/podman/podman.sock
+scripts/monitoring.sh start
+```
+
+The socket group is exactly as privileged as the `docker` group: members are
+root-equivalent on the host — prefer a dedicated group over a shared one
+(`SocketGroup=docker` reuses the group you already have, at the same trust
+level). The Docker path was never SELinux-adapted — the `label=disable`
+handling below is podman-only. Non-socket, non-root podman is refused
+(require `CONTAINER_HOST` as above), and so is a leftover `CONTAINER_CONNECTION`
+remote mode.
+
+The script also refuses a podman machine or an `ssh://` connection (the
+hostname and kernel it reports would not match the host) and a non-netavark
+network backend. Podman's volume lives under `/var/lib/containers` — same
+advice about the disk under test, and `MONITORING_DATA_DIR` applies equally.
+
+**One podman caveat the Docker path does not have:** netavark publishes
+`127.0.0.1:3000` with a plain DNAT rule and no loopback-guard, so unlike
+Docker (28+, which filters it) the published port is reachable from off-loopback
+by anything that can route to the host's `127.0.0.1` — other containers on the
+host can reach the Grafana login page this way (verified on netavark 1.4; a
+physical LAN peer additionally needs FORWARD to pass, which a podman-only host
+usually allows). The login still requires the password, and the script drops
+`NET_RAW`/`NET_ADMIN` from the lgtm container so `route_localnet` on `dfsmon0`
+cannot be turned into a bridge to the host's loopback services. If that is not
+enough on your host, add the same raw-table rule Docker 28 uses:
+
+```bash
+sudo iptables -t raw -I PREROUTING -d 127.0.0.1/32 ! -i lo -p tcp --dport 3000 -j DROP
+```
+
+The stack's SELinux handling (`label=disable` on both containers, so the host
+mounts are readable without relabeling) removes SELinux confinement from the
+network-facing lgtm container too — a deliberate trade, the alternative
+(`:z`/`:Z`) relabels the host. Two runtimes cannot each
+run a stack on the same host: both call their bridge `dfsmon0`, and the script
+refuses the second one. A podman stack keeps its password and rendered config
+under the `podman/` subdirectory of the state directory, so a Docker stack's
+`stop --purge` leaves it alone. Only rootful Docker and rootful podman are
+supported (Docker 28+ recommended for the loopback-port publishing fix).
 
 Set `MONITORING_DATA_DIR` to put the stack's metric history on a disk you
 choose (bind-mounted) instead of the default named volume: by default it lives
@@ -266,9 +315,10 @@ panels during benchmarks. The stack's processes write the directory's contents
 as root, and `stop --purge` does not delete it — remove it with sudo yourself.
 
 **One stack per host.** Container, network and volume names are global to the
-Docker daemon, while the lock and the password file are per user: any member of
-the `docker` group can stop or purge the stack, whoever started it, and two
-users cannot each run their own copy on the same host.
+runtime's storage, while the lock and the password file are per user: any
+member of the `docker` group — or of the podman socket group — can stop or
+purge the stack, whoever started it, and two users cannot each run their own
+copy on the same host.
 
 Grafana is at <http://127.0.0.1:3000> and reachable only from localhost. On a
 remote bench machine, forward it over SSH:

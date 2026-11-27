@@ -14,6 +14,10 @@
 #          wherever the Docker daemon puts it — set it to keep the stack's
 #          time series off the disk under benchmark).
 #
+#   Runtime: rootful Docker, or rootful podman via its API socket
+#   (MONITORING_RUNTIME=podman + CONTAINER_HOST=unix:///run/podman/podman.sock;
+#   rootless podman is refused — it would show a user namespace, not the host).
+#
 #   Grafana listens on 127.0.0.1 only; on a remote host reach it with
 #   ssh -L 3000:localhost:3000 <host>. A random admin password is printed
 #   once on first start and stored, mode 600, in the state directory.
@@ -24,15 +28,19 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MONITORING_DIR="$REPO/scripts/monitoring"
-STATE="${XDG_STATE_HOME:-$HOME/.local/state}/dittofs/monitoring"
-PASSWORD_FILE="$STATE/grafana-admin-password"
-
 RUNTIME="${MONITORING_RUNTIME:-docker}"
 GRAFANA_PORT="${MONITORING_GRAFANA_PORT:-3000}"
 NODE_EXPORTER_PORT="${MONITORING_NODE_EXPORTER_PORT:-9100}"
 # Set to keep the stack's time series off the disk under test: the default
 # named volume lives wherever the Docker daemon puts it (often the bench disk).
 DATA_DIR="${MONITORING_DATA_DIR:-}"
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/dittofs/monitoring"
+# Per runtime: a Docker stack and a podman stack on the same host must not see
+# or purge each other's password or rendered config; the lock stays shared.
+STATE_R="$STATE/$RUNTIME"
+if [ "$RUNTIME" = "docker" ]; then STATE_R="$STATE"; fi   # docker keeps its long-standing location
+SELINUX_ENABLED=false   # set only by podman_prechecks' probe, never inherited
+PASSWORD_FILE="$STATE_R/grafana-admin-password"
 
 LABEL="io.dittofs.monitoring=1"
 NETWORK="dittofs-monitoring"
@@ -42,9 +50,10 @@ NODE_EXPORTER_CONTAINER="dittofs-monitoring-node-exporter"
 VOLUME="dittofs-monitoring-data"
 
 # Pinned by digest too: node-exporter runs with the host's namespaces and a
-# read-only /, so a retagged image must not slip in.
-LGTM_IMAGE="grafana/otel-lgtm:0.41.1@sha256:1b852b77d7bcadb7699bfe7c78a51d059dff85168de674728cf7abf4474645e5"
-NODE_EXPORTER_IMAGE="prom/node-exporter:v1.13.1@sha256:7296504d4ada44b7d7ab4431e27e9f9900d8488f8d55842f4b12ae2704e16dfe"
+# read-only /, so a retagged image must not slip in. Fully qualified: podman
+# does not guess a registry for a short name.
+LGTM_IMAGE="docker.io/grafana/otel-lgtm:0.41.1@sha256:1b852b77d7bcadb7699bfe7c78a51d059dff85168de674728cf7abf4474645e5"
+NODE_EXPORTER_IMAGE="docker.io/prom/node-exporter:v1.13.1@sha256:7296504d4ada44b7d7ab4431e27e9f9900d8488f8d55842f4b12ae2704e16dfe"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -66,30 +75,83 @@ prechecks() {
         die "run as your own user, not root: the state directory must stay in your home. Re-run without sudo (members of the docker group need no sudo)."
     fi
     [ "$(uname -s)" = "Linux" ] || die "The monitoring stack supports Linux only."
-    # Only rootful Docker: the bridge options and the IPAM gateway the stack
-    # builds on are Docker-specific, and rootless daemons report the VM or
-    # namespace as the host, not the bench machine.
-    [ "$RUNTIME" = "docker" ] || die "only Docker is supported; MONITORING_RUNTIME='$RUNTIME' was never tested (podman and rootless daemons do not give node-exporter the host's view)."
+    case "$RUNTIME" in
+        docker|podman) ;;
+        *) die "MONITORING_RUNTIME='$RUNTIME' is not supported; use docker (rootful) or podman (rootful, via its API socket)." ;;
+    esac
     command -v "$RUNTIME" >/dev/null 2>&1 \
         || die "$RUNTIME is not installed."
     # The podman-docker shim answers to "docker" and only fails later, at the
     # bridge gateway, with a cryptic template error — refuse it for what it is.
-    case "$(readlink -f "$(command -v "$RUNTIME")" 2>/dev/null || echo x)" in
-        *podman*) die "\`$RUNTIME\` is the podman-docker shim; only real Docker is supported (rootful — a rootless daemon would show the VM, not the host)." ;;
-    esac
-    runt info >/dev/null 2>&1 || die "the $RUNTIME daemon is not reachable."
+    if [ "$RUNTIME" = "docker" ]; then
+        case "$(readlink -f "$(command -v "$RUNTIME")" 2>/dev/null || echo x)" in
+            *podman*) die "\`$RUNTIME\` is the podman-docker shim; only real Docker is supported (rootful — a rootless daemon would show the VM, not the host)." ;;
+        esac
+    fi
+    if [ "$RUNTIME" = "podman" ]; then
+        # Connection shape before the daemon probe, so a remote mode is named
+        # for what it is instead of failing the probe with a confusing dial.
+        if [ -n "${CONTAINER_CONNECTION:-}" ]; then
+            die "podman's CONTAINER_CONNECTION='$CONTAINER_CONNECTION' remote mode cannot give node-exporter the host's view; unset it and export CONTAINER_HOST=unix:///run/podman/podman.sock."
+        fi
+        case "${CONTAINER_HOST:-}" in
+            unix://*) ;;
+            *) die "export CONTAINER_HOST=unix:///run/podman/podman.sock — an unset CONTAINER_HOST would dial the (refused) rootless session or an undeclared remote." ;;
+        esac
+    fi
+    runt info >/dev/null 2>&1 || {
+        local hint="the $RUNTIME daemon is not reachable."
+        [ "$RUNTIME" = "podman" ] && hint="the podman daemon (or its API socket) is not reachable: sudo systemctl enable --now podman.socket, give your group access to /run/podman/podman.sock (systemctl edit podman.socket: SocketGroup=...), then export CONTAINER_HOST=unix:///run/podman/podman.sock."
+        die "$hint"
+    }
+    [ "$RUNTIME" = "podman" ] && podman_prechecks
     # Numeric ports up front: a bad value must die before anything starts.
     case "$GRAFANA_PORT:$NODE_EXPORTER_PORT" in
         *[!0-9:]*) die "GRAFANA_PORT and NODE_EXPORTER_PORT must be numeric ports" ;;
     esac
     # Checked up front, so a missing tool is a clear error, not a half-start.
     local tool
-    for tool in openssl curl flock sha256sum hostname; do
+    for tool in openssl curl flock sha256sum hostname ip; do
         command -v "$tool" >/dev/null 2>&1 || die "$tool is required but not installed."
     done
     install -d -m 700 "$STATE"   # GNU install applies -m to the leaf only; the leaf is all that matters
     exec 9>"$STATE/lock"
     flock -n 9 || die "another monitoring.sh is already running; wait for it."
+}
+
+# Rootful-only podman: one `info` call answers whether this is rootless,
+# whether it is really this machine (not a VM or an ssh:// remote), and which
+# network backend is in use. Run BEFORE anything is created, so a refused
+# start leaves nothing behind.
+podman_prechecks() {
+    # The connection shape first, so a broken remote dies with its own message,
+    # not as mismatched "host data". An unset CONTAINER_HOST has no legitimate
+    # path: local non-root podman is always rootless, which is refused below —
+    # so requiring the explicit socket only closes CONTAINER_CONNECTION and
+    # [engine] remote=true indirection.
+    local f
+    f="$(runt info --format '{{.Host.Security.Rootless}}|{{.Host.Hostname}}|{{.Host.Kernel}}|{{.Host.NetworkBackend}}|{{.Host.Security.SELinuxEnabled}}' 2>/dev/null || true)"
+    # exactly one line, exactly the five fields. podman info already answered
+    # (the reachability check ran first), so anything else here is a podman too
+    # old to know the fields — not a hole to skip the refusals through.
+    if [ "$(grep -c '' <<<"$f")" != 1 ] || [ "$(tr -dc '|' <<<"$f" | wc -c)" != 4 ]; then
+        die "this podman did not report the fields the stack needs; podman 4+ with the netavark backend is required."
+    fi
+    if [ "${f%%|*}" = "true" ]; then
+        die "rootless podman is not supported: node-exporter needs the host's network and PID namespaces and a real host bridge, and rootless podman runs everything inside a user namespace. Use rootful podman: sudo systemctl enable --now podman.socket, give your group access to /run/podman/podman.sock (systemctl edit podman.socket: SocketGroup=...), then export CONTAINER_HOST=unix:///run/podman/podman.sock."
+    fi
+    local info_host info_kernel backend
+    info_host="$(cut -d'|' -f2 <<<"$f")"
+    info_kernel="$(cut -d'|' -f3 <<<"$f")"
+    backend="$(cut -d'|' -f4 <<<"$f")"
+    SELINUX_ENABLED="$(cut -d'|' -f5 <<<"$f")"
+    # Fallback when the field shape renders oddly: a mounted SELinux fs is the
+    # ground truth, and mis-detecting it fails node-exporter at container start.
+    [ "${SELINUX_ENABLED:-false}" != "true" ] && [ -d /sys/fs/selinux ] && SELINUX_ENABLED=true
+    if [ "$info_host" != "$(hostname)" ] || [ "$info_kernel" != "$(uname -r)" ]; then
+        die "podman reports host '$info_host'/'$info_kernel', not this machine — a podman machine or a remote connection would monitor the VM, not the bench host."
+    fi
+    [ "$backend" = "netavark" ] || die "podman's '$backend' network backend is not supported; the bridge this stack builds on is netavark's."
 }
 
 # ---------------------------------------------------------------------------
@@ -100,8 +162,10 @@ bridge_gateway() {
     # host address on dfsmon0, not bound on any LAN interface. Note this is a
     # routing property, not a firewall: a LAN peer that routes to it, and any
     # local container, can reach it — firewall dfsmon0 if that matters.
+    local tpl='{{range .IPAM.Config}}{{.Gateway}} {{end}}'
+    [ "$RUNTIME" = "podman" ] && tpl='{{range .Subnets}}{{.Gateway}} {{end}}'
     runt network inspect "$NETWORK" \
-        -f '{{range .IPAM.Config}}{{.Gateway}} {{end}}' | tr ' ' '\n' \
+        -f "$tpl" | tr ' ' '\n' \
         | grep -oE '^[0-9.]+$' | head -1
 }
 
@@ -111,10 +175,11 @@ render_prometheus_config() {
     escaped="${host//\\/\\\\}"   # \ is a sed replacement metachar
     escaped="${escaped//&/\\&}"     # so is &
     escaped="${escaped//|/\\|}"     # and | is the delimiter
+    install -d "$STATE_R"
     sed -e "s|@NODE_EXPORTER_TARGET@|$target|" \
         -e "s|@HOSTNAME@|$escaped|" \
-        "$MONITORING_DIR/prometheus.yaml.tmpl" > "$STATE/prometheus.yaml"
-    chmod 644 "$STATE/prometheus.yaml"
+        "$MONITORING_DIR/prometheus.yaml.tmpl" > "$STATE_R/prometheus.yaml"
+    chmod 644 "$STATE_R/prometheus.yaml"
 }
 
 config_hash() {
@@ -131,8 +196,8 @@ config_hash() {
     echo "host $(hostname)"
 }
 
-lgtm_running()   { [ "$(runt inspect -f '{{.State.Running}}' "$LGTM_CONTAINER" 2>/dev/null)" = "true" ]; }
-exporter_running() { [ "$(runt inspect -f '{{.State.Running}}' "$NODE_EXPORTER_CONTAINER" 2>/dev/null)" = "true" ]; }
+lgtm_running()   { [ "$(runt container inspect -f '{{.State.Running}}' "$LGTM_CONTAINER" 2>/dev/null)" = "true" ]; }
+exporter_running() { [ "$(runt container inspect -f '{{.State.Running}}' "$NODE_EXPORTER_CONTAINER" 2>/dev/null)" = "true" ]; }
 
 grafana_admin_password_args() {
     # shellcheck disable=SC2016  # the literal $__file{} is Grafana's expander; it must not expand here
@@ -141,7 +206,7 @@ grafana_admin_password_args() {
     # re-passing the generated password never overwrites one the user changed.
     if [ -f "$PASSWORD_FILE" ]; then
         printf '%s\n' \
-            --mount "type=bind,src=$PASSWORD_FILE,target=/run/secrets/grafana-admin-password,readonly" \
+            --mount "type=bind,src=$PASSWORD_FILE,target=/run/secrets/grafana-admin-password,readonly=true" \
             -e 'GF_SECURITY_ADMIN_PASSWORD=$__file{/run/secrets/grafana-admin-password}'
     fi
 }
@@ -165,7 +230,7 @@ cmd_start() {
         info "grafana URL hint: on a remote host, ssh -L $running_port:localhost:$running_port -- for the node's own traces/metrics there is the recipe in docs/internals/debugging.md"
         local rendered label_running
         rendered="$(config_hash | sha256sum | cut -d' ' -f1)"
-        label_running="$(runt inspect -f '{{index .Config.Labels "io.dittofs.monitoring.config"}}' "$LGTM_CONTAINER" 2>/dev/null || true)"
+        label_running="$(runt container inspect -f '{{index .Config.Labels "io.dittofs.monitoring.config"}}' "$LGTM_CONTAINER" 2>/dev/null || true)"
         if [ "$rendered" != "$label_running" ]; then
             warn "running with an older config; run 'stop' then 'start' to apply changes"
         fi
@@ -183,6 +248,21 @@ cmd_start() {
     runt stop -t 10 "$LGTM_CONTAINER" "$NODE_EXPORTER_CONTAINER" >/dev/null 2>&1 || true
     runt rm -f "$LGTM_CONTAINER" "$NODE_EXPORTER_CONTAINER" >/dev/null 2>&1 || true
 
+    # Two runtimes would both call their bridge $BRIDGE_NAME, and netavark
+    # keeps the network defined after a reboot while the bridge itself belongs
+    # to whoever runs now. Refuse whenever the bridge exists and it is not
+    # this network's own gateway address, and not only when the network is
+    # undefined here.
+    if ip link show "$BRIDGE_NAME" >/dev/null 2>&1; then
+        local foreign_bridge_gw="" foreign_bridge_ip=""
+        if runt network inspect "$NETWORK" >/dev/null 2>&1; then
+            foreign_bridge_gw="$(bridge_gateway || true)"
+        fi
+        foreign_bridge_ip="$(ip -o -4 addr show dev "$BRIDGE_NAME" | awk '{print $4}' | cut -d/ -f1 | sed -n '1p')"
+        if [ -z "$foreign_bridge_gw" ] || [ "$foreign_bridge_ip" != "$foreign_bridge_gw" ]; then
+            die "$BRIDGE_NAME exists with address ${foreign_bridge_ip:-none} but this runtime's network wants ${foreign_bridge_gw:-none}: another runtime's monitoring stack owns the bridge. Stop it with MONITORING_RUNTIME=<docker|podman> scripts/monitoring.sh stop."
+        fi
+    fi
     runt network inspect "$NETWORK" >/dev/null 2>&1 \
         || runt network create --driver bridge \
                -o com.docker.network.bridge.name="$BRIDGE_NAME" "$NETWORK" >/dev/null
@@ -193,6 +273,10 @@ cmd_start() {
     local cfg_hash
     cfg_hash="$(config_hash | sha256sum | cut -d' ' -f1)"
 
+    local selinux_args=()
+    [ "${SELINUX_ENABLED:-false}" = "true" ] \
+        && selinux_args=(--security-opt label=disable)   # :z/:Z would relabel the host — forbidden; note lgtm loses its SELinux confinement with this, the price of reading the host mounts
+    local net_caps=(--cap-drop NET_RAW --cap-drop NET_ADMIN)   # keeps netavark's route_localnet bridge out of reach even against a containers.conf that adds caps
     local data_mount=(-v "$VOLUME:/data")
     if [ -n "$DATA_DIR" ]; then
         install -d "$DATA_DIR"
@@ -208,12 +292,12 @@ cmd_start() {
     readarray -t password_args < <(grafana_admin_password_args)
 
     runt run -d --name "$LGTM_CONTAINER" \
-        --network "$NETWORK" \
+        --network "$NETWORK" "${selinux_args[@]}" "${net_caps[@]}" \
         --label "$LABEL" \
         --label "io.dittofs.monitoring.config=$cfg_hash" \
         -p "127.0.0.1:$GRAFANA_PORT:3000" \
         "${data_mount[@]}" \
-        -v "$STATE/prometheus.yaml":/otel-lgtm/prometheus.yaml:ro \
+        -v "$STATE_R/prometheus.yaml":/otel-lgtm/prometheus.yaml:ro \
         -v "$MONITORING_DIR/grafana/provisioning/dashboards/dittofs.yaml":/otel-lgtm/grafana/conf/provisioning/dashboards/dittofs.yaml:ro \
         -v "$MONITORING_DIR/grafana/dashboards":/otel-lgtm/dittofs-dashboards:ro \
         "${password_args[@]}" \
@@ -226,7 +310,7 @@ cmd_start() {
         -e GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/otel-lgtm/dittofs-dashboards/node-overview.json \
         "${pull[@]}" \
         "$LGTM_IMAGE" >/dev/null \
-        || { teardown; die "failed to start $LGTM_IMAGE — port $GRAFANA_PORT busy, or docker failed; everything that was started has been cleaned up."; }
+        || { teardown; die "failed to start $LGTM_IMAGE — port $GRAFANA_PORT busy, or $RUNTIME failed; everything that was started has been cleaned up."; }
 
     # decision: host network + PID namespace and read-only host mounts give
     # node-exporter the host's per-NIC and per-disk view, not the container's.
@@ -235,8 +319,11 @@ cmd_start() {
     # decision: nfs and smb file systems are excluded from the filesystem
     # collector so a scrape never sends FSSTAT to a DittoFS mount under
     # benchmark and never hangs on a stuck mount.
+    # Starts AFTER the lgtm container on purpose: podman's netavark realizes
+    # the bridge (and its gateway address) only when the first container
+    # attaches, so binding the exporter earlier would find no address.
     runt run -d --name "$NODE_EXPORTER_CONTAINER" \
-        --network host --pid host \
+        --network host --pid host "${selinux_args[@]}" \
         --user 65534:65534 --cap-drop ALL --security-opt no-new-privileges \
         --label "$LABEL" \
         -v /proc:/host/proc:ro -v /sys:/host/sys:ro -v /:/rootfs:ro,rslave \
@@ -276,7 +363,7 @@ generate_password() {
         return
     fi
     if runt volume inspect "$VOLUME" >/dev/null 2>&1; then
-        warn "data volume $VOLUME already exists without a password file: the admin password is whatever that Grafana already has (admin:admin if the Grafana inside was never initialised with one). To reset: docker exec -i $LGTM_CONTAINER /otel-lgtm/grafana/bin/grafana cli --homepath /otel-lgtm/grafana admin reset-admin-password --password-from-stdin"
+        warn "data volume $VOLUME already exists without a password file: the admin password is whatever that Grafana already has (admin:admin if the Grafana inside was never initialised with one). To reset: $RUNTIME exec -i $LGTM_CONTAINER /otel-lgtm/grafana/bin/grafana cli --homepath /otel-lgtm/grafana admin reset-admin-password --password-from-stdin"
         VOLUME_WITHOUT_PASSWORD=1
         return
     fi
@@ -382,7 +469,8 @@ cmd_stop() {
         if runt volume inspect "$VOLUME" >/dev/null 2>&1; then
             warn "the $VOLUME volume could not be removed (in use?); the password file was kept, since that Grafana still uses it."
         else
-            rm -f "$PASSWORD_FILE" "$STATE/prometheus.yaml"
+            rm -f "$PASSWORD_FILE" "$STATE_R/prometheus.yaml"
+            rmdir "$STATE_R" 2>/dev/null || true   # leave no empty per-runtime dir behind
             info "purged: password removed; the next start generates a fresh one."
             if [ -n "$DATA_DIR" ]; then
                 info "monitoring data was bind-mounted at $DATA_DIR — that directory was NOT deleted; remove it yourself if you want the history gone."
