@@ -549,7 +549,9 @@ sessions, because a session's slots live in one node's memory (§3.2).
   installation's identity
   ([RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities)),
   the minor ID the node's own
-  ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)).
+  ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)). The adapter reads both
+  from `Deps.Server`, the installation's ID and the node's ID
+  ([RFC 20 §3.4](rfc-20-adapters.md#3.4%20Interface)).
 - **Client ID trunking** across nodes is allowed: one client ID, sessions on
   several nodes, each node's connections bound to its own sessions.
 - **Session trunking** — one session with connections to several nodes — is
@@ -656,6 +658,25 @@ the wire:
 - One whose owner a confirmed record holds under another principal **MUST** be
   `NFS4ERR_CLID_INUSE` (`ErrState` (`ClientInUse`)), whatever its verifier, and leaves no
   `Pending` proposal (RFC 8881 §18.35.5).
+- An `EXCHANGE_ID` with `EXCHGID4_FLAG_UPD_CONFIRMED_REC_A` **MUST** make no
+  proposal. The adapter reads the owner with `ClientByName`
+  ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)), which changes no state and
+  compares the caller's mapped principal itself (the adapter holds none, RFC 18 §6.1), and
+  answers `NFS4ERR_NOENT` when no confirmed record holds it, `NFS4ERR_NOT_SAME`
+  when the record's `Boot` is not the one the request's verifier gives (§11.4),
+  `NFS4ERR_PERM` when the verifier matches and `ClientByName` reports another owner (`sameOwner` false), and
+  otherwise the existing client ID as above (RFC 8881 §18.35.4, items 6 to 9).
+- For any `EXCHANGE_ID` or `SETCLIENTID`, the adapter reads the owner with `ClientByName`
+  before it calls `Propose`. A record with `Protect` set is read this way, and the adapter runs the
+  proof check before it compares principals: the request's `Identity` must show
+  `Ticket` proof with `Integrity` protection or more
+  ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)), as RFC 8881 §18.35.3 requires of a
+  caller that reuses an `SP4_MACH_CRED` owner ("MUST also use the same machine
+  credential"). A caller that fails it counts as another principal: its
+  `EXCHANGE_ID` or `SETCLIENTID` is `NFS4ERR_CLID_INUSE`, and under
+  `EXCHGID4_FLAG_UPD_CONFIRMED_REC_A` `NFS4ERR_PERM`, or `NFS4ERR_NOT_SAME` with
+  another verifier. The service compares principals only, as above; the check
+  is the adapter's.
 - The confirm is accepted only at the node that answered, from the same
   principal, naming the answered client ID and, for NFSv4.0, the confirm
   verifier, for NFSv4.1 the sequence ID, before one lease period has passed. It
@@ -2500,7 +2521,7 @@ in RFC 14's durable client record
 | `Boot` | the boot verifier; for an NLM host its NSM state number, big-endian in the low four bytes, so the bytes order as the numbers do | a new `Boot` under the same name is a new client instance |
 | `Pending` | an unconfirmed `SETCLIENTID` or `EXCHANGE_ID`: nothing durable, held at the node that answered, `Confirm` sent as the NFSv4.0 confirm verifier or, low 32 bits, as the NFSv4.1 `eir_sequenceid` ([RFC 14 §2.9](rfc-14-open-state.md#2.9%20Clients%20pending%20confirmation)) | `SETCLIENTID_CONFIRM`, or NFSv4.1's first `CREATE_SESSION`, at that node (§3.5) |
 | `Owner` | the principal that created the client ID, mapped before squashing; zero for an NLM host, whose `Connect` sets `ClientIsMachine` | an `EXCHANGE_ID` or `SETCLIENTID` for the same name from another principal is `NFS4ERR_CLID_INUSE` (RFC 8881 §18.35.5) and leaves no `Pending` |
-| `Protect` | set for `SP4_MACH_CRED`, false for `SP4_NONE`; `spo_must_allow` stays in the adapter's bytes, and the adapter refuses a machine-credential call outside it before calling the service | each node admits the machine principal the same way |
+| `Protect` | set for `SP4_MACH_CRED`, false for `SP4_NONE`; `spo_must_allow` stays in the adapter's bytes, and the adapter refuses a machine-credential call outside it before calling the service; a caller that fails the proof check on an `EXCHANGE_ID` or `SETCLIENTID` for the owner is another principal (§3.5) | each node admits the machine principal the same way |
 | `Reach.Callback`, `Reach.Down` | the node holding the back channel, and whether it is lost (§3.4) | callbacks, `SEQ4_STATUS_CB_PATH_DOWN` |
 | `Reach.Sessions` | one entry per node holding a session, added at `CREATE_SESSION` through `AddSession` and again through it at each new node epoch, removed by the node's last `DESTROY_SESSION`'s `Disconnect`, or with the node's loss or restart | `DESTROY_CLIENTID` is `NFS4ERR_CLIENTID_BUSY` while any entry remains (§5.1), so a clean unmount's, after its `DESTROY_SESSION`, finds none |
 | `Recovery` | status for NFSv4.1, refusal for NFSv4.0, notice for an NLM host ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)) | status and refusal hold a client lease, renewed by `SEQUENCE` and `RENEW`; notice holds none |
@@ -3180,7 +3201,7 @@ method then calls below is
 
 | Operation | Method | Notes |
 | --- | --- | --- |
-| `SETCLIENTID`, `EXCHANGE_ID` | `Propose` | an unconfirmed proposal, no state ([§3.5](#3.5%20Confirming%20a%20client)) |
+| `SETCLIENTID`, `EXCHANGE_ID` | `ClientByName` first, then `Propose` | an unconfirmed proposal, no state; no `Propose` under `UPD_CONFIRMED_REC_A` ([§3.5](#3.5%20Confirming%20a%20client)) |
 | `SETCLIENTID_CONFIRM` | `Connect`, naming the `Proposal` | |
 | `CREATE_SESSION` | `Record`; the first `Connect`, naming the `Proposal`, then `AddSession` (§3.5) | a replay is answered from the record's adapter bytes and calls nothing more |
 | `SEQUENCE` | `Renew`, at most once per renewal interval | the slot table is the adapter's |
