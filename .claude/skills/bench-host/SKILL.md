@@ -60,7 +60,9 @@ verification).
 | Tue+Fri 08:30 | scheduled full run (30 GiB rows) | ~1 h 45 m |
 | daily 18:45 | dt scenario night (18:00 canary first) | hours |
 
-Quiet windows run roughly 12:10–12:50, 13:30–17:30, and after ~21:00. Nothing that writes
+Quiet windows run roughly 12:10–12:50, 13:30–17:30, and after ~21:00 — and on Tue/Fri
+mornings, after the 08:30 full finishes, about 10:15–12:10 is quiet too (the list is
+illustrative, not exhaustive: trust `pgrep` and `uptime` over it). Nothing that writes
 should overlap the 18:45 night; a full must start early enough to end before the 18:00
 canary.
 
@@ -81,9 +83,15 @@ Under the account's home on the box (recreate per account if absent):
 export BENCH_CHECKOUT=$HOME/journal-bench
 export BENCH_RUN_ROOT=$HOME/journal-runs
 export DITTOFS_BENCH_DIR=$HOME/journal-bench-data
-export BENCH_NOT_AFTER=$(date -d "today 17:00" +%s)   # refuses to start after this
+export BENCH_NOT_AFTER=$(date -d "today 14:30" +%s)   # full: the 18:00 canary minus its 3.5 h worst case
 nohup sh $HOME/journal-bench/test/journal/bench-run.sh full > $HOME/full-run.log 2>&1 &
 ```
+
+`BENCH_NOT_AFTER` differs per kind: the script's own budget is the 18:00 canary minus the
+worst-case run — 3.5 h for a full, 20 min for a small — so a full refuses to start after
+about 14:30 and a small after about 17:40. The scheduled wrapper computes exactly this
+(`test/journal/bench-run.sh`'s header); a start cutoff later than this, or the expected
+run time, risks running a still-quiet-looking load into the canary.
 
 `BENCH_LOCK` unset means no lock — the hand run is its own collision manager; the script's
 quiet-load gate (waits for load < 4) still helps. The script fetches the branch tip and
