@@ -31,7 +31,12 @@ type Store struct {
 	now    func() time.Time
 	sum    remote.Checksum
 	closed atomic.Bool
+	ns     *namespace
+}
 
+// namespace is the objects a store holds, shared by every store opened over
+// it, as a service's bucket is shared by its clients.
+type namespace struct {
 	mu      sync.Mutex
 	objects map[string]object // by key relative to the prefix
 }
@@ -57,12 +62,15 @@ func New(now func() time.Time, sum remote.Checksum) *Store {
 		panic(fmt.Sprintf("memory: unknown checksum kind %d", sum))
 	}
 
-	return &Store{now: now, sum: sum, objects: make(map[string]object)}
+	return &Store{now: now, sum: sum, ns: &namespace{objects: make(map[string]object)}}
 }
 
 // blockKey is a block's key: blocks/ and the name in lowercase hex, nothing
 // between them (RFC 4 §4.2, Appendix C.2).
-func blockKey(n remote.Name) string { return "blocks/" + hex.EncodeToString(n[:]) }
+func blockKey(n remote.Name) string { return blockPrefix + hex.EncodeToString(n[:]) }
+
+// blockPrefix is the block namespace's key prefix.
+const blockPrefix = "blocks/"
 
 // Checksum is the kind the store was built with.
 func (s *Store) Checksum() remote.Checksum { return s.sum }
@@ -134,9 +142,9 @@ func (s *Store) Put(ctx context.Context, name remote.Name, body io.Reader, size 
 		}
 	}
 
-	s.mu.Lock()
-	s.objects[blockKey(name)] = object{body: buf, modTime: s.now()}
-	s.mu.Unlock()
+	s.ns.mu.Lock()
+	s.ns.objects[blockKey(name)] = object{body: buf, modTime: s.now()}
+	s.ns.mu.Unlock()
 
 	return nil
 }
@@ -170,9 +178,9 @@ func (s *Store) Get(ctx context.Context, name remote.Name, r remote.Range) (io.R
 		return nil, remote.StoredSum{}, err
 	}
 
-	s.mu.Lock()
-	o, ok := s.objects[blockKey(name)]
-	s.mu.Unlock()
+	s.ns.mu.Lock()
+	o, ok := s.ns.objects[blockKey(name)]
+	s.ns.mu.Unlock()
 
 	if !ok {
 		return nil, remote.StoredSum{}, fmt.Errorf("memory: get of block %x: %w", name, remote.ErrNotFound)
@@ -189,21 +197,6 @@ func (s *Store) Get(ctx context.Context, name remote.Name, r remote.Range) (io.R
 	}
 
 	return io.NopCloser(bytes.NewReader(bytes.Clone(b))), remote.StoredSum{}, nil
-}
-
-// Delete is not served yet: every name's result wraps remote.ErrInvalid.
-func (s *Store) Delete(ctx context.Context, names []remote.Name) []error {
-	errs := make([]error, len(names))
-	for i := range errs {
-		errs[i] = unserved("Delete")
-	}
-
-	return errs
-}
-
-// List is not served yet: it refuses with remote.ErrInvalid.
-func (s *Store) List(ctx context.Context, after remote.Cursor, n int) ([]remote.Info, remote.Cursor, bool, error) {
-	return nil, after, false, unserved("List")
 }
 
 // Health is not served yet: it refuses with remote.ErrInvalid.

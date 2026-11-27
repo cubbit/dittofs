@@ -1,6 +1,7 @@
 package memory_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -33,8 +34,21 @@ func TestConformance(t *testing.T) {
 					}
 				})
 
-				return remotetest.Subject{Store: s}
+				return subject(s)
 			})
 		})
+	}
+}
+
+// subject is the suite's view of s, its hooks backed by the store's raw
+// access.
+func subject(s *memory.Store) remotetest.Subject {
+	return remotetest.Subject{
+		Store: s,
+		PutRaw: func(_ context.Context, key string, body []byte) error {
+			memory.PutRaw(s, key, body)
+			return nil
+		},
+		Reopen: func(context.Context) (remote.Store, error) { return memory.Reopen(s), nil },
 	}
 }
