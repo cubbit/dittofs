@@ -1623,11 +1623,18 @@ func (p *pipeline) wait(ctx context.Context) error {
 // close's own cancel reached it. Overturned if a park the close races may
 // keep its call.
 func (p *pipeline) close() {
+	p.markClosed()
+	p.cancel()
+	p.endHolds()
+}
+
+// markClosed marks the table of holds closed, so a park or a hold that comes
+// after it is dropped (§4.6, §4.7). The connection's close calls it before
+// it ends its own context, the parent of this pipeline's.
+func (p *pipeline) markClosed() {
 	p.pend.mu.Lock()
 	p.pend.closed = true
 	p.pend.mu.Unlock()
-	p.cancel()
-	p.endHolds()
 }
 
 // add counts a request, a hold, a park or a status wait starting; done, one
