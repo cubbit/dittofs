@@ -17,10 +17,10 @@ import (
 const (
 	// Exactly what one warm WriteAt spent when TestCounted_AllocationsPerCall
 	// measured it here; the proof test fails anything added above this.
-	maxWriteAllocs = 9.0
+	maxWriteAllocs = 5.0
 	// Exactly what one ReadAt of held bytes spent when
 	// TestCounted_AllocationsPerCall measured it here.
-	maxReadAllocs = 7.0
+	maxReadAllocs = 4.0
 	// Exactly what one Stats spends now that it reads maintained counters
 	// and takes none of the locks a write takes; any allocation added past it
 	// fails the check the same way.

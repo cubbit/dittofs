@@ -785,6 +785,16 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 		// Deferred ahead of the drain's own leave, so it runs once that has.
 		defer s.pinnedHook()
 	}
+	// The drain's leave is deferred here, outside the loop, and armed by the
+	// reservation below: a defer inside a loop is heap-allocated on every
+	// call. Deferred after the pinned hook and the in-flight count, it still
+	// runs before both.
+	draining := false
+	defer func() {
+		if draining {
+			s.leaveDrain()
+		}
+	}()
 	for {
 		// appendParkHook is a test hook at the loop's top, past the head
 		// checks and with the lock dropped: the one place an append that
@@ -1006,7 +1016,7 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 		// never re-enters once a reservation is made, so the deferred
 		// leave runs exactly once per reservation.
 		s.enterDrain()
-		defer s.leaveDrain()
+		draining = true
 		id, ref, off := s.id, s.ref, h.Offset
 		s.appendMu.Unlock()
 

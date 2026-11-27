@@ -110,3 +110,71 @@ func TestFileLocks_BoundedByFilesInFlight(t *testing.T) {
 		t.Fatalf("size = %d after 10000 files locked in turn, want 0", got)
 	}
 }
+
+// sameShard returns n files other than of that hash to of's shard.
+func sameShard(tbl *fileLocks, of core.FileID, n int) []core.FileID {
+	var out []core.FileID
+	for i := uint64(1 << 32); len(out) < n; i++ {
+		if f := fid(i); f != of && tbl.shardOf(f) == tbl.shardOf(of) {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// freeLen reports how many released entries id's shard keeps for reuse.
+func (t *fileLocks) freeLen(id core.FileID) int {
+	s := t.shardOf(id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.free)
+}
+
+func TestFileLocks_ReusedEntryServesItsNewFile(t *testing.T) {
+	tbl := newFileLocks()
+	a := fid(1)
+	b := sameShard(tbl, a, 1)[0]
+	tbl.Lock(a)()
+	if got := tbl.freeLen(a); got != 1 {
+		t.Fatalf("free list after a's release = %d entries, want 1", got)
+	}
+	ub := tbl.Lock(b)
+	if got := tbl.freeLen(a); got != 0 {
+		t.Fatalf("free list after b's lock = %d entries, want 0: b did not reuse a's entry", got)
+	}
+	// a's domain is its own again while b holds the reused entry.
+	done := make(chan func())
+	go func() { done <- tbl.Lock(a) }()
+	select {
+	case ua := <-done:
+		ua()
+	case <-time.After(5 * time.Second):
+		t.Fatal("a's domain waited on b, which holds a's reused entry")
+	}
+	if got := tbl.refs(b); got != 1 {
+		t.Fatalf("b's refs = %d while b holds, want 1", got)
+	}
+	ub()
+	if got := tbl.size(); got != 0 {
+		t.Fatalf("size = %d after both files released, want 0", got)
+	}
+}
+
+func TestFileLocks_FreeListBounded(t *testing.T) {
+	tbl := newFileLocks()
+	a := fid(1)
+	files := append(sameShard(tbl, a, 2*fileLockFree), a)
+	var unlocks []func()
+	for _, f := range files {
+		unlocks = append(unlocks, tbl.Lock(f))
+	}
+	for _, u := range unlocks {
+		u()
+	}
+	if got := tbl.freeLen(a); got != fileLockFree {
+		t.Fatalf("free list after %d releases in one shard = %d entries, want %d", len(files), got, fileLockFree)
+	}
+	if got := tbl.size(); got != 0 {
+		t.Fatalf("size = %d after every file released, want 0", got)
+	}
+}

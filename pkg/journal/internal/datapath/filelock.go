@@ -26,8 +26,9 @@ const fileLockShards = 64
 // that entry to outlive a file's last extent, when the shard locks show up in
 // a profile.
 //
-// An entry exists only while a holder or waiter references it, so the table is
-// bounded by the files in flight rather than the files ever written.
+// An entry is in the table only while a holder or waiter references it, so the
+// table is bounded by the files in flight rather than the files ever written;
+// each shard keeps at most fileLockFree released entries besides, 256 in all.
 type fileLocks struct {
 	shards [fileLockShards]fileLockShard
 
@@ -42,7 +43,14 @@ type fileLockShard struct {
 	// waited on, and takes no lock itself.
 	mu sync.Mutex
 	m  map[core.FileID]*fileLockEntry
+	// free keeps a few released entries, under mu, for the next file the
+	// shard locks: an entry and its release are made once and reused, so a
+	// write's lock allocates nothing.
+	free []*fileLockEntry
 }
+
+// fileLockFree bounds each shard's list of reusable entries.
+const fileLockFree = 4
 
 // fileLockEntry is one file's domain. refs counts holders and waiters and is
 // guarded by the owning shard's mu.
@@ -51,6 +59,34 @@ type fileLockEntry struct {
 	// domain held across a record's I/O and its publish.
 	mu   lockorder.Mutex
 	refs int
+	// id and shard name the entry's file and table slot while it is in the
+	// map; release is e.unlock bound once, the func Lock hands out.
+	id      core.FileID
+	shard   *fileLockShard
+	release func()
+}
+
+// unlock releases the domain and drops the entry from its shard once no
+// holder or waiter references it, keeping it for reuse while the shard's free
+// list has room.
+//
+// decision: nothing guards against a second call. A recycled entry may by
+// then serve another file, so a second call would release that file's domain;
+// on an entry not yet reused it is the runtime's fatal unlock of an unlocked
+// mutex. Every caller releases exactly once, on each of its paths; a guard
+// would need a token per Lock, the allocation the reuse removes.
+func (e *fileLockEntry) unlock() {
+	e.mu.Unlock()
+	s := e.shard
+	s.mu.Lock()
+	e.refs--
+	if e.refs == 0 {
+		delete(s.m, e.id)
+		if len(s.free) < fileLockFree {
+			s.free = append(s.free, e)
+		}
+	}
+	s.mu.Unlock()
 }
 
 func newFileLocks() *fileLocks {
@@ -88,13 +124,21 @@ func (t *fileLocks) shardOf(id core.FileID) *fileLockShard {
 }
 
 // Lock takes id's file append domain, waiting for its current holder, and
-// returns the release. The release must be called exactly once.
+// returns the release. The release must be called exactly once: the func is
+// the entry's own, reused for another file once the entry is released.
 func (t *fileLocks) Lock(id core.FileID) (unlock func()) {
 	s := t.shardOf(id)
 	s.mu.Lock()
 	e, ok := s.m[id]
 	if !ok {
-		e = &fileLockEntry{}
+		if n := len(s.free); n > 0 {
+			e = s.free[n-1]
+			s.free = s.free[:n-1]
+		} else {
+			e = &fileLockEntry{shard: s}
+			e.release = e.unlock
+		}
+		e.id = id
 		// Init at creation, under the shard's leaf: the entry's mutex
 		// is used concurrently the moment it is published, and a lock
 		// whose Init was skipped keeps rank 0 and is never recorded.
@@ -105,15 +149,7 @@ func (t *fileLocks) Lock(id core.FileID) (unlock func()) {
 	s.mu.Unlock()
 
 	e.mu.Lock()
-	return func() {
-		e.mu.Unlock()
-		s.mu.Lock()
-		e.refs--
-		if e.refs == 0 {
-			delete(s.m, id)
-		}
-		s.mu.Unlock()
-	}
+	return e.release
 }
 
 // size returns the number of entries now.

@@ -37,6 +37,9 @@ type Share struct {
 	// idle is closed once, by whichever of Close and the last exiting call
 	// takes the word to closedBit alone.
 	idle chan struct{}
+	// exitFn is s.exit bound once, so enter hands out a func without
+	// allocating a method value per call.
+	exitFn func()
 }
 
 // Limit returns the limit the handle was last attached with.
@@ -52,7 +55,7 @@ func (s *Share) enter() (func(), error) {
 			return nil, core.ErrClosed
 		}
 		if s.state.CompareAndSwap(old, old+1) {
-			return s.exit, nil
+			return s.exitFn, nil
 		}
 	}
 }
@@ -173,6 +176,7 @@ func (c *Core) Share(tag core.ShareTag, limit int64, floor core.Version) (*Share
 		}
 	}
 	s := &Share{Tag: tag, owner: c, idle: make(chan struct{})}
+	s.exitFn = s.exit
 	s.limit.Store(limit)
 	next := append(open[:len(open):len(open)], s)
 	c.registry.Store(&next)

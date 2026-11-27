@@ -1290,6 +1290,11 @@ func (c *Capacity) releaseReservation(tag core.ShareTag, stream int, room, bytes
 	if bytes < 0 {
 		bytes = 0
 	}
+	// A grant whose write landed whole gives nothing back: its release moves
+	// no figure, so it skips the mutex rather than cross it for nothing.
+	if room == 0 && bytes == 0 {
+		return
+	}
 	c.mu.Lock()
 	c.grantedRoom[stream] -= room
 	c.reserved.Add(-bytes)
