@@ -4232,6 +4232,7 @@ func (b *Buf) Release()                                      // the last release
 func (b *Buf) Recharge(to *Budget) error                     // RFC 24 §4.3: the whole charge moved to a reservation from to; refused, nothing changes
 func (b *Buf) Charge() int64                                 // RFC 24 §4.3: the whole charge, class capacity and per-request overhead, which the hold floor counts
 func (b *Buf) Attach(seg *Buf)                               // §5.3: ends b's current segment and lends seg as the next one, a READ's data, never copied; what b appends after it starts a new segment
+func (b *Buf) AppendBuffers(dst net.Buffers) net.Buffers     // §6.2: b's bytes in order, its own and every segment Attach lent, appended to dst with no copy: what the writer gathers into its one net.Buffers write, the framing aside
 ```
 
 - **Each `Server` builds its own.** `core` builds a `BufPool` over each budget
@@ -4257,8 +4258,11 @@ func (b *Buf) Attach(seg *Buf)                               // §5.3: ends b's 
   first few kilobytes. A `WRITE`'s data is a sub-slice of `B`, decoded in
   place.
 - **Writing.** A reply is a small header buffer plus, for a `READ`, the buffer
-  the service filled. The writer sends both, and the padding, as one
-  `net.Buffers` write — `writev` — with no copy into a combined buffer.
+  the service filled, which `Attach` lends the reply as a segment (§5.3). The
+  writer takes each message's parts as `AppendBuffers` appends them — the
+  reply's own bytes and its lent segments alike — and sends them, with the
+  padding, as one `net.Buffers` write — `writev` — with no copy into a combined
+  buffer.
 - **Encryption** seals in place (§5.5).
 - **Leaks and use-after-release.** Every test that runs the pipeline ends by
   asserting the pools' reserved bytes are zero
