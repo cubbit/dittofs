@@ -176,6 +176,16 @@ func TestPassDeferredLossHandover(t *testing.T) {
 	file := copyFile(7)
 	rec, seqW, vW := p.f.plant(t, copyTag, file, []byte("the write the deferred loss counts beside"), 0)
 	src := rec.Segment
+	// The retire hook runs inside Retire before the claim, so it fires
+	// when the pass hands the source over even if the retirement worker
+	// holds the claim and the pass is refused. Nothing the worker does can
+	// make it fire before the record is durable: the source is held.
+	var tried atomic.Bool
+	p.f.core.Retirer().SetRetireHook(func(id core.SegmentID, _ segment.Reason) {
+		if id == src {
+			tried.Store(true)
+		}
+	})
 	p.f.sealSource(t, file)
 	// The stream keeps an active segment beyond the sealed source, so the
 	// pass's copies and its loss record append into it without a roll and
@@ -210,6 +220,9 @@ func TestPassDeferredLossHandover(t *testing.T) {
 	r := awaitRepack(t, done)
 	if r.err != nil {
 		t.Fatalf("Repack over a deferred loss: %v", r.err)
+	}
+	if !tried.Load() {
+		t.Fatal("the pass returned without handing the source over, want its own hand-over once the record was durable")
 	}
 	if entries := d.DeferredAgainst(src); len(entries) != 0 {
 		t.Fatalf("the deferred registry after the pass holds %+v, want the entry ended at the durable event", entries)
