@@ -304,6 +304,7 @@ func (w *writer) flush() error {
 	n, err := b.WriteTo(w.nc)
 	w.outBytes.Add(float64(n))
 	clear(w.bufs)
+	clear(w.parts) // the batch's messages are released; nothing of theirs stays reachable
 	w.written(len(q))
 	for _, m := range q {
 		m.msg.Release()

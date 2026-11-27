@@ -316,23 +316,27 @@ func (b *Buf) Charge() int64 {
 // Attach ends b's current segment and lends seg as the next one (RFC 20
 // §5.3): a READ's data joins its reply as a segment of its own, never copied.
 // The reply it builds is for the writer's gather alone: nothing else reads a
-// message whole — join it, cache it or wrap it — until the segments ride a
-// copy of their own, as a replay cache must before a cachethis READ lends.
+// message whole — join it, cache it, wrap it, count it as the span's sent
+// bytes, or rewrite a compound's head in place over reply.B — until the
+// segments ride a copy of their own, as a replay cache must before a
+// cachethis READ lends.
 // The bytes b held at the call end as one part, seg's follow it, and what the
 // caller appends to b afterwards — the padding and any later result — starts
-// b's bytes over empty: the tail's first append allocates, the one allocation
-// a segmented reply makes beyond its buffers. seg is retained here and
-// released with b, so its bytes go back to their pool only once the reply's
-// own last Release runs, after the writer sent it. Attach of a nil seg panics.
+// b's bytes over past the part just ended, in b's own charged bytes: appending
+// there never overwrites what ended, and neither the parts' slices nor the
+// tail allocates on a pooled reply, whose lists keep their capacity across
+// its releases. seg is retained here and released with b, so its bytes go back
+// to their pool only once the reply's own last Release runs, after the writer
+// sent it. Attach of a nil seg panics.
 func (b *Buf) Attach(seg *Buf) {
 	if seg == nil {
 		panic("resources: Attach of a nil segment")
 	}
 	b.ended = append(b.ended, b.B, seg.B)
 	b.segs = append(b.segs, seg.Retain())
-	// The tail is a new slice: reusing b's own would overwrite the part just
-	// ended, which shares the bytes.
-	b.B = nil
+	// The tail continues past the part just ended: appending there never
+	// overwrites it, and keeps the tail in b's own charged bytes.
+	b.B = b.B[len(b.B):]
 }
 
 // AppendBuffers appends b's bytes to dst in send order with no copy: the
@@ -363,11 +367,13 @@ func (b *Buf) Release() {
 	if b.borrow(-1, "resources: release of a released buffer") > 0 {
 		return
 	}
-	segs := b.segs
-	b.segs, b.ended = nil, nil
-	for _, seg := range segs {
+	for _, seg := range b.segs {
 		seg.Release()
 	}
+	// The parts' lists keep their capacity for the next pooled holder.
+	clear(b.segs)
+	clear(b.ended)
+	b.segs, b.ended = b.segs[:0], b.ended[:0]
 	if b.pool == nil {
 		return
 	}
