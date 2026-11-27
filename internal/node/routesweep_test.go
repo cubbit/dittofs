@@ -492,8 +492,8 @@ func keytabOf(t *testing.T, name string) []byte {
 // refusal it waits on (sweepApplied). Catches a change with no record.
 //
 // decision: three groups of routes wait rather than apply. A setting's
-// write and delete at a node's, a namespace's, a store's and a share's
-// scope, a store's create and update, a namespace's create and a store
+// write and delete at a namespace's, a store's and a share's scope, a
+// store's create and update, a namespace's create and a store
 // credential's delete are refused by the node's settings table, which
 // declares the written key at none of those scopes, nor the remote store's
 // or the namespace's sections: each is declared by the plan of the
@@ -645,9 +645,14 @@ func TestWiredEveryWriteAudited(t *testing.T) {
 		// An adapter's write, left disabled so the node binds no port for it.
 		adapter := "/api/v1/adapters/nfs"
 		ap.do(wiredWrite{by: a, route: "PUT /api/v1/adapters/{sub}", path: adapter, body: json.RawMessage(`{"spec":{"enabled":false,"settings":{"port":12049}}}`), hdr: match(adapter)})
+		// The node's own override of that adapter's port, written and
+		// deleted at the node's scope.
+		nodePort := node + "/settings/adapters.nfs.port"
+		ap.do(wiredWrite{by: a, route: "PUT /api/v1/nodes/{id}/settings/{sub}", path: nodePort, body: json.RawMessage(`{"spec":{"value":2049}}`), hdr: create})
+		ap.do(wiredWrite{by: a, route: "DELETE /api/v1/nodes/{id}/settings/{sub}", path: nodePort, hdr: match(nodePort, idemKey()...)})
 		var waits []waitingWrite
 		for _, sc := range []struct{ route, scope string }{
-			{"/api/v1/nodes/{id}", node}, {"/api/v1/namespaces/{id}", "/api/v1/namespaces/" + f.namespace},
+			{"/api/v1/namespaces/{id}", "/api/v1/namespaces/" + f.namespace},
 			{"/api/v1/stores/{id}", store}, {"/api/v1/shares/{id}", "/api/v1/shares/" + f.share},
 		} {
 			path := setting(sc.scope)

@@ -23,27 +23,27 @@ func Unsupported(f *registry.Fixture, goos string) string {
 // yet, or returns "".
 //
 // decision: a DittoFS fixture that serves NFS or SMB, and so one with
-// namespaced clients, is refused, since the node serves no adapter and its
-// adapter status names no port a cell could reach; one on the S3 profile,
+// namespaced clients, is refused, since dt enables no adapter through the
+// API and reads no port a cell could reach from the adapter's status; one on the S3 profile,
 // since dt seeds no remote store a share's blocks could reach; one naming a
 // shares file, since a share's settings are written only through the
 // settings API, which refuses them while the node's settings table declares
 // no section at a share's scope; and
-// one naming users, since without an adapter nothing they could be created
-// for is served. Each such cell would otherwise run against a server
+// one naming users, since without an adapter dt enables nothing they could
+// be created for is served. Each such cell would otherwise run against a server
 // answering none of its tests. Withdraw each refusal once its part serves.
 func Unserved(f *registry.Fixture) string {
 	switch {
 	case f.Server == "knfsd":
 		return ""
 	case f.NFS.Serves() || f.SMB.Enabled || f.Client != "":
-		return "dt serves no NFS or SMB through the node yet: the node serves no adapter, and its adapter status names no port"
+		return "dt serves no NFS or SMB through the node yet: it enables no adapter, and reads no port from the adapter's status"
 	case f.Profile == "badger-s3":
 		return "dt seeds no remote store yet, so it sets up no S3 profile"
 	case f.Shares != "":
 		return "dt sets no share settings yet, so it reads no shares file"
 	case len(f.Users) > 0:
-		return "dt creates no fixture users yet, as the node serves no adapter they could reach"
+		return "dt creates no fixture users yet, as it enables no adapter they could reach"
 	}
 	return ""
 }

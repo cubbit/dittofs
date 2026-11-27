@@ -465,23 +465,33 @@ PR 4 can be open beside any other. A suggestion only: one pull request per subta
   - R6 holds, but the node's API stays open past §2.2's step 3: Stop closes its listeners after the
     engine. #5469 owns that.
 - T7.5 as built differs from its text in these places.
-  - X3 hands the node's table to the write path, but the table holds only the `api`, `audit`,
-    `identity` and `identity.directory` sections, all at the installation's scope. The sections
-    the success paths need are other plans' to declare: the adapters' (RFC 20's plan, epic 7's
-    T7.6), the remote store's `remote.*` (RFC 4's section, RFC 13's Appendix B) and the
-    namespace's, and every section at a node's, a namespace's, a store's or a share's scope (the
-    sweep's `gc.schedule` is RFC 9's). Until they are, `store create`, `store update`, a store
-    credential's delete, `namespace create`, `adapter set` and a setting's write and delete at
-    those scopes still answer `400` `unknown_key`, and wait in `sweepApplied` as before; a store's
-    first credential still waits on the capability check. Only a setting's write and delete at the
-    installation's scope moved into the applied writes, as `audit.retention`. E6's refusal rows
-    for them stay, and D3's seeding through the store stays in the fixture and in T7.3's rows,
-    with its `decision:` marker now naming the missing sections rather than X3. So this
-    subtask's acceptance criterion "no fixture or row seeds through the store" is not met; it is
-    met when those sections land, and the issue stays open until then.
+  - X3 hands the node's table to the write path. At first it held only the `api`, `audit`,
+    `identity` and `identity.directory` sections, all at the installation's scope, so only a
+    setting's write and delete there moved into the applied writes, as `audit.retention`. RFC 20's
+    plan's T7.6 (#6440) then declared the adapters' sections, `adapters.nfs` and `adapters.smb`
+    (installation wide, a node's record overriding `port` and `enabled`), and the node-scope
+    `connection_limit`, with the port rule as their write check. So `adapter set` and a setting's
+    write and delete at a node's scope (`adapters.nfs.port`) are applied writes in `sweepApplied`
+    now, and `TestWiredNodeSettingsAppliedAndThePortRule` writes the node's port override and its
+    `connection_limit` through the API and reads both applied, and has the port rule refuse an SMB
+    port equal to that NFS port, at the node's scope and at the installation's, `400` `invalid`
+    naming the key, an undeclared adapter key `unknown_key` and a key the node may not override
+    `wrong_scope`, none committing. The sections still missing are the remote store's `remote.*`
+    (RFC 4's section, RFC 13's Appendix B), the namespace's, and every section at a namespace's, a
+    store's or a share's scope (the sweep's `gc.schedule` is RFC 9's). Until they are, `store
+    create`, `store update`, a store credential's delete, `namespace create` and a setting's write
+    and delete at those scopes still answer `400` `unknown_key`, and wait in `sweepApplied` as
+    before; a store's first credential still waits on the capability check. E6's refusal rows for
+    them stay, and D3's seeding through the store stays in the fixture and in T7.3's rows, with its
+    `decision:` marker naming the missing sections. dt's fixture enables no adapter through the
+    API yet, so its NFS and SMB cells stay refused (`fixture.Unserved`); that is the harness's
+    work, not a row. So this subtask's acceptance criterion "no fixture or row seeds through the
+    store" is not met; it is met when those sections land, and the issue stays open until then.
   - R17, R18 and R21 run through the API over sections the test declares (`node.DeclareSections`)
-    in place of the components that will declare them: a live level per share, a node's live and
-    restart-class keys, and a remote store's live and bound keys. A write the node itself must
+    in place of the components that will declare them: a live level per share, a node's
+    restart-class key, and a remote store's live and bound keys. R18's node-scoped live key is the
+    real `adapters.nfs.enabled`, since no adapter's key waits for a restart (its slot rebuilds for
+    a port), so the restart-class one stays a stand-in. A write the node itself must
     not apply yet (R18's frozen change, R17's change while reads fail) goes through the store, as
     another node's would, since the API's write waits for its own node to apply it.
   - R17 faults the node's scans of the settings rows, not every read: with the counters' read
