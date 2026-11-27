@@ -1,0 +1,16 @@
+# Grafana dashboard provider for the local monitoring stack
+# (scripts/monitoring.sh). The dashboards directory is bind-mounted at
+# /otel-lgtm/dittofs-dashboards; the dashboards are repo files, so UI edits
+# are refused to keep them in sync with the tree.
+apiVersion: 1
+
+providers:
+  - name: DittoFS
+    folder: DittoFS
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 10
+    options:
+      path: /otel-lgtm/dittofs-dashboards
+      foldersFromFilesStructure: false

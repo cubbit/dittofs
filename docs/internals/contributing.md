@@ -8,6 +8,7 @@ DittoFS is in active development and welcomes contributions! This guide will hel
 - [Development Workflow](#development-workflow)
 - [Testing](#testing)
 - [Benchmarking](#benchmarking)
+- [Local monitoring stack](#local-monitoring-stack)
 - [Common Development Tasks](#common-development-tasks)
 - [Areas Needing Attention](#areas-needing-attention)
 
@@ -218,6 +219,109 @@ hasn't moved to storage-v2 yet. Go's `-bench`, `dfsbench`'s full runs and the `m
 To compare a change, run the same benchmark with `-count=10` before and after it on one machine
 and compare the two with `benchstat`; never against a number from another host. Call
 `b.ReportAllocs()` on hot paths.
+
+## Local monitoring stack
+
+`scripts/monitoring.sh` is a one-command local monitoring stack for dev and bench
+machines: [grafana/docker-otel-lgtm](https://github.com/grafana/docker-otel-lgtm)
+plus `prom/node-exporter`, both run through Docker. It collects node-exporter
+metrics only for now: the stack's Prometheus scrapes only the node exporter.
+DittoFS's own series follow once the v2 components land and add panels to these
+dashboards ([RFC 25](rfcs/rfc-25-observability.md)). To watch a running dev
+node's own traces and metrics today, use the recipe in
+[debugging.md](debugging.md#viewing-metrics-and-traces) — a separate,
+hand-started `otel-lgtm` container with OTLP published,
+`DITTOFS_OTLP_ENDPOINT` pointing at it, rather than this always-on host stack.
+Grafana is on port 3000 in both, so run only one at a time (or change
+`MONITORING_GRAFANA_PORT`).
+
+Prerequisites: Linux, Docker, and your user in the `docker` group; the script
+also needs `openssl`, `curl`, `flock` and `sha256sum` (coreutils; bash 4.4+ for the array handling).
+
+```bash
+scripts/monitoring.sh start          # start; pulls images on first run (may take a few minutes)
+scripts/monitoring.sh start --pull   # start, refreshing the pinned images first (a no-op
+                                    # if the stack is already running)
+scripts/monitoring.sh stop           # stop, keeping metric history
+scripts/monitoring.sh stop --purge   # also wipe the data volume and the generated password
+scripts/monitoring.sh status         # show container state
+```
+
+Dashboard JSON edits hot-reload within ~10 s while the stack runs; changes to
+the Prometheus template, the provisioning file, ports or the `docker run`
+flags need a `stop` and `start` (a running `start` warns about the older
+config). Note: Docker `userns-remap` setups can't read the bind-mounted
+password file (a subordinate uid can't read a mode-600 file owned by you).
+
+Ports can be overridden with `MONITORING_GRAFANA_PORT` (default `3000`)
+and `MONITORING_NODE_EXPORTER_PORT` (default `9100`). Only Docker is supported
+(rootful; Docker 28+ recommended for the loopback-port publishing fix) —
+rootless daemons and podman would show the VM, not the host.
+
+Set `MONITORING_DATA_DIR` to put the stack's metric history on a disk you
+choose (bind-mounted) instead of the default named volume: by default it lives
+wherever the Docker daemon puts volumes, which on a bench box is often the disk
+under test, and the stack's TSDB writes will show up in the disk and iowait
+panels during benchmarks. The stack's processes write the directory's contents
+as root, and `stop --purge` does not delete it — remove it with sudo yourself.
+
+**One stack per host.** Container, network and volume names are global to the
+Docker daemon, while the lock and the password file are per user: any member of
+the `docker` group can stop or purge the stack, whoever started it, and two
+users cannot each run their own copy on the same host.
+
+Grafana is at <http://127.0.0.1:3000> and reachable only from localhost. On a
+remote bench machine, forward it over SSH:
+
+```bash
+ssh -L 3000:localhost:3000 <host>
+```
+
+Log in as `admin`. On the first start the script generates a random password,
+prints it **once**, and stores it at
+`${XDG_STATE_HOME:-$HOME/.local/state}/dittofs/monitoring/grafana-admin-password`
+(mode 600) for later starts.
+
+> **Grafana cannot force a password change at first login.** Its change prompt is
+> skippable and only appears for the literal password `admin`. The script instead
+> enables Grafana's password policy for the change, warns on every `start` while
+> the generated password still works, and keeps Grafana bound to localhost.
+> Change the generated password under **Profile → Change password** at first
+> login. To reset a forgotten one:
+>
+> ```bash
+> docker exec -i dittofs-monitoring-lgtm /otel-lgtm/grafana/bin/grafana cli \
+>   --homepath /otel-lgtm/grafana admin reset-admin-password --password-from-stdin
+> ```
+>
+> (The new password is read from stdin, so it never appears in `ps` or shell
+> history.) Note the password protects the **Grafana UI only**: the metrics
+> endpoints inside the stack (Prometheus, Loki, Tempo, Pyroscope) accept any
+> request that can reach the container network, which means any local user.
+
+Two dashboards (`Node Overview` and `Performance`) are provisioned from
+`scripts/monitoring/grafana/dashboards/` into the "DittoFS" folder — no manual
+import. Filesystem panels deliberately exclude NFS/SMB mounts: a DittoFS mount
+under benchmark doesn't get FSSTAT'd on every scrape and can't hang a scrape on a
+stuck mount.
+
+node-exporter binds to the gateway of a dedicated Docker bridge (`dfsmon0`), so
+it is not bound on any LAN interface — but that is a routing property, not a
+firewall: a LAN peer that adds a route to the bridge subnet, and any local
+container, can reach host metrics (and node-exporter's `/debug/pprof/`). On a
+host where that matters, firewall `dfsmon0`. If the scrape target stays down on
+a host running ufw default-deny on incoming, allow traffic from the bridge:
+
+```bash
+sudo ufw allow in on dfsmon0
+```
+
+`stop` and `start` keep metric history (data lives in the
+`dittofs-monitoring-data` named volume). There is no restart-after-reboot: run
+`start` again.
+
+Prometheus (`9090`, which collides with DittoFS's own default metrics port) and
+the OTLP ports (nothing exports traces yet) are intentionally not published.
 
 ## Common Development Tasks
 

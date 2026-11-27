@@ -13,6 +13,11 @@ competitors (juicefs, s3ql, rclone-mount, s3fs) over NFSv3 / NFSv4.1 / SMB3 on a
 single disposable Scaleway VM, with uniform fio metrics and a real server↔S3
 bandwidth number for every system.
 
+While benchmarking, a local monitoring stack with CPU/iowait/swap/disk
+dashboards is available: see the Local monitoring stack section in
+[`docs/internals/contributing.md`](../docs/internals/contributing.md#local-monitoring-stack)
+— `scripts/monitoring.sh start`.
+
 ## Using `dfsbench` (local mode)
 
 The harness runs `fio` against a mounted filesystem and prints a comparison
