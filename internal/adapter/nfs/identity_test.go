@@ -2,6 +2,7 @@ package nfs
 
 import (
 	"context"
+	"net"
 	"net/netip"
 	"reflect"
 	"sync"
@@ -127,23 +128,34 @@ func TestAHandlerReceivesTheCallersIdentity(t *testing.T) {
 	getattr := nfsclient.Call{Prog: progNFS, Vers: 3, Proc: 1, Cred: cred}
 
 	for _, from := range []string{"127.0.0.1", "127.0.0.2"} {
-		c, err := nfsclient.DialFrom(within(t), netip.MustParseAddr(from), addr)
-		if err != nil {
-			t.Fatal(err)
-		}
+		t.Run(from, func(t *testing.T) {
+			// Only Linux routes all of 127/8: where the host binds no such
+			// address, this row is skipped and the others still run.
+			probe, err := net.Listen("tcp", net.JoinHostPort(from, "0"))
+			if err != nil {
+				t.Skipf("%s: this host binds no such loopback address", from)
+			}
 
-		t.Cleanup(func() { _ = c.Close() })
-		send(t, c, getattr)
+			_ = probe.Close()
 
-		got := rc.take()
-		if len(got) != 1 || !reflect.DeepEqual(got[0].call.Identity, want(from)) {
-			t.Errorf(
-				"from %s the handler received %+v, want the Identity %+v",
-				from,
-				got,
-				want(from),
-			)
-		}
+			c, err := nfsclient.DialFrom(within(t), netip.MustParseAddr(from), addr)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			t.Cleanup(func() { _ = c.Close() })
+			send(t, c, getattr)
+
+			got := rc.take()
+			if len(got) != 1 || !reflect.DeepEqual(got[0].call.Identity, want(from)) {
+				t.Errorf(
+					"from %s the handler received %+v, want the Identity %+v",
+					from,
+					got,
+					want(from),
+				)
+			}
+		})
 	}
 
 	c := client(t, addr)
