@@ -1,0 +1,7 @@
+# Its reply: an accepted success with an empty AUTH_NONE verifier and no result, the shape
+# knfsd answers every program's NULL with (RFC 5531 section 9).
+00000055  # xid
+00000001  # REPLY
+00000000  # MSG_ACCEPTED
+00000000 00000000  # verifier: AUTH_NONE, no body
+00000000  # SUCCESS, and no result

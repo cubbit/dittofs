@@ -8,9 +8,12 @@ import (
 	"strings"
 
 	"github.com/cubbit/dittofs/internal/adapter/core"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/ops/mount"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/ops/nlm"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/ops/nsm"
+	v3 "github.com/cubbit/dittofs/internal/adapter/nfs/ops/v3"
 	v4 "github.com/cubbit/dittofs/internal/adapter/nfs/ops/v4"
 	"github.com/cubbit/dittofs/internal/adapter/nfs/protocol"
-	"github.com/cubbit/dittofs/internal/adapter/nfs/wire"
 	"github.com/cubbit/dittofs/pkg/adapter"
 	"github.com/cubbit/dittofs/pkg/adapter/settings"
 )
@@ -45,35 +48,16 @@ func New(d adapter.Deps, s settings.NFS) (*core.Server, error) {
 	})
 }
 
-// tables is the five tables RFC 20 section 4.8 names: NFSv4's from its ops
-// package, labelled nfs4, and four empty ones, so every procedure of NFSv3,
-// MOUNT, NLM and NSM is answered PROC_UNAVAIL, under nfs3, the label of
-// NFSv3 and its auxiliary programs (RFC 20 section 10.1).
-//
-// decision: the four empty tables are built here, not in the ops/ packages
-// RFC 20 section 2.5 lays out, since a new package needs a test that can fail
-// and a package holding an empty table alone has none. Each table moves to its
-// ops package with its first row.
+// tables is the five tables RFC 20 section 4.8 names: NFSv4's and NFSv3's
+// from their ops packages, labelled nfs4 and nfs3, and the auxiliary
+// programs' under nfs3, the label of NFSv3 and its auxiliary programs (RFC 20
+// section 10.1).
 func tables(d adapter.Deps) protocol.Tables {
-	aux := errorTable(core.Status(wire.StatusAccept | wire.AcceptSystemErr))
 	return protocol.Tables{
-		V3:    table("nfs3", errorTable(core.Status(wire.NFS3ErrServerFault))),
+		V3:    v3.Table(),
 		V4:    v4.Table(&v4.Handlers{VFS: d.VFS}),
-		Mount: table("nfs3", aux),
-		NLM:   table("nfs3", aux),
-		NSM:   table("nfs3", aux),
+		Mount: mount.Table(),
+		NLM:   nlm.Table(),
+		NSM:   nsm.Table(),
 	}
-}
-
-// errorTable is a program's error table: protocol's shared refusals, at
-// fault (RFC 21 section 11.5).
-func errorTable(fault core.Status) *core.ErrorTable {
-	return protocol.ErrorTable(fault)
-}
-
-// table is an empty table labeled label.
-func table(label string, errs *core.ErrorTable) *core.OpTable {
-	t := core.NewOpTable(errs, false)
-	t.Protocol = label
-	return t
 }
