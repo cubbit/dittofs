@@ -11,6 +11,20 @@ Usage: release-notes.py vX.Y.Z < body.md > new-body.md
 import re
 import sys
 
+# GitHub refuses a release body over 125,000 characters; stay below it.
+LIMIT = 124_000
+
+
+def capped(text, tag):
+    """Cuts text to LIMIT characters, ending it with a note that links the
+    changelog, so the edit that writes it cannot be refused."""
+    if len(text) <= LIMIT:
+        return text
+    note = (f"\n\n---\n\n_These notes were cut to fit GitHub's release size limit. "
+            f"See [CHANGELOG.md](https://github.com/cubbit/dittofs/blob/{tag}/CHANGELOG.md)._\n")
+    return text[:LIMIT - len(note)] + note
+
+
 tag = sys.argv[1]
 version = tag.removeprefix("v")
 body = sys.stdin.read()
@@ -27,7 +41,7 @@ for line in open("CHANGELOG.md", encoding="utf-8"):
 
 if not section:
     # No curated entry for this version: leave the commit-generated body alone.
-    sys.stdout.write(body)
+    sys.stdout.write(capped(body, tag))
     sys.exit(0)
 
 # GitHub keeps single line breaks in release notes, so join the hard-wrapped
@@ -50,4 +64,4 @@ notes = re.sub(r"\]\(((?:docs|cmd|pkg|internal)/[^)]+)\)",
 notes = f"## What's new\n\n{notes}\n\n"
 marker = "### Installation"
 i = body.find(marker)
-sys.stdout.write(body[:i] + notes + body[i:] if i >= 0 else notes + body)
+sys.stdout.write(capped(body[:i] + notes + body[i:] if i >= 0 else notes + body, tag))

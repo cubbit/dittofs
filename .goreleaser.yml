@@ -164,6 +164,9 @@ changelog:
       - '^test:'
       - '^chore:'
       - '^Merge '
+      # The scoped forms too, docs(planning): and the like: a release after a
+      # long line of planning commits would otherwise list them all.
+      - '^(docs|chore|test|ci|build)(\(.*\))?!?:'
   groups:
     - title: Features
       regexp: '^.*?feat(\([\w-]+\))??!?:.+$'
