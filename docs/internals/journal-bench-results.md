@@ -186,7 +186,8 @@ runs. Both kinds run under the host's lock; folders under `/var/tmp/dittofs-perf
 | Filesystem and mount options | ext4, `rw,relatime` |
 | Sync bound | 1 s |
 
-Medians of ten counts, journal against its raw twin (MB/s; the fraction beside):
+The baseline run, `e5e487cbe` — medians of ten counts, journal against its raw twin (MB/s;
+the fraction beside):
 
 | Row | Queue depth | Raw twin | Result | RFC 1's proposed target | Measured target |
 | --- | --- | --- | --- | --- | --- |
@@ -202,6 +203,32 @@ Medians of ten counts, journal against its raw twin (MB/s; the fraction beside):
 | J2 write scaling, each synced at its end | 1 to 64 | `RawScaling` | 150 / 912 (16%), 235 / 970 (24%), 182 / 990 (18%), 152.7 / 811 (19%) for 1, 4, 16, 64 files | within 5% of the filesystem, flat to 64 | not met on one run: 16 to 24% through 1 to 64 files, the peak at 4 files |
 | J3 `ReadAt` of one 64-byte extent, point per decade | 1 | | 2.32, 2.35, 2.46, 2.72 µs at 10^3 to 10^6 extents | ≤ 1 µs at 10^6 (index lookup) | none: not judged from this row (the figure includes the pread and the copy) |
 | J3 warm 1 MiB read | 1 | | 12.0 GB/s | ≥ 2 GB/s | met, 6× over |
+
+The first reference full — 2026-11-27 08:30, `7e3505d0e`, carrying `#6472` and `#6511`,
+1h38m, same box, medians of its counts, journal against its raw twin:
+
+| Row | Result (journal against twin) |
+| --- | --- |
+| J1 sequential, nosync | 171 / 18778 (0.9%), 6707 / 26337 (25%), 7935 / 23783 (33%), 6258 / 19300 (32%) |
+| J1 sequential, sync each | 7.8 / 2.6 (3.0×), 19.7 / 52.2 (38%), 35.8 / 170 (21%), 376 / 656 (57%) |
+| J1 random, nosync | 169 / 17300 (1.0%), 6676 / 24579 (27%), 8046 / 23318 (35%), 6306 / 20933 (30%) |
+| J1 random, sync each | 8.0 / 2.8 (2.9×), 22.9 / 52.2 (44%), 33.3 / 186 (18%), 462 / 452 (102%) |
+| J1 `WriteAt` p99 | nosync 773 to 7760 µs; sync 176 to 3082 µs (all J1 create rows) |
+| J1 mixed durability | 518 ms p99, beside the stream's 349 MB/s |
+| J1 overwrite sequential | nosync: 288 / 16525 (1.7%), 7194 / 21757 (33%), 9296 / 21681 (43%), 7659 / 21120 (36%); sync: 10.9 / 2.6 (4.2×), 141 / 52.2 (2.7×), 336 / 170 (2.0×), 547 / 656 (83%) |
+| J1 overwrite random | nosync: 281 / 16349 (1.7%), 7180 / 28108 (26%), 9001 / 23697 (38%), 7368 / 24784 (30%); sync: 10.7 / 2.7 (3.9×), 141 / 53.8 (2.6×), 338 / 179 (1.9×), 499 / 692 (72%) |
+| J1 large sequential, 30 GiB | 197 / 894 MB/s (22%), p99-write 365 µs, p99-write-waited 367 µs, 107 spare-refusals/iter — the refusals flat against the baseline's 104.5, the waits as short (2 µs at the p99) |
+| J2 write scaling, 1, 4, 16, 64 files | 451 / 554 (81%), 357 / 650 (55%), 275 / 884 (31%), 294 / 897 (33%) |
+| J3 point lookups, 10^3 to 10^6 | 2.23, 2.28, 2.47, 2.69 µs |
+| J3 warm 1 MiB read | 12.9 GB/s |
+
+Read the two tables with the device's own state in each: the raw probe moved from p50 3.08 ms
+(baseline) to 1.39 ms (reference), so a pair of runs cannot name a cause. What survives the
+device moving under them: the large-file row's refusals stay ~one per roll with waits short in
+both runs; the group-commit rows stay above 3× their twins; the warm read stays 6× its target;
+and J2's 1-file fraction went from 16 to 81% while the other J2 rows moved less — the shape
+`#6511` (an opening spare held until the first stream rolls) predicts, but the trend over more
+fulls still decides. The synced rows swing most between runs and are the last to read.
 
 Keep-or-change decision for each constant, with the evidence. One baseline run cannot
 decide any of the three; what it does is name the questions the trend now answers, and the
