@@ -262,7 +262,9 @@ already state with their two exceptions.
     `Done(e, 0)` from a cancelled caller among them, moves it in O(1) to the slot its remaining
     debt needs, net of the quanta given since it parked, those of the class rounds its store
     sat out included, counted from its store's caught-up round (its round number moved on by the
-    class rounds that passed), or onto the ring if none remains; so a flow is in debt exactly while it is parked,
+    class rounds that passed): the move first advances the flow wheel's cursor to the caught-up
+    round and parks at most 63 rounds ahead of it, as parking does, or puts the flow onto the ring
+    if none remains; so a flow is in debt exactly while it is parked,
     and the model reads it so.
   - **A parked flow is not work waiting:** it binds no cap and is not "waiting" in the fair share.
     A store whose flows of a class are all parked, held by E4 or empty leaves that class's store
@@ -283,7 +285,8 @@ already state with their two exceptions.
     no store is visited while it sits out. At a store slot's round its list is spliced onto the
     store ring in one step; each store re-enters its quantum bucket and the fair share's *n*, moves its round number and its quantum sum on by the class rounds that passed and the quanta they
     gave, stopping at its due slot, since rounds it spends capped after that credit nothing (as
-    above), and splices its due flow slot at its own store turn, each step counted by the operation
+    above), and splices its due flow slot at its first visit after the splice, its turn or the one that
+    finds it capped, which falls within its due round, so the class sum it reads is that round's, each step counted by the operation
     counter, so stores sitting out to one round cost one step at that round and one at each of their
     turns. Until their turns, *n* and the quantum can lag by up to one round: with pool 8, store A
     holding 4 and four stores spliced behind it, A can take a fifth worker. The `decision:` marker
@@ -312,8 +315,10 @@ already state with their two exceptions.
     empty, its store wheel jumps to its next occupied slot through the mask before a lower class is
     served. Each store-wheel slot keeps the OR of its stores' bucket bits, set at park and cleared at unlink once no other store of the slot shares the bit, by a count per bit
     as D4 keeps; a slot's bits and counts are zeroed when its list is spliced, which drops each spliced store's
-    recorded bit; until its turn a spliced store is in no bucket, so a `CloseFlow` or `RemoveStore`
-    reaching it then decrements nothing; a store records
+    recorded bit; until its turn a spliced store is in no bucket, since a one-step splice clears no store's recorded
+    bit: a store records its due round beside that bit and each slot the round of its last splice,
+    and a `CloseFlow` or `RemoveStore` reaching a store whose due round is at or before its slot's
+    last splice knows the splice dropped its bit, in O(1), and decrements nothing; a store records
     the bit it parked with, which unlink clears and an earlier move carries to its new slot, so a
     `SetRate` meanwhile leaves them true; the jump
     takes its quantum from the class mask OR that slot's bits, in O(1), and the class's round number
@@ -738,8 +743,8 @@ test/suites.yaml           T3.8  FuzzSched in the fuzz suite's commands
   (catches a capped store spliced past its cap, R26). A capped store whose slot comes due, then the
   other stores empty: it is dispatched with no `Done` (catches a capped store that waits for its own
   transfer to end while workers idle, R26). Store A's flow parked about 10 rounds out while store B
-  keeps the ring busy; after 6 rounds a `Done` moves it to 3 rounds out: it is dispatched within one
-  round (catches a moved flow left behind its wheel's cursor, and a move not net of the quanta
+  keeps the ring busy; after 6 rounds a `Done` cuts its debt to 3, which the 6 rounds given have paid:
+  it is dispatched within one round (catches a moved flow left behind its wheel's cursor, and a move not net of the quanta
   given, R22). Store A's flow parked 20 rounds out while store B keeps the ring busy; after 6
   rounds a `Done` cuts its debt to 9: it is dispatched at round 9, not 6 or 20 (catches a slot
   counted from the frozen cursor, which puts a flow in debt on the ring, R17, R22). D4's
