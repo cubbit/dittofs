@@ -1,7 +1,10 @@
 package keystest
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"slices"
@@ -66,6 +69,57 @@ func TestMemoryConcurrentCalls(t *testing.T) {
 
 	if got := m.Calls(); got != 32 {
 		t.Errorf("Calls = %d after 16 Currents and 16 Gets, want 32", got)
+	}
+}
+
+// Memory's salvage wrap opens under its master key and the associated data
+// naming its export, and under nothing else: another export, another Memory's
+// master key, or any byte of the sealed wrap flipped. Catches a wrap that
+// binds nothing.
+func TestMemorysSalvageWrapUnwrapsUnderItsAADOnly(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	m := NewMemory()
+	export := []byte("salvage export")
+
+	key, wrap, err := m.WrapSalvageKey(t.Context(), export)
+	if err != nil {
+		t.Fatalf("WrapSalvageKey: %v", err)
+	}
+
+	kind, masterID, sealed, err := parseStoredWrap(wrap)
+	if err != nil {
+		t.Fatalf("wrap %x: %v", wrap, err)
+	}
+
+	if kind != 0x01 || !bytes.Equal(masterID, m.masterID) {
+		t.Errorf("wrap names provider kind %#02x, master key %x; want 0x01, %x", kind, masterID, m.masterID)
+	}
+
+	open := func(m *Memory, sealed, export []byte) ([]byte, error) {
+		n := m.master.NonceSize()
+		return m.master.Open(nil, sealed[:n], sealed[n:], salvageAAD(export))
+	}
+
+	if got, err := open(m, sealed, export); err != nil || !bytes.Equal(got, key) {
+		t.Errorf("unwrap under its master key and export = %x, %v; want %x", got, err, key)
+	}
+
+	if _, err := open(m, sealed, []byte("another export")); err == nil {
+		t.Error("unwrap under another export's associated data succeeded, want it refused")
+	}
+
+	if _, err := open(NewMemory(), sealed, export); err == nil {
+		t.Error("unwrap under another Memory's master key succeeded, want it refused")
+	}
+
+	for i := range sealed {
+		flipped := slices.Clone(sealed)
+		flipped[i] ^= 0x01
+
+		if _, err := open(m, flipped, export); err == nil {
+			t.Errorf("unwrap with byte %d of the sealed wrap flipped succeeded, want it refused", i)
+		}
 	}
 }
 
@@ -341,6 +395,104 @@ func (p *countsGives) Give(ns entity.NamespaceID, kind, id string, material []by
 
 func (p *countsGives) Calls() uint64 { return p.Memory.Calls() + p.gives }
 
+// salvageBroken answers WrapSalvageKey through wrap, over Memory.
+type salvageBroken struct {
+	*remembers
+
+	wrap func(p *remembers, export []byte) (key, wrap []byte)
+}
+
+func (p salvageBroken) WrapSalvageKey(_ context.Context, export []byte) (key, wrap []byte, err error) {
+	key, wrap = p.wrap(p.remembers, export)
+	return key, wrap, nil
+}
+
+// The broken salvage-key wraps, by what they get wrong.
+var (
+	// fixedKey wraps one fixed key on every call.
+	fixedKey = func(p *remembers, export []byte) ([]byte, []byte) {
+		key := bytes.Repeat([]byte{0x5a}, 32)
+		return key, p.wrapSalvage(key, export)
+	}
+	// fixedWrap draws a fresh key and returns the first wrap it made.
+	fixedWrap = func() func(p *remembers, export []byte) ([]byte, []byte) {
+		var first []byte
+		return func(p *remembers, export []byte) ([]byte, []byte) {
+			key := random(32)
+			if first == nil {
+				first = p.wrapSalvage(key, export)
+			}
+			return key, first
+		}
+	}
+	// inClear returns the key as its own wrap bytes, in the layout. The key
+	// is 0xfb bytes, whose base64 holds the characters the two alphabets
+	// differ in.
+	inClear = func(encode func([]byte) []byte) func(p *remembers, export []byte) ([]byte, []byte) {
+		return func(p *remembers, _ []byte) ([]byte, []byte) {
+			key := bytes.Repeat([]byte{0xfb}, 32)
+			return key, storedWrap(0x01, p.masterID, encode(key))
+		}
+	}
+	// mangled changes Memory's wrap after it is laid out.
+	mangled = func(change func([]byte) []byte) func(p *remembers, export []byte) ([]byte, []byte) {
+		return func(p *remembers, export []byte) ([]byte, []byte) {
+			key, wrap, _ := p.WrapSalvageKey(context.Background(), export)
+			return key, change(wrap)
+		}
+	}
+	// asMaterial gives the key as current material of kind in the namespace
+	// the row gave last, or the zero namespace.
+	asMaterial = func(kind string, zero bool) func(p *remembers, export []byte) ([]byte, []byte) {
+		return func(p *remembers, export []byte) ([]byte, []byte) {
+			key, wrap, _ := p.WrapSalvageKey(context.Background(), export)
+
+			ns := entity.NamespaceID{}
+			if !zero {
+				ns = p.given[len(p.given)-1].Namespace
+			}
+
+			p.Give(ns, kind, hex.EncodeToString(key[:4]), key)
+
+			return key, wrap
+		}
+	}
+)
+
+// salvageCases are the broken salvage-key wraps, each with the text of the
+// check it must fail on.
+var salvageCases = []struct {
+	name string
+	wrap func(p *remembers, export []byte) ([]byte, []byte)
+	want string
+}{
+	{"one fixed key", fixedKey, "calls returned one key"},
+	{"one fixed wrap", fixedWrap(), "calls returned one wrap"},
+	{"a short key", func(p *remembers, export []byte) ([]byte, []byte) {
+		key := random(16)
+		return key, p.wrapSalvage(key, export)
+	}, "returned a 16-byte key, want 32"},
+	{"the key in the clear", inClear(func(k []byte) []byte { return k }), "fbfb raw"},
+	{"the key in hex", inClear(func(k []byte) []byte { return []byte(hex.EncodeToString(k)) }), "in hex"},
+	{"the key in upper-case hex", inClear(func(k []byte) []byte { return []byte(strings.ToUpper(hex.EncodeToString(k))) }), "in upper-case hex"},
+	{"the key in base64", inClear(func(k []byte) []byte { return []byte(base64.StdEncoding.EncodeToString(k)) }), "in base64"},
+	{"the key in URL base64", inClear(func(k []byte) []byte { return []byte(base64.URLEncoding.EncodeToString(k)) }), "in URL base64"},
+	{"a byte past the wrap", mangled(func(w []byte) []byte { return append(w, 0) }), "wrap length 60, but 61 bytes follow"},
+	{"a byte short of the wrap", mangled(func(w []byte) []byte { return w[:len(w)-1] }), "wrap length 60, but 59 bytes follow"},
+	{"an unknown provider kind", mangled(func(w []byte) []byte { w[0] = 0x03; return w }), "provider kind 0x03"},
+	{"an empty master-key ID", func(p *remembers, export []byte) ([]byte, []byte) {
+		key := random(32)
+		return key, storedWrap(0x01, nil, random(28))
+	}, "empty master-key ID"},
+	{"empty wrap bytes", func(p *remembers, _ []byte) ([]byte, []byte) {
+		return random(32), storedWrap(0x01, p.masterID, nil)
+	}, "empty wrap bytes"},
+	{"a truncated layout", mangled(func(w []byte) []byte { return w[:2] }), "shorter than a provider kind"},
+	{"a master-key ID past the end", mangled(func(w []byte) []byte { return w[:10] }), "master-key ID length 16"},
+	{"the key as the namespace's material", asMaterial(keys.KindChunkingKey, false), "chunking-key) ="},
+	{"the key as the zero namespace's material", asMaterial(keys.KindDataKey, true), "namespace 00000000-0000-0000-0000-000000000000, data-key) ="},
+}
+
 // Every row fails on the broken providers written for it and on no other,
 // and passes on Memory, so a row failing for the wrong reason fails here too;
 // and every row has a broken provider.
@@ -350,7 +502,7 @@ func TestEachBrokenProviderFailsItsRow(t *testing.T) {
 	mem := func() *remembers { return &remembers{Memory: NewMemory()} }
 	covered := make(map[string]bool)
 
-	for _, c := range []struct {
+	cases := []struct {
 		name  string
 		build func() Harness
 		want  []string
@@ -374,7 +526,16 @@ func TestEachBrokenProviderFailsItsRow(t *testing.T) {
 		{"a kind never given reported as unavailable", func() Harness { return unknownKindUnavailable{NewMemory()} }, []string{"unknown"}},
 		{"failing calls left uncounted", func() Harness { return &countsSuccesses{Memory: NewMemory()} }, []string{"calls"}},
 		{"Give counted as a call", func() Harness { return &countsGives{Memory: NewMemory()} }, []string{"calls"}},
-	} {
+	}
+	for _, sc := range salvageCases {
+		cases = append(cases, struct {
+			name  string
+			build func() Harness
+			want  []string
+		}{"a salvage wrap with " + sc.name, func() Harness { return salvageBroken{mem(), sc.wrap} }, []string{"salvage"}})
+	}
+
+	for _, c := range cases {
 		var failed []string
 
 		for _, r := range rows {
@@ -405,7 +566,7 @@ func TestEachBrokenProviderFailsItsRow(t *testing.T) {
 func TestEachBrokenProviderFailsOnItsCheck(t *testing.T) {
 	mem := func() *remembers { return &remembers{Memory: NewMemory()} }
 
-	for _, c := range []struct {
+	cases := []struct {
 		name  string
 		build func() Harness
 		row   func(context.Context, Harness) error
@@ -423,7 +584,17 @@ func TestEachBrokenProviderFailsOnItsCheck(t *testing.T) {
 		{"handed-out slices wiped on Destroy", func() Harness {
 			return wipes{NewMemory(), make(map[keys.MaterialID][][]byte)}
 		}, owned, "after a Replace and a Destroy"},
-	} {
+	}
+	for _, sc := range salvageCases {
+		cases = append(cases, struct {
+			name  string
+			build func() Harness
+			row   func(context.Context, Harness) error
+			want  string
+		}{"a salvage wrap with " + sc.name, func() Harness { return salvageBroken{mem(), sc.wrap} }, salvage, sc.want})
+	}
+
+	for _, c := range cases {
 		err := c.row(t.Context(), c.build())
 		if got := fmt.Sprint(err); err == nil || !strings.Contains(got, c.want) {
 			t.Errorf("%s: row error %q, want one containing %q", c.name, got, c.want)

@@ -5,8 +5,12 @@ package keystest
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"slices"
 	"sync"
@@ -39,21 +43,44 @@ type entry struct {
 
 // Memory is a keys.Provider that holds its material in memory. A test sets it
 // up through Give, Replace and Destroy, calls a real provider can honour too,
-// and reads Calls to assert the provider was or was not asked. Its methods are
-// safe for concurrent use.
+// and reads Calls to assert the provider was or was not asked. It wraps
+// salvage keys under a master key of its own, drawn when it is built. Its
+// methods are safe for concurrent use.
 type Memory struct {
 	calls atomic.Uint64
+
+	masterID []byte
+	master   cipher.AEAD // AES-256-GCM under the master key
 
 	mu      sync.Mutex
 	entries map[slot]*entry
 	current map[current]slot
 }
 
-var _ keys.Provider = (*Memory)(nil)
+var (
+	_ keys.Provider       = (*Memory)(nil)
+	_ keys.SalvageWrapper = (*Memory)(nil)
+)
 
-// NewMemory returns a Memory holding no material.
+// NewMemory returns a Memory holding no material, with a fresh master key.
 func NewMemory() *Memory {
-	return &Memory{entries: make(map[slot]*entry), current: make(map[current]slot)}
+	// Neither call fails for a 32-byte key and the standard nonce size.
+	block, err := aes.NewCipher(random(32))
+	if err != nil {
+		panic(err)
+	}
+
+	master, err := cipher.NewGCM(block)
+	if err != nil {
+		panic(err)
+	}
+
+	return &Memory{
+		masterID: random(16),
+		master:   master,
+		entries:  make(map[slot]*entry),
+		current:  make(map[current]slot),
+	}
 }
 
 // fingerprint is HMAC-SHA256(material, "dittofs key check v1") (RFC 5 §2.5).
@@ -170,3 +197,48 @@ func (m *Memory) entry(id keys.MaterialID) *entry {
 // Calls is how many times Current and Get have been called, failing calls
 // included.
 func (m *Memory) Calls() uint64 { return m.calls.Load() }
+
+// WrapSalvageKey draws a fresh 32-byte key and seals it with AES-256-GCM
+// under Memory's master key, the associated data naming export, in RFC 5
+// Appendix B.1's stored-wrap layout as the key file writes it: provider kind
+// 0x01, the master key's ID, nonce ‖ ciphertext ‖ tag. The key joins no
+// namespace, since a salvage key belongs to none.
+func (m *Memory) WrapSalvageKey(_ context.Context, export []byte) (key, wrap []byte, err error) {
+	key = random(32)
+
+	return key, m.wrapSalvage(key, export), nil
+}
+
+// wrapSalvage seals key for export under the master key, in the stored-wrap
+// layout.
+func (m *Memory) wrapSalvage(key, export []byte) []byte {
+	nonce := random(m.master.NonceSize())
+
+	return storedWrap(0x01, m.masterID, m.master.Seal(nonce, nonce, key, salvageAAD(export)))
+}
+
+// salvageAAD is the associated data a salvage key of export is sealed under.
+// The fixed label comes first, so no two exports frame to the same bytes.
+func salvageAAD(export []byte) []byte {
+	return append([]byte("salvage-key"), export...)
+}
+
+// storedWrap lays wrapped out as RFC 5 Appendix B.1's stored wrap: provider
+// kind, master-key ID length (2 bytes, big-endian), master-key ID, wrap
+// length (4 bytes, big-endian), wrap bytes.
+func storedWrap(kind byte, masterID, wrapped []byte) []byte {
+	b := []byte{kind}
+	b = binary.BigEndian.AppendUint16(b, uint16(len(masterID)))
+	b = append(b, masterID...)
+	b = binary.BigEndian.AppendUint32(b, uint32(len(wrapped)))
+
+	return append(b, wrapped...)
+}
+
+// random returns n bytes from a cryptographic random source.
+func random(n int) []byte {
+	b := make([]byte, n)
+	_, _ = rand.Read(b) // never fails: crypto/rand.Read crashes the program instead
+
+	return b
+}

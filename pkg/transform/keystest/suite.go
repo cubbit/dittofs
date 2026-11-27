@@ -3,6 +3,9 @@ package keystest
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"testing"
@@ -16,9 +19,11 @@ import (
 // define them. A real provider is adapted to it over its own records, and an
 // adapter that cannot set one up fails the test through t.Fatal on the t
 // newHarness was given. A row gives each ID once, so an adapter may refuse a
-// second Give of one.
+// second Give of one. The salvage-key wrap is part of it, so the salvage row
+// reaches every provider.
 type Harness interface {
 	keys.Provider
+	keys.SalvageWrapper
 
 	Give(ns entity.NamespaceID, kind, id string, material []byte) keys.MaterialID
 	Replace(id keys.MaterialID, material []byte)
@@ -57,6 +62,7 @@ var rows = []row{
 	{"destroyed", destroyed},
 	{"owned", owned},
 	{"calls", calls},
+	{"salvage", salvage},
 }
 
 // Material contents the rows give. Each is distinct, so a provider serving
@@ -334,4 +340,125 @@ func calls(ctx context.Context, h Harness) error {
 	}
 
 	return nil
+}
+
+// A salvage key is a fresh 32-byte key for one export, returned with its wrap
+// in RFC 5 Appendix B.1's stored-wrap layout, and belongs to no namespace
+// (Appendix B.2): two calls for one export give two keys and two wraps, each
+// wrap parses with nothing left over and holds its key in no readable form,
+// and no namespace's Current changes. The wrap bytes and their unwrap are each
+// provider's, so the row checks only the layout around them. Catches a reused
+// key, a key returned in the clear as its own wrap, and a salvage key written
+// as a namespace's material.
+func salvage(ctx context.Context, h Harness) error {
+	ns := namespace(1)
+	h.Give(ns, keys.KindDataKey, "given", materialA)
+	export := []byte("salvage export")
+
+	var got [2]struct{ key, wrap []byte }
+
+	for i := range got {
+		key, wrap, err := h.WrapSalvageKey(ctx, export)
+		if err != nil {
+			return fmt.Errorf("WrapSalvageKey(%q): %w", export, err)
+		}
+
+		if len(key) != 32 {
+			return fmt.Errorf("WrapSalvageKey(%q) returned a %d-byte key, want 32", export, len(key))
+		}
+
+		if _, _, _, err := parseStoredWrap(wrap); err != nil {
+			return fmt.Errorf("WrapSalvageKey(%q) wrap %x: %w", export, wrap, err)
+		}
+
+		if form, ok := holds(wrap, key); ok {
+			return fmt.Errorf("WrapSalvageKey(%q) wrap %x holds its key %x %s", export, wrap, key, form)
+		}
+
+		got[i].key, got[i].wrap = key, wrap
+	}
+
+	if bytes.Equal(got[0].key, got[1].key) {
+		return fmt.Errorf("two WrapSalvageKey(%q) calls returned one key %x, want two", export, got[0].key)
+	}
+
+	if bytes.Equal(got[0].wrap, got[1].wrap) {
+		return fmt.Errorf("two WrapSalvageKey(%q) calls returned one wrap %x, want two", export, got[0].wrap)
+	}
+
+	// Which answer Current gives is the other rows' to check; this row checks
+	// only that no namespace serves a salvage key, the row's own namespace or
+	// the zero one, as any kind.
+	for _, n := range []entity.NamespaceID{ns, {}} {
+		for _, kind := range []string{keys.KindDataKey, keys.KindChunkIDKey, keys.KindChunkingKey} {
+			id, err := h.Current(ctx, n, kind)
+			if err != nil {
+				continue
+			}
+
+			content, err := h.Get(ctx, id)
+			if err == nil && (bytes.Equal(content, got[0].key) || bytes.Equal(content, got[1].key)) {
+				return fmt.Errorf("after WrapSalvageKey, Current(namespace %s, %s) = %q, a salvage key", n, kind, id.ID)
+			}
+		}
+	}
+
+	return nil
+}
+
+// parseStoredWrap splits wrap as RFC 5 Appendix B.1's stored wrap: provider
+// kind (0x01 key file, 0x02 key service), master-key ID length (2 bytes,
+// big-endian), master-key ID, wrap length (4 bytes, big-endian), wrap bytes.
+// The master-key ID and the wrap bytes must be non-empty, and the lengths must
+// account for every byte.
+func parseStoredWrap(wrap []byte) (kind byte, masterID, wrapped []byte, err error) {
+	if len(wrap) < 3 {
+		return 0, nil, nil, fmt.Errorf("%d bytes, shorter than a provider kind and a master-key ID length", len(wrap))
+	}
+
+	kind, n, rest := wrap[0], int(binary.BigEndian.Uint16(wrap[1:3])), wrap[3:]
+	if kind != 0x01 && kind != 0x02 {
+		return 0, nil, nil, fmt.Errorf("provider kind %#02x, want 0x01 or 0x02", kind)
+	}
+
+	if n == 0 {
+		return 0, nil, nil, errors.New("empty master-key ID")
+	}
+
+	if len(rest) < n+4 {
+		return 0, nil, nil, fmt.Errorf("master-key ID length %d and a wrap length need %d bytes, %d follow", n, n+4, len(rest))
+	}
+
+	masterID, rest = rest[:n], rest[n:]
+	m, rest := int(binary.BigEndian.Uint32(rest)), rest[4:]
+
+	switch {
+	case m == 0:
+		return 0, nil, nil, errors.New("empty wrap bytes")
+	case m != len(rest):
+		return 0, nil, nil, fmt.Errorf("wrap length %d, but %d bytes follow", m, len(rest))
+	}
+
+	return kind, masterID, rest, nil
+}
+
+// holds reports whether wrap contains key raw, in hex or in base64, and in
+// which form.
+func holds(wrap, key []byte) (string, bool) {
+	for _, f := range []struct {
+		name string
+		form []byte
+	}{
+		{"raw", key},
+		{"in hex", []byte(hex.EncodeToString(key))},
+		{"in upper-case hex", bytes.ToUpper([]byte(hex.EncodeToString(key)))},
+		{"in base64", []byte(base64.RawStdEncoding.EncodeToString(key))},
+		{"in URL base64", []byte(base64.RawURLEncoding.EncodeToString(key))},
+	} {
+		if bytes.Contains(wrap, f.form) {
+			return f.name, true
+		}
+	}
+
+	return "", false
 }
