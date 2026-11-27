@@ -318,38 +318,42 @@ const jbSpareGrants = 8
 // waited out and one that stopped says so, in its own error. A second settle
 // short in a row answers the first's retry, as the fixture's own RetrySpare
 // has it: the pass that settled short may have made the one spare the call
-// needed.
-func jbRetrySpareSustained(ctx context.Context, pool journaltest.SparesWait, op func() error) error {
+// needed. It also returns how long it parked in WaitSpares and how many
+// times: the wait a refused roll costs, timed where it is spent rather than
+// inferred from the whole call's latency.
+func jbRetrySpareSustained(ctx context.Context, pool journaltest.SparesWait, op func() error) (parked time.Duration, waits int64, err error) {
 	// The context b.Context hands in carries no deadline; the row's own
 	// generous one bounds even a park without a settle.
 	ctx, cancel := context.WithTimeout(ctx, jbSpareWait)
 	defer cancel()
 
-	var err error
 	short, granted := 0, 0
 	for {
 		err = op()
 		var ns *journal.NoSpaceError
 		if !errors.As(err, &ns) || ns.Limit != journal.LimitSpare {
-			return err
+			return parked, waits, err
 		}
+		start := time.Now()
 		wait := pool.WaitSpares(ctx)
+		parked += time.Since(start)
+		waits++
 		var refused *journal.NoSpaceError
 		if wait == nil {
 			short = 0
 			if granted++; granted == jbSpareGrants {
-				return fmt.Errorf("the pool settled at its targets %d times in a row and still refused: %w", jbSpareGrants, err)
+				return parked, waits, fmt.Errorf("the pool settled at its targets %d times in a row and still refused: %w", jbSpareGrants, err)
 			}
 			continue
 		}
 		granted = 0
 		if errors.As(wait, &refused) && refused.Limit == journal.LimitSpare {
 			if short++; short == 2 {
-				return fmt.Errorf("the pool settled short twice in a row; the spare never came: %w (pool: %v)", err, wait)
+				return parked, waits, fmt.Errorf("the pool settled short twice in a row; the spare never came: %w (pool: %v)", err, wait)
 			}
 			continue
 		}
-		return fmt.Errorf("the spare pool's wait ended: %w (last refusal: %v)", wait, err)
+		return parked, waits, fmt.Errorf("the spare pool's wait ended: %w (last refusal: %v)", wait, err)
 	}
 }
 
@@ -357,12 +361,13 @@ func jbRetrySpareSustained(ctx context.Context, pool journaltest.SparesWait, op 
 // cannot see: the last attempt alone (took, comparable with p99-write-µs, sync
 // and the pool's wait excluded), the whole call from first attempt to success
 // (waited — the latency whose refusals RFC 1 §9.6's method asks timed in), and
-// how many attempts the journal refused for want of a spare. Only the last
-// attempt is timed as took: a refusal, refused at once, is the pool's wait, not
-// the write's, and waited is the wait's own measure.
-func (s jbJournal) writeAll(w int, off int64, p []byte) (took, waited time.Duration, refusals int64, err error) {
+// how many attempts the journal refused for want of a spare, and the time and
+// count of the pool waits between them (parked, waits). Only the last attempt
+// is timed as took: a refusal, refused at once, is the pool's wait, not the
+// write's, and waited is the wait's own measure.
+func (s jbJournal) writeAll(w int, off int64, p []byte) (took, waited time.Duration, refusals int64, parked time.Duration, waits int64, err error) {
 	start := time.Now()
-	err = jbRetrySpareSustained(s.b.Context(), s.pool, func() error {
+	parked, waits, err = jbRetrySpareSustained(s.b.Context(), s.pool, func() error {
 		attempt := time.Now()
 		_, e := s.h.WriteAt(s.b.Context(), journaltest.File(w), off, p, 0)
 		took = time.Since(attempt)
@@ -374,7 +379,7 @@ func (s jbJournal) writeAll(w int, off int64, p []byte) (took, waited time.Durat
 		}
 		return e
 	})
-	return took, time.Since(start), refusals, err
+	return took, time.Since(start), refusals, parked, waits, err
 }
 
 func (s jbJournal) write(w int, off int64, p []byte) (took time.Duration, err error) {
@@ -783,7 +788,11 @@ func BenchmarkJ1_MixedDurability(b *testing.B) {
 // stream faster than the pool refills; the waiting is the measurement, not
 // noise. p99-write-µs stays the other rows' last-attempt figure (comparable),
 // p99-write-waited-µs is the whole call including every spare refusal's wait,
-// and spare-refusals counts them. The MB/s is the average over the whole
+// and spare-refusals counts them. spare-wait-ms is the time parked in the
+// pool's wait between a refusal and its retry, summed, and spare-waits the
+// number of those waits, each per iteration: the refusals' cost measured where
+// it is spent, which no percentile of the calls can show when a few hundred
+// waits sit among tens of thousands of writes. The MB/s is the average over the whole
 // stream, cache-absorbed start included; the rate past the device's write
 // cache is a separate figure no row reports yet. The waited figure parks on
 // WaitSpares, which returns once every class of spare holds its goal, not
@@ -804,9 +813,10 @@ func jbLarge(b *testing.B, sink jbSink, block int, span int64) {
 	ops := int(span) / block
 	took := make([]time.Duration, 0, ops*b.N)
 	waited := make([]time.Duration, 0, ops*b.N)
-	var refusals int64
+	var refusals, waits int64
+	var parked time.Duration
 	all, overJournal := sink.(interface {
-		writeAll(w int, off int64, p []byte) (time.Duration, time.Duration, int64, error)
+		writeAll(w int, off int64, p []byte) (time.Duration, time.Duration, int64, time.Duration, int64, error)
 	})
 
 	if p, ok := sink.(interface{ prepare(span int64) error }); ok {
@@ -823,13 +833,15 @@ func jbLarge(b *testing.B, sink jbSink, block int, span int64) {
 		for i := range ops {
 			off := base + int64(i*block)
 			if overJournal {
-				last, whole, ref, err := all.writeAll(0, off, p)
+				last, whole, ref, park, n, err := all.writeAll(0, off, p)
 				if err != nil {
 					b.Fatalf("bench: write at %d: %v", off, err)
 				}
 				took = append(took, last)
 				waited = append(waited, whole)
 				refusals += ref
+				parked += park
+				waits += n
 			} else {
 				d, err := sink.write(0, off, p)
 				if err != nil {
@@ -848,6 +860,8 @@ func jbLarge(b *testing.B, sink jbSink, block int, span int64) {
 	if overJournal {
 		jbReportP99(b, [][]time.Duration{waited}, "p99-write-waited-µs")
 		b.ReportMetric(float64(refusals)/float64(b.N), "spare-refusals/iter")
+		b.ReportMetric(float64(parked.Microseconds())/1e3/float64(b.N), "spare-wait-ms/iter")
+		b.ReportMetric(float64(waits)/float64(b.N), "spare-waits/iter")
 	}
 }
 
