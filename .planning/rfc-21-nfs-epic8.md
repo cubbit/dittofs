@@ -401,8 +401,8 @@ reclaims themselves and stale stateids (E9); the lease owner and `Reach.Sessions
   and not open state's, overturned if RFC 14's `Connect` comes to write the bytes it is handed.
 - **D4. Server owner and scope.** `so_major_id` and `server_scope` are the installation's ID (RFC 16
   §2.3's `Installation`), and `so_minor_id` the node's own, both read once at `New`. Both reach the
-  adapter as RFC 20 §3.4's `Deps.Server`, the installation's ID and the node's 16-byte ID, from which
-  the wire's 64-bit minor ID from the 16-byte one is RFC 21 §3.3's to state (a follow-up). Prior art: knfsd uses the host name for both by default (from memory). No
+  adapter as RFC 20 §3.4's `Deps.Server`, the installation's ID and the node's 16-byte ID. How the wire's 64-bit
+  minor ID comes from the 16-byte one is RFC 21 §3.3's to state (a follow-up). Prior art: knfsd uses the host name for both by default (from memory). No
   marker: the RFC's text once amended.
 - **D5. Who reads `SEQUENCE`, and who answers its errors.** The header codec reads a compound's
   first operation and, for `SEQUENCE`, its session ID, slot, sequence, highest slot and
@@ -565,6 +565,7 @@ internal/adapter/core/
   testdata/surface/core.golden   T8.5
 internal/adapter/adaptertest/
   flow.go, flow_test.go          T8.5  FlowConformance, run on testproto's Flow
+internal/node/adapters.go        T8.3  `adapterDeps` fills `Deps.Server` from the store's `Installation` and the bootstrap's node ID (Q1)
 pkg/adapter/deps.go              T8.3  the server identity (Q1); T8.9  Retry, if RFC 22's plan has not added it
 internal/adapter/nfs/
   nfs.go                         T8.1  Handlers.Callbacks; T8.3  the server identity; T8.4  the registry to protocol.New

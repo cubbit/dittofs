@@ -1073,7 +1073,7 @@ package adapter // pkg/adapter
 // A field is an interface where it has two implementations, a concrete type
 // where it has one. Only VFS and Budgets, its Conns included, are required,
 // and New refuses a missing one by name; every other field has a working
-// zero value, Server excepted for NFS (below).
+// zero value.
 type Deps struct {
 	VFS     vfs.Service         // RFC 17: the only dependency on the core (§2.3): files, clients, sign-in and principal spellings; the filesystem or the gateway, and the adapter cannot tell which (RFC 17 §2)
 	Budgets *resources.Budgets  // RFC 24 §2.5 (pkg/resources): the four budgets on the request path, receive, reply, connection state and hold, and the node's connection count (§3.6)
