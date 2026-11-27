@@ -78,7 +78,8 @@ func (hostClock) Now() time.Time {
 // handlers builds NFSv4's handlers: the service its operations call, the
 // constructor of the callbacks value Connect registers per client (RFC 20
 // section 3.3), the table of proposals EXCHANGE_ID holds until their confirm
-// and what the node is called to a client.
+// and the node's sessions, which that constructor's value ends at a lease's
+// expiry, and what the node is called to a client.
 //
 // ponytail: nothing sweeps the proposals but the calls that touch the table,
 // since core gives a protocol no hook at Stop to end a ticker with; an idle
@@ -87,10 +88,12 @@ func (hostClock) Now() time.Time {
 // come back to the budget. Add the ticker and a release at Stop when core has
 // that hook.
 func handlers(d adapter.Deps) *v4.Handlers {
+	sessions := protocol.NewSessions(d.Budgets, hostClock{}, rand.Reader)
+
 	return &v4.Handlers{
 		VFS:       d.VFS,
-		Callbacks: newCallbacks,
-		Sessions:  protocol.NewSessions(d.Budgets, hostClock{}, rand.Reader),
+		Callbacks: newCallbacks(sessions),
+		Sessions:  sessions,
 		Server:    v4.Server(d.Server),
 	}
 }

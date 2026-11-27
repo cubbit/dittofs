@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/cubbit/dittofs/internal/adapter/nfs/protocol"
 	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
@@ -11,25 +12,30 @@ import (
 // knows it and the protocol it connected with, and nothing about files (RFC
 // 20 section 3.3).
 //
-// decision: (D1, RFC 21 epic 8) every method answers as the client not being
-// reachable, the interim answers of this subtask: RecallGrant and RecallAny
-// return errNoBackChannel until epic 10 builds the back channel, LockWaitOver
-// the same until epic 11's NLM rows, Notify returns nil because NFS registers
-// no watch, and Revoked holds nothing pending: its lease expiry arm comes with
-// T8.4's session registry, its other reasons with epics 9, 10 and 11 (T11.7).
+// decision: every method but one answers as the client not being reachable,
+// the interim answers until the back channel and the NLM rows exist:
+// RecallGrant and RecallAny return errNoBackChannel, LockWaitOver the same,
+// Notify returns nil because NFS registers no watch. Revoked ends the client's
+// sessions when its lease expired, since the lease is what a session lives
+// under (RFC 21 section 3.3); its other reasons wait for the state that can
+// be revoked. Overturned when a back channel can be called.
 type callbacks struct {
 	client   vfs.ClientID
 	protocol vfs.Protocol
+	sessions *protocol.Sessions
 }
 
 var _ vfs.Callbacks = (*callbacks)(nil)
 
-// newCallbacks builds the callbacks value for client cl connected with
-// protocol p: the value Connect registers.
-func newCallbacks(cl vfs.ClientID, p vfs.Protocol) vfs.Callbacks {
-	return &callbacks{
-		client:   cl,
-		protocol: p,
+// newCallbacks is the constructor of the callbacks value Connect registers
+// for a client cl connected with protocol p, over the sessions the node holds.
+func newCallbacks(s *protocol.Sessions) func(cl vfs.ClientID, p vfs.Protocol) vfs.Callbacks {
+	return func(cl vfs.ClientID, p vfs.Protocol) vfs.Callbacks {
+		return &callbacks{
+			client:   cl,
+			protocol: p,
+			sessions: s,
+		}
 	}
 }
 
@@ -55,8 +61,12 @@ func (c *callbacks) Notify(ctx context.Context, w vfs.WatchID, changes []vfs.Cha
 	return nil
 }
 
-// Revoked holds nothing pending on the client to answer with.
+// Revoked ends the client's sessions when its lease expired: they are the
+// lease's, and a session left would answer a client the service forgot.
 func (c *callbacks) Revoked(ctx context.Context, what vfs.Revocation) {
+	if what.Reason == vfs.RevokedLeaseExpired {
+		c.sessions.EndClient(c.client)
+	}
 }
 
 // LockWaitOver reports the client as not answering: refused false with an

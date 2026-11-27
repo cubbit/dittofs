@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/internal/adapter/adaptertest"
 	"github.com/cubbit/dittofs/internal/adapter/adaptertest/nfsclient"
@@ -12,6 +13,7 @@ import (
 	"github.com/cubbit/dittofs/internal/adapter/nfs/protocol"
 	"github.com/cubbit/dittofs/pkg/adapter"
 	"github.com/cubbit/dittofs/pkg/vfs"
+	"github.com/cubbit/dittofs/pkg/vfs/vfstest"
 	"github.com/cubbit/dittofs/pkg/vfs/vfstest/memory"
 )
 
@@ -138,4 +140,104 @@ func TestExchangeIDOverTheWire(t *testing.T) {
 	if st := binary.BigEndian.Uint32(rep.Body[replyStatus:]); st != 10044 {
 		t.Errorf("minor version 0 answered status %d, want NFS4ERR_OP_ILLEGAL, 10044", st)
 	}
+}
+
+// A client whose lease expires while its CREATE_SESSION is being written has
+// the session ended at once, and the node sends the Disconnect the service
+// is owed for a node that lists itself and holds nothing: its last session,
+// at the Gen of the entry the write listed. Without it the record would list
+// the node for a session that no longer exists, and the client could never
+// be destroyed (RFC 21 section 3.3).
+func TestLeaseExpiryDuringCreateSessionSendsTheLastDisconnect(t *testing.T) {
+	d := leakChecked(t)
+
+	mem := d.VFS.(*memory.Service)
+	rn := &adaptertest.Runner{Mem: mem, Faults: vfstest.Faults(mem)}
+	rn.Rec = vfstest.RecordMutations(rn.Faults)
+
+	d.VFS = rn.Rec
+
+	h := handlers(d)
+	ts := tables(d)
+	ts.V4 = v4.Table(h)
+
+	srv, err := core.NewServer(d, nfsSettings(only4), core.Listener{
+		Services: []string{"nfs"},
+		Network:  "tcp",
+		Protocol: protocol.New(ts, d.Budgets),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	start(t, srv)
+
+	c := client(t, srv.Addrs()[adapter.Socket{Service: "nfs", Network: "tcp"}][0])
+
+	rep, err := c.Do(within(t), exchangeIDCall(t, 100))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cl := binary.BigEndian.Uint64(rep.Body[replyClientID:])
+	seq := binary.BigEndian.Uint32(rep.Body[replySeqID:])
+
+	hold := rn.Faults.Hold(vfs.OpAddSession)
+
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := c.Do(within(t), createSessionCall(100, cl, seq))
+		done <- err
+	}()
+
+	select {
+	case <-hold.Reached():
+	case <-time.After(5 * time.Second):
+		hold.Release()
+		t.Fatal("the AddSession never arrived")
+	}
+
+	h.Callbacks(vfs.ClientID(cl), vfs.ProtocolNFSv4).Revoked(
+		t.Context(),
+		vfs.Revocation{Client: vfs.ClientID(cl), Reason: vfs.RevokedLeaseExpired},
+	)
+	hold.Release()
+
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+
+	rec, err := rn.Mem.Record(t.Context(), rn.Mem.Admin(), vfs.ClientID(cl))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var sent []vfstest.Mutation
+
+	for _, m := range rn.Rec.Calls() {
+		if m.Op == vfs.OpDisconnect {
+			sent = append(sent, m)
+		}
+	}
+
+	if len(sent) != 1 {
+		t.Fatalf("the service saw %d Disconnect calls, want 1", len(sent))
+	}
+
+	if !sent[0].End.Last || sent[0].End.Gen == 0 || sent[0].End.Gen != rec.Reach.Gen {
+		t.Errorf(
+			"Disconnect was sent %+v, want Last at the entry's Gen, %d",
+			sent[0].End,
+			rec.Reach.Gen,
+		)
+	}
+
+	if len(rec.Reach.Sessions) != 0 {
+		t.Errorf("the record lists %v, want no node after the last Disconnect", rec.Reach.Sessions)
+	}
+
+	t.Cleanup(func() {
+		h.Sessions.Drop(vfs.ClientID(cl))
+	})
 }

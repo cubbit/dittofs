@@ -3,17 +3,20 @@ package nfs
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"io"
 	"net/netip"
 	"reflect"
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/adapter/adaptertest"
 	"github.com/cubbit/dittofs/internal/adapter/adaptertest/nfsclient"
 	"github.com/cubbit/dittofs/internal/adapter/core"
 	"github.com/cubbit/dittofs/internal/adapter/nfs/protocol"
 	"github.com/cubbit/dittofs/pkg/adapter"
 	"github.com/cubbit/dittofs/pkg/adapter/settings"
+	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/cubbit/dittofs/pkg/vfs"
 	"github.com/cubbit/dittofs/pkg/vfs/vfstest/memory"
 )
@@ -334,4 +337,102 @@ func TestTwoFragmentsAnswerAsOne(t *testing.T) {
 	if want := accepted(7, 0); !bytes.Equal(whole, want) || !bytes.Equal(split, whole) {
 		t.Errorf("whole answered %x, in two fragments %x, want both %x", whole, split, want)
 	}
+}
+
+// The offsets of CREATE_SESSION's result inside a COMPOUND's reply (RFC 8881
+// section 18.36.1), after EXCHANGE_ID's own: the member's operation and
+// status, then the session ID, the sequence ID, the flags and the fore
+// channel's attributes.
+const (
+	replySeqID      = replyMember + 16 // EXCHANGE_ID's eir_sequenceid
+	replySession    = replyMember + 8
+	replyCreateSeq  = replySession + 16
+	replyCreateFlag = replyCreateSeq + 4
+	replyForeSlots  = replyCreateFlag + 4 + 20
+	opCreateSession = 43
+	createReplyLen  = replyMember + 8 + 16 + 8 + 56
+)
+
+// createSessionCall is a COMPOUND of minor version 1 holding the one
+// CREATE_SESSION of client cl and sequence ID seq, asking one slot of each
+// channel and a callback under AUTH_NONE, under AUTH_SYS uid.
+func createSessionCall(uid uint32, cl uint64, seq uint32) nfsclient.Call {
+	args := binary.BigEndian.AppendUint64(nil, cl)
+	args = append(args, words(seq, 0)...)
+	args = append(args, words(0, 1<<20, 1<<20, 4096, 8, 1, 0)...) // the fore channel
+	args = append(args, words(0, 4096, 4096, 0, 2, 1, 0)...)      // the back channel
+	args = append(args, words(0x40000000, 1, 0)...)               // one AUTH_NONE callback
+
+	return nfsclient.Call{
+		Prog: progNFS,
+		Vers: 4,
+		Proc: 1,
+		Cred: nfsclient.AuthSys(uid, uid),
+		Args: append(words(0, 1, 1, opCreateSession), args...),
+	}
+}
+
+// A client that proposes with EXCHANGE_ID and confirms with CREATE_SESSION
+// over a socket is answered a session of the node New builds: the handlers
+// New serves carry the registry, so the confirm finds its proposal and the
+// session is held. A server built over bare handlers would answer a fault
+// to the same bytes.
+func TestCreateSessionOverTheWire(t *testing.T) {
+	adaptertest.CheckLeaks(t, nil)
+
+	d := adapter.Deps{
+		VFS:     memory.New(t),
+		Budgets: adaptertest.Budgets(),
+		Metrics: metrics.New("test", "test"),
+	}
+	srv := serve(t, d, nfsSettings(only4))
+	c := client(t, srv.Addrs()[adapter.Socket{Service: "nfs", Network: "tcp"}][0])
+
+	rep, err := c.Do(within(t), exchangeIDCall(t, 100))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cl := binary.BigEndian.Uint64(rep.Body[replyClientID:])
+	seq := binary.BigEndian.Uint32(rep.Body[replySeqID:])
+
+	rep, err = c.Do(within(t), createSessionCall(100, cl, seq))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	b := rep.Body
+	if len(b) != createReplyLen ||
+		binary.BigEndian.Uint32(b[replyStatus:]) != 0 ||
+		binary.BigEndian.Uint32(b[replyOp:]) != opCreateSession ||
+		binary.BigEndian.Uint32(b[replyOpStatus:]) != 0 {
+		t.Fatalf(
+			"the reply is %x, want CREATE_SESSION answered NFS4_OK in %d bytes",
+			b,
+			createReplyLen,
+		)
+	}
+
+	if got := binary.BigEndian.Uint32(b[replyCreateSeq:]); got != seq {
+		t.Errorf("csr_sequence is %d, want %d", got, seq)
+	}
+
+	if got := binary.BigEndian.Uint32(b[replyForeSlots:]); got != 1 {
+		t.Errorf("the fore channel has %d slots, want the 1 asked", got)
+	}
+
+	if allZero(b[replySession : replySession+16]) {
+		t.Error("the session ID is zero, want one drawn")
+	}
+}
+
+// allZero reports whether every byte of b is zero.
+func allZero(b []byte) bool {
+	for _, x := range b {
+		if x != 0 {
+			return false
+		}
+	}
+
+	return true
 }
