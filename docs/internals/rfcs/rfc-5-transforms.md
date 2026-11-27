@@ -1535,7 +1535,10 @@ does not know included ([B.4](#B.4%20Losing%20a%20key%20loses%20the%20data)). So
 key destroyed in the service stops new writes within one period, with no
 restart, although the provider still holds the data key unwrapped. A read that
 fails changes nothing and is retried at the next period, as for the primary
-version. The refusal applies to new writes only: a decode is not changed, and
+version. Until a read of a master key's state first succeeds there is no last
+state, and `Pin` fails for that namespace with `ErrMaterialUnavailable`, so a key
+destroyed while the node was down takes no write before the first read. The
+refusal applies to new writes only: a decode is not changed, and
 follows [B.4](#B.4%20Losing%20a%20key%20loses%20the%20data).
 
 A change to any derivation is a new label and a new transform format version; a

@@ -334,8 +334,9 @@ holds once they exist: §6 says so per subtask.
   Prior art: the Go project's `go/build/deps_test.go`, which holds each standard-library package to
   a transitive dependency rule (from memory).
 
-- **D7, no concrete chain or attempt type in this epic.** `NewChain`'s stub returns
-  `nil, errors.ErrUnsupported`, and `Register`'s stub records nothing. E3 adds the unexported chain
+- **D7, no concrete chain or attempt type in this epic.** `NewChain`'s stub refuses a nil
+  `Deps.Logger`, `Deps.Recorder`, `Deps.Encrypts` or provider by name, returns
+  `nil, errors.ErrUnsupported` for everything else, and `Register`'s stub records nothing. E3 adds the unexported chain
   and attempt types with the registry, so no type exists without a caller (rule 12). R10 holds
   through the interface alone. Prior art: none found. No marker: E3 replaces both bodies.
 
@@ -453,7 +454,8 @@ pkg/transform/chain/
                              // ReasonMaterialDestroyed, ReasonTooLarge
     ```
 
-    `Register`'s body records nothing, and `NewChain`'s returns `nil, errors.ErrUnsupported` (D7).
+    `Register`'s body records nothing, and `NewChain`'s refuses a missing dependency by name and
+    otherwise returns `nil, errors.ErrUnsupported` (D7).
     The doc comments state the refusals E3 implements (RFC 5 §2.3, §2.7, §3.2) and what each `Deps`
     field is for (D2, D4). Consumers:
     - E4 and E5, which call `Register` at init;
