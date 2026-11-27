@@ -22,6 +22,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/adapter/settings"
 	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/cubbit/dittofs/pkg/resources"
+	"github.com/cubbit/dittofs/pkg/vfs"
 	"github.com/cubbit/dittofs/pkg/vfs/vfstest/memory"
 )
 
@@ -280,8 +281,9 @@ func TestStartBindsOneTCPPortForEveryProgram(t *testing.T) {
 // and 10.1, RFC 21 sections 2.1, 11.1 and 11.5). Each program's NULL is a
 // call a row serves now, against the captured and hand-written reply files:
 // an accepted success, an empty AUTH_NONE verifier, no result, no refusal of
-// core's counted, under AUTH_NONE and under AUTH_SYS, and no service call
-// made (RFC 5531 section 9, RFC 21 section 11.5). NFSv4's COMPOUNDs,
+// core's counted, under AUTH_NONE and under AUTH_SYS, and the service's
+// recorded calls empty (RFC 5531 section 9, RFC 21 section 11.5); a NULL row's
+// handler holds no service today, so that last check guards a later change. NFSv4's COMPOUNDs,
 // against the reply files written from RFC 8881 and RFC 7530, echo their tag
 // in every reply that carries their status: an empty one served, an
 // undefined operation code answered NFS4ERR_OP_ILLEGAL at it, at the cap
@@ -327,6 +329,12 @@ func TestEachRefusalIsAnswered(t *testing.T) {
 			want: golden(t, "knfsd-nfs3-nlm-nsm-null-reply"),
 		},
 		{
+			name: "NFSv4's NULL as knfsd answers it", label: "nfs4",
+			served: true,
+			call:   golden(t, "knfsd-nfs4-nfs40-null-call"),
+			want:   golden(t, "knfsd-nfs4-nfs40-null-reply"),
+		},
+		{
 			name:  "MOUNT's NULL under AUTH_SYS, the hand-written vector",
 			label: "nfs3", served: true,
 			call: golden(t, "mount-v3-null-call")[4:],
@@ -345,6 +353,10 @@ func TestEachRefusalIsAnswered(t *testing.T) {
 			call(34, progNSM, 1, 0, inRuleCred), accepted(34, 0), true,
 		},
 		{
+			"NFSv4's NULL under AUTH_SYS", "nfs4",
+			call(35, progNFS, 4, 0, inRuleCred), accepted(35, 0), true,
+		},
+		{
 			"MOUNT's procedure 999, no table holds it", "nfs3",
 			call(36, progMount, 3, 999, none), accepted(36, procUnavail), false,
 		},
@@ -356,80 +368,39 @@ func TestEachRefusalIsAnswered(t *testing.T) {
 			"NSM's procedure 999, no table holds it", "nfs3",
 			call(38, progNSM, 1, 999, none), accepted(38, procUnavail), false,
 		},
-		{
-			"NFS v2 from the stages' table", "nfs3",
-			call(2, progNFS, 2, 0, none), accepted(2, progMismatch, 3, 4), false,
-		},
-		{
-			"an AUTH_SYS credential of 17 groups", "nfs3",
+		{"NFS v2 from the stages' table", "nfs3",
+			call(2, progNFS, 2, 0, none), accepted(2, progMismatch, 3, 4), false},
+		{"an AUTH_SYS credential of 17 groups", "nfs3",
 			call(3, progNFS, 3, 0, append(words(authSys), opaque(sys)...)),
-			words(3, 1, 1, 1, authBadCred), false,
-		}, // REPLY, MSG_DENIED, AUTH_ERROR
-		{
-			"a COMPOUND of minor version 3 from the version 4 table", "nfs4",
-			call(4, // COMPOUND: tag, minor version, no operations
-				progNFS, 4, 1, none, append(tag, words(3, 0)...)...),
-			append(append(accepted(4, 0, nfs4ErrMinorVersMismatch), tag...),
-				words(0)...), false,
-		}, // SUCCESS, the status, the tag, no results
-		{
-			"a verifier past the record", "nfs3",
-			words(5, 0, 2, progNFS, 3, 0, authNone, 0, authNone, 8),
-			accepted(5, garbageArgs), false,
-		},
+			words(3, 1, 1, 1, authBadCred), false}, // REPLY, MSG_DENIED, AUTH_ERROR
+		{"a COMPOUND of minor version 3 from the version 4 table", "nfs4",
+			call(4, progNFS, 4, 1, none, append(tag, words(3, 0)...)...),                          // COMPOUND: tag, minor version, no operations
+			append(append(accepted(4, 0, nfs4ErrMinorVersMismatch), tag...), words(0)...), false}, // SUCCESS, the status, the tag, no results
+		{"a verifier past the record", "nfs3",
+			words(5, 0, 2, progNFS, 3, 0, authNone, 0, authNone, 8), accepted(5, garbageArgs), false},
 		{
 			"a procedure 999 after it, no table holds it", "nfs3",
 			call(6, progNFS, 3, 999, none), accepted(6, procUnavail), false,
 		},
-		{
-			name: "a COMPOUND of no operation", label: "nfs4", served: true,
-			call: golden(t, "rfc-nfs4-empty-call"), want: golden(t, "rfc-nfs4-empty-reply"),
-		},
-		{
-			name: "a COMPOUND whose first operation is code 9999", label: "nfs4", served: true,
-			call: golden(t, "rfc-nfs4-illegal-call"),
-			want: golden(t, "rfc-nfs4-illegal-reply"),
-		},
-		{
-			name:  "the same COMPOUND counting 128 operations",
-			label: "nfs4", served: true,
-			call: golden(t, "rfc-nfs4-illegal-at-cap-call"),
-			want: golden(t, "rfc-nfs4-illegal-at-cap-reply"),
-		},
-		{
-			name: "a COMPOUND of 129 operations over NFSv4.1", label: "nfs4",
-			call: golden(t, "rfc-nfs4-too-many-ops-call"),
-			want: golden(t, "rfc-nfs4-too-many-ops-reply"),
-		},
-		{
-			name: "a COMPOUND of 129 operations over NFSv4.0", label: "nfs4",
-			call: golden(t, "rfc-nfs4-resource-call"), want: golden(t, "rfc-nfs4-resource-reply"),
-		},
-		{
-			name: "a COMPOUND whose count runs past its bytes", label: "nfs4",
-			call: golden(t, "rfc-nfs4-badxdr-call"), want: golden(t, "rfc-nfs4-badxdr-reply"),
-		},
-		{
-			name: "a COMPOUND of a READ no row serves", label: "nfs4",
-			call: golden(t, "rfc-nfs4-read-call"), want: golden(t, "rfc-nfs4-read-reply"),
-		},
-		{
-			name: "a COMPOUND cut before its count", label: "nfs4",
-			call: golden(t, "rfc-nfs4-no-count-call"), want: golden(t, "rfc-nfs4-no-count-reply"),
-		},
+		{name: "a COMPOUND of no operation", label: "nfs4", served: true,
+			call: golden(t, "rfc-nfs4-empty-call"), want: golden(t, "rfc-nfs4-empty-reply")},
+		{name: "a COMPOUND whose first operation is code 9999", label: "nfs4", served: true,
+			call: golden(t, "rfc-nfs4-illegal-call"), want: golden(t, "rfc-nfs4-illegal-reply")},
+		{name: "the same COMPOUND counting 128 operations", label: "nfs4", served: true,
+			call: golden(t, "rfc-nfs4-illegal-at-cap-call"), want: golden(t, "rfc-nfs4-illegal-at-cap-reply")},
+		{name: "a COMPOUND of 129 operations over NFSv4.1", label: "nfs4",
+			call: golden(t, "rfc-nfs4-too-many-ops-call"), want: golden(t, "rfc-nfs4-too-many-ops-reply")},
+		{name: "a COMPOUND of 129 operations over NFSv4.0", label: "nfs4",
+			call: golden(t, "rfc-nfs4-resource-call"), want: golden(t, "rfc-nfs4-resource-reply")},
+		{name: "a COMPOUND whose count runs past its bytes", label: "nfs4",
+			call: golden(t, "rfc-nfs4-badxdr-call"), want: golden(t, "rfc-nfs4-badxdr-reply")},
+		{name: "a COMPOUND of a READ no row serves", label: "nfs4",
+			call: golden(t, "rfc-nfs4-read-call"), want: golden(t, "rfc-nfs4-read-reply")},
+		{name: "a COMPOUND cut before its count", label: "nfs4",
+			call: golden(t, "rfc-nfs4-no-count-call"), want: golden(t, "rfc-nfs4-no-count-reply")},
 	} {
 		other := map[string]string{"nfs3": "nfs4", "nfs4": "nfs3"}[tc.label]
-		before, otherBefore := recorded(
-			t,
-			d.Metrics,
-			"adapter_refusals_total",
-			tc.label,
-		), recorded(
-			t,
-			d.Metrics,
-			"adapter_refusals_total",
-			other,
-		)
+		before, otherBefore := recorded(t, d.Metrics, "adapter_refusals_total", tc.label), recorded(t, d.Metrics, "adapter_refusals_total", other)
 		stagesBefore := recorded(t, d.Metrics, "adapter_wire_seconds", tc.label)
 		if got := ask(t, c, tc.call); !bytes.Equal(got, tc.want) {
 			t.Errorf("%s: answered %x, want %x", tc.name, got, tc.want)
@@ -446,6 +417,12 @@ func TestEachRefusalIsAnswered(t *testing.T) {
 		}
 		if got := recorded(t, d.Metrics, "adapter_refusals_total", other) - otherBefore; got != 0 {
 			t.Errorf("%s: %v refusals under %s, want none", tc.name, got, other)
+		}
+		// vfstest's Mutations record: no case reaches the service. No row's
+		// handler holds the service today, so this cannot fail for a row as
+		// written; it fails the day one is given the service and calls it.
+		if ops := d.VFS.(*memory.Service).Ops(); len(ops) != 0 {
+			t.Errorf("%s: the service saw %v, want no call", tc.name, ops)
 		}
 	}
 }
@@ -472,6 +449,7 @@ func TestFragmentsUpToTheCaps(t *testing.T) {
 		{"a call in 65 fragments", fragments(refusal, 65), false},
 		{"a call of the cap in 2 fragments", fragments(padded(maxRecord), 2), true},
 		// The second fragment's body is not sent: the reader closes at its mark.
+		{"a call a byte past the cap in 2 fragments", fragments(padded(maxRecord+1), 2)[:4+(maxRecord+1)/2+4], false},
 		{"a mark a byte past the cap", words(lastFragment | (maxRecord + 1)), false},
 	} {
 		c := dial(t, srv)
@@ -515,12 +493,9 @@ func golden(t *testing.T, name string) []byte {
 // RFC 21 sections 2.1 and 7).
 func TestANullRowAnswersAsTheReferenceServer(t *testing.T) {
 	d := leakChecked(t)
-	v4 := core.NewOpTable(tables(d).V4.Errors, false,
-		core.Row[void, void](0, "null", core.NeedsNothing,
-			func(context.Context, *core.Request, void) (void, error) { return void{}, nil }))
-	v4.Protocol = "nfs4"
 	srv, err := core.NewServer(d, nfsSettings(allVersions), core.Listener{
-		Services: []string{"nfs"}, Network: "tcp", Protocol: protocol.New(protocol.Tables{V4: v4}),
+		Services: []string{"nfs"}, Network: "tcp",
+		Protocol: protocol.New(protocol.Tables{V4: tables(d).V4}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -580,10 +555,7 @@ func TestAConnectionKeepsTheRangeItWasAcceptedWith(t *testing.T) {
 		srv := serve(t, d, nfsSettings(allVersions))
 		before := dial(t, srv)
 		v2 := func(xid uint32) []byte { return call(xid, progNFS, 2, 0, none) }
-		if got, want := ask(t, before, v2(10)), accepted(10, progMismatch, 3, 4); !bytes.Equal(
-			got,
-			want,
-		) {
+		if got, want := ask(t, before, v2(10)), accepted(10, progMismatch, 3, 4); !bytes.Equal(got, want) {
 			t.Fatalf("NFS v2 before answered %x, want %x", got, want)
 		}
 		if err := srv.Reconfigure(t.Context(), nfsSettings(only4)); err != nil {
@@ -596,6 +568,7 @@ func TestAConnectionKeepsTheRangeItWasAcceptedWith(t *testing.T) {
 			call, want []byte
 		}{
 			{"MOUNT after", after, call(11, progMount, 3, 0, none), accepted(11, progUnavail)},
+			{"NFS v3 after", after, call(12, progNFS, 3, 0, none), accepted(12, progMismatch, 4, 4)},
 			{"NFS v2 before", before, v2(13), accepted(13, progMismatch, 3, 4)},
 		} {
 			if got := ask(t, tc.c, tc.call); !bytes.Equal(got, tc.want) {
@@ -631,11 +604,7 @@ func TestTwoAdaptersServeTheirOwnRanges(t *testing.T) {
 		low, high uint32
 	}{{cw, 3, 4}, {dial(t, narrow), 4, 4}, {cw, 3, 4}} {
 		xid := uint32(20 + i)
-		got := ask(t, tc.c, call(xid, progNFS, 2, 0, none))
-
-		want := accepted(xid, progMismatch, tc.low, tc.high)
-
-		if !bytes.Equal(got, want) {
+		if got, want := ask(t, tc.c, call(xid, progNFS, 2, 0, none)), accepted(xid, progMismatch, tc.low, tc.high); !bytes.Equal(got, want) {
 			t.Errorf("call %d: NFS v2 answered %x, want %x", i, got, want)
 		}
 	}
@@ -660,53 +629,175 @@ func TestTwoAdaptersServeTheirOwnRanges(t *testing.T) {
 func TestEachTableMapsCoresRefusals(t *testing.T) {
 	adaptertest.CheckLeaks(t, nil)
 	// accept is an RPC accept state's status, as the header stage encodes it:
-	// 1 in the two high bits.
+	// 1 in the two high bits; auth an AUTH_ERROR's, 3 in them.
 	accept := func(state uint32) core.Status { return core.Status(1<<30 | state) }
-	// The nfsstat4 values, from RFC 7530 section 13 and RFC 8881 section 15.
+	auth := func(stat uint32) core.Status {
+		return core.Status(3<<30 | stat)
+	}
+	// The nfsstat4 values, from RFC 7530 section 13 and RFC 8881 section 15,
+	// and the auth_stat of AUTH_TOOWEAK from RFC 5531 section 9.
 	const (
 		serverFault  = 10006 // NFS3ERR_SERVERFAULT and NFS4ERR_SERVERFAULT
 		notSupp      = 10004 // NFS4ERR_NOTSUPP
 		resource     = 10018 // NFS4ERR_RESOURCE
+		moved        = 10019 // NFS4ERR_MOVED
+		noFileHandle = 10020 // NFS4ERR_NOFILEHANDLE
 		badXDR       = 10036 // NFS4ERR_BADXDR
 		opIllegal    = 10044 // NFS4ERR_OP_ILLEGAL
 		repTooBig    = 10066 // NFS4ERR_REP_TOO_BIG
 		tooManyOps   = 10070 // NFS4ERR_TOO_MANY_OPS
+		authTooWeak  = 5     // AUTH_TOOWEAK
 		compoundProc = 1
 	)
 	ts := tables(adapter.Deps{})
 	members := ts.V4.Ops[compoundProc].Members
 	other := errors.New("an error no row names")
+	// A wrapped refusal, the error a row maps through errors.Is.
+	wrapped := func(err error) error {
+		return errors.Join(err, other)
+	}
 	for _, tc := range []struct {
-		name  string
-		table *core.OpTable
-		err   error
-		minor core.Version
-		want  core.Status
+		name    string
+		table   *core.OpTable
+		err     error
+		op      *core.Op // an operation a row names: nil where none does
+		minor   core.Version
+		want    core.Status
+		noreply bool // true sends nothing: no reply at all
 	}{
-		{"NFSv3's decode", ts.V3, core.ErrDecode, 0, accept(garbageArgs)},
-		{"NFSv3's fault", ts.V3, other, 0, serverFault},
-		{"NFSv4's not supported", ts.V4, core.ErrNotSupported, 0, accept(procUnavail)},
-		{"NFSv4's decode", ts.V4, core.ErrDecode, 1, accept(garbageArgs)},
-		{"NFSv4's fault", ts.V4, other, 1, serverFault},
-		{"NFSv4's minor version", ts.V4, core.ErrVersion, 3, nfs4ErrMinorVersMismatch},
-		{"NFSv4.0's cap", ts.V4, core.ErrTooLong, 0, resource},
-		{"NFSv4.1's cap", ts.V4, core.ErrTooLong, 1, tooManyOps},
-		{"NFSv4.2's cap", ts.V4, core.ErrTooLong, 2, tooManyOps},
-		{"NFSv4.0's reply too big", ts.V4, core.ErrReplyTooBig, 0, resource},
-		{"NFSv4.1's reply too big", ts.V4, core.ErrReplyTooBig, 1, repTooBig},
-		{"NFSv4.2's reply too big", ts.V4, core.ErrReplyTooBig, 2, repTooBig},
-		{"an NFSv4.0 member's decode", members, core.ErrDecode, 0, badXDR},
-		{"an NFSv4.2 member's decode", members, core.ErrDecode, 2, badXDR},
-		{"an NFSv4 member no row serves", members, core.ErrNotSupported, 1, notSupp},
-		{"an NFSv4 member its minor version lacks", members, core.ErrVersion, 0, opIllegal},
-		{"an NFSv4 member's fault", members, other, 1, serverFault},
-		{"MOUNT's decode", ts.Mount, core.ErrDecode, 0, accept(garbageArgs)},
-		{"MOUNT's fault", ts.Mount, other, 0, accept(systemErr)},
-		{"NLM's fault", ts.NLM, other, 0, accept(systemErr)},
-		{"NSM's fault", ts.NSM, other, 0, accept(systemErr)},
+		{"NFSv3's decode", ts.V3, core.ErrDecode, nil, 0, accept(garbageArgs), false},
+		{"NFSv3's fault", ts.V3, other, nil, 0, serverFault, false},
+		{"NFSv3's not supported", ts.V3, core.ErrNotSupported, nil, 0, accept(procUnavail), false},
+		{"NFSv3's not last", ts.V3, core.ErrNotLast, nil, 0, serverFault, false},
+		{"NFSv3's too many pending", ts.V3, core.ErrTooManyPending, nil, 0, serverFault, false},
+		{"NFSv3's cancelled", ts.V3, core.ErrCancelled, nil, 0, serverFault, false},
+		{"NFSv3's failed logon", ts.V3, wrapped(vfs.ErrLogonFailure), nil, 0, serverFault, false},
+		{"NFSv3's wrong security", ts.V3, vfs.ErrWrongSecurity, nil, 0, auth(authTooWeak), false},
+		{"NFSv3's moved", ts.V3, core.ErrMoved, nil, 0, 0, true},
+		{"NFSv3's draining", ts.V3, core.ErrDraining, nil, 0, 0, true},
+		{"NFSv4's not supported", ts.V4, core.ErrNotSupported, nil, 0, accept(procUnavail), false},
+		{"NFSv4's decode", ts.V4, core.ErrDecode, nil, 1, accept(garbageArgs), false},
+		{"NFSv4's fault", ts.V4, other, nil, 1, serverFault, false},
+		{"NFSv4's minor version", ts.V4, core.ErrVersion, nil, 3, nfs4ErrMinorVersMismatch, false},
+		{"NFSv4's not last", ts.V4, core.ErrNotLast, nil, 1, serverFault, false},
+		{"NFSv4's too many pending", ts.V4, core.ErrTooManyPending, nil, 1, serverFault, false},
+		{"NFSv4's cancelled", ts.V4, core.ErrCancelled, nil, 1, serverFault, false},
+		{"NFSv4's failed logon", ts.V4, wrapped(vfs.ErrLogonFailure), nil, 1, serverFault, false},
+		{"NFSv4's moved", ts.V4, core.ErrMoved, nil, 1, 0, true},
+		{"NFSv4's draining", ts.V4, core.ErrDraining, nil, 1, 0, true},
+		{"NFSv4.0's cap", ts.V4, core.ErrTooLong, nil, 0, resource, false},
+		{"NFSv4.1's cap", ts.V4, core.ErrTooLong, nil, 1, tooManyOps, false},
+		{"NFSv4.2's cap", ts.V4, core.ErrTooLong, nil, 2, tooManyOps, false},
+		{"NFSv4.0's reply too big", ts.V4, core.ErrReplyTooBig, nil, 0, resource, false},
+		{"NFSv4.1's reply too big", ts.V4, core.ErrReplyTooBig, nil, 1, repTooBig, false},
+		{"NFSv4.2's reply too big", ts.V4, core.ErrReplyTooBig, nil, 2, repTooBig, false},
+		{"an NFSv4.0 member's decode", members, core.ErrDecode, nil, 0, badXDR, false},
+		{"an NFSv4.2 member's decode", members, core.ErrDecode, nil, 2, badXDR, false},
+		{"an NFSv4 member no row serves", members, core.ErrNotSupported, nil, 1, notSupp, false},
+		{
+			"an NFSv4 member its minor version lacks", members, core.ErrVersion,
+			nil, 0, opIllegal, false,
+		},
+		{"an NFSv4 member's fault", members, other, nil, 1, serverFault, false},
+		{"an NFSv4 member's not last", members, core.ErrNotLast, nil, 1, serverFault, false},
+		{
+			"an NFSv4 member's too many pending", members, core.ErrTooManyPending,
+			nil, 1, serverFault, false,
+		},
+		{
+			"an NFSv4 member's cancelled", members, core.ErrCancelled,
+			nil, 1, serverFault, false,
+		},
+		{
+			"an NFSv4 member's failed logon", members, wrapped(vfs.ErrLogonFailure),
+			nil, 1, serverFault, false,
+		},
+		{
+			"an NFSv4 member's moved over DELEGRETURN", members, core.ErrMoved,
+			&core.Op{Code: 8}, 1, moved, false,
+		},
+		{
+			"an NFSv4 member's moved over SEQUENCE", members, core.ErrMoved,
+			&core.Op{Code: 53}, 1, 0, true,
+		},
+		{"an NFSv4 member's draining", members, core.ErrDraining, nil, 1, 0, true},
+		{
+			"an NFSv4.0 member with no filehandle", members, core.ErrNoFH,
+			nil, 0, noFileHandle, false,
+		},
+		{
+			"an NFSv4.1 member with no filehandle", members, core.ErrNoFH,
+			nil, 1, noFileHandle, false,
+		},
+		{
+			"an NFSv4.2 member with no filehandle", members, core.ErrNoFH,
+			nil, 2, noFileHandle, false,
+		},
+		{"MOUNT's decode", ts.Mount, core.ErrDecode, nil, 0, accept(garbageArgs), false},
+		{"MOUNT's fault", ts.Mount, other, nil, 0, accept(systemErr), false},
+		{
+			"MOUNT's not supported", ts.Mount, core.ErrNotSupported,
+			nil, 0, accept(procUnavail), false,
+		},
+		{"MOUNT's not last", ts.Mount, core.ErrNotLast, nil, 0, accept(systemErr), false},
+		{
+			"MOUNT's too many pending", ts.Mount, core.ErrTooManyPending,
+			nil, 0, accept(systemErr), false,
+		},
+		{"MOUNT's cancelled", ts.Mount, core.ErrCancelled, nil, 0, accept(systemErr), false},
+		{
+			"MOUNT's failed logon", ts.Mount, wrapped(vfs.ErrLogonFailure),
+			nil, 0, accept(systemErr), false,
+		},
+		{
+			"MOUNT's wrong security", ts.Mount, vfs.ErrWrongSecurity,
+			nil, 0, auth(authTooWeak), false,
+		},
+		{"MOUNT's moved", ts.Mount, core.ErrMoved, nil, 0, 0, true},
+		{"MOUNT's draining", ts.Mount, core.ErrDraining, nil, 0, 0, true},
+		{"NLM's decode", ts.NLM, core.ErrDecode, nil, 0, accept(garbageArgs), false},
+		{"NLM's fault", ts.NLM, other, nil, 0, accept(systemErr), false},
+		{"NLM's not supported", ts.NLM, core.ErrNotSupported, nil, 0, accept(procUnavail), false},
+		{"NLM's not last", ts.NLM, core.ErrNotLast, nil, 0, accept(systemErr), false},
+		{
+			"NLM's too many pending", ts.NLM, core.ErrTooManyPending,
+			nil, 0, accept(systemErr), false,
+		},
+		{"NLM's cancelled", ts.NLM, core.ErrCancelled, nil, 0, accept(systemErr), false},
+		{
+			"NLM's failed logon", ts.NLM, wrapped(vfs.ErrLogonFailure),
+			nil, 0, accept(systemErr), false,
+		},
+		{"NLM's wrong security", ts.NLM, vfs.ErrWrongSecurity, nil, 0, auth(authTooWeak), false},
+		{"NLM's moved", ts.NLM, core.ErrMoved, nil, 0, 0, true},
+		{"NLM's draining", ts.NLM, core.ErrDraining, nil, 0, 0, true},
+		{"NSM's decode", ts.NSM, core.ErrDecode, nil, 0, accept(garbageArgs), false},
+		{"NSM's fault", ts.NSM, other, nil, 0, accept(systemErr), false},
+		{"NSM's not supported", ts.NSM, core.ErrNotSupported, nil, 0, accept(procUnavail), false},
+		{"NSM's not last", ts.NSM, core.ErrNotLast, nil, 0, accept(systemErr), false},
+		{
+			"NSM's too many pending", ts.NSM, core.ErrTooManyPending,
+			nil, 0, accept(systemErr), false,
+		},
+		{"NSM's cancelled", ts.NSM, core.ErrCancelled, nil, 0, accept(systemErr), false},
+		{
+			"NSM's failed logon", ts.NSM, wrapped(vfs.ErrLogonFailure),
+			nil, 0, accept(systemErr), false,
+		},
+		{"NSM's wrong security", ts.NSM, vfs.ErrWrongSecurity, nil, 0, auth(authTooWeak), false},
+		{"NSM's moved", ts.NSM, core.ErrMoved, nil, 0, 0, true},
+		{"NSM's draining", ts.NSM, core.ErrDraining, nil, 0, 0, true},
 	} {
-		if got, _, _ := tc.table.Errors.Map(tc.err, nil, tc.minor); got != tc.want {
-			t.Errorf("%s: %#x, want %#x", tc.name, uint32(got), uint32(tc.want))
+		if got, replied, _ := tc.table.Errors.Map(tc.err, tc.op, tc.minor); got != tc.want ||
+			tc.noreply == replied {
+			t.Errorf(
+				"%s: %#x, replied %v, want %#x replying %v",
+				tc.name,
+				uint32(got),
+				replied,
+				uint32(tc.want),
+				!tc.noreply,
+			)
 		}
 	}
 }
