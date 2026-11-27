@@ -216,11 +216,18 @@ func against[T any, P generated[T]](hand func(*xr, uint32) T) func(*testing.T, [
 		if err := P(&got).EncodeWire(v, &out); err != nil {
 			t.Fatalf("%T at %d: a decoded value does not encode: %v", got, v, err)
 		}
-		if max := P(&got).MaxWire(v); len(out.B) > max {
-			t.Fatalf("%T at %d: encoded to %d bytes, past MaxWire's %d", got, v, len(out.B), max)
+		var flat []byte
+		for _, part := range out.AppendBuffers(nil) {
+			flat = append(flat, part...)
 		}
-		r = &xr{b: out.B}
-		if again := hand(r, v); r.bad || r.at != len(out.B) || !reflect.DeepEqual(again, got) {
+		if max := P(&got).MaxWire(v); len(flat) > max {
+			t.Fatalf("%T at %d: encoded to %d bytes, past MaxWire's %d", got, v, len(flat), max)
+		}
+		// A value that attached a segment borrows it: give it back, so the
+		// fuzz seeds do not stack up.
+		out.Release()
+		r = &xr{b: flat}
+		if again := hand(r, v); r.bad || r.at != len(flat) || !reflect.DeepEqual(again, got) {
 			t.Fatalf("%T at %d: its encoding reads back as\n  %+v\nnot\n  %+v", got, v, again, got)
 		}
 	}
@@ -236,6 +243,29 @@ var targets = []func(*testing.T, []byte, uint32){
 	against[PostOpFH](readPostOpFH),
 	against[Write4Args](readWrite4Args),
 	against[Sample](readSample),
+	against[Segmented](readSegmented),
+}
+
+// readSegmented reads a READ reply's shape by hand: an eof, and the data's
+// opaque as the record's bytes, held as a segment does (RFC 4506 section
+// 4.9; RFC 20 section 5.3).
+func readSegmented(r *xr, v uint32) Segmented {
+	var s Segmented
+	switch eof := r.word(); eof {
+	case 0:
+	case 1:
+		s.EOF = true
+	default:
+		r.bad = true
+		return s
+	}
+	n := r.word()
+	if n > 1<<20 {
+		r.bad = true
+		return s
+	}
+	s.Data = &resources.Buf{B: r.next(int(n))}
+	return s
 }
 
 // FuzzCodec decodes an input's bytes past its first two as the struct its
@@ -245,7 +275,7 @@ var targets = []func(*testing.T, []byte, uint32){
 // every golden vector and the capture's calls.
 func FuzzCodec(f *testing.F) {
 	kinds := map[reflect.Type]byte{}
-	for i, c := range []any{SetClientIDArgs{}, SetattrArgs{}, ACL{}, OpenClaim{}, SetTime{}, PostOpFH{}, Write4Args{}, Sample{}} {
+	for i, c := range []any{SetClientIDArgs{}, SetattrArgs{}, ACL{}, OpenClaim{}, SetTime{}, PostOpFH{}, Write4Args{}, Sample{}, Segmented{}} {
 		kinds[reflect.TypeOf(c)] = byte(i)
 	}
 	for _, c := range vectors(f) {

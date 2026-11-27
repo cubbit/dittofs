@@ -89,6 +89,8 @@ func vectors(t testing.TB) []struct {
 		{"codec-post-op-fh-absent", 0, &PostOpFH{}},
 		{"codec-write-args", 0, &Write4Args{StateID: stateID(1), Offset: 4 << 30, Stable: 2, Data: []byte("hello")}},
 		{"codec-void", 0, &Void{}},
+		{"codec-segmented", 0, &Segmented{EOF: true, Data: &resources.Buf{B: []byte("segment")}}},
+		{"codec-segmented", 0, &Segmented{EOF: true, Data: &resources.Buf{B: []byte("segment")}}},
 		{"codec-sample-v0", 0, &sample},
 		{"codec-sample-v1", 1, &sampleV1},
 	}
@@ -112,9 +114,14 @@ func TestCodecGoldenVectors(t *testing.T) {
 			if err := c.want.EncodeWire(c.v, &out); err != nil {
 				t.Fatal(err)
 			}
-			if !bytes.Equal(out.B, b) {
-				t.Errorf("encoded\n  %x\nwant\n  %x", out.B, b)
+			var flat []byte
+			for _, part := range out.AppendBuffers(nil) {
+				flat = append(flat, part...)
 			}
+			if !bytes.Equal(flat, b) {
+				t.Errorf("encoded\n  %x\nwant\n  %x", flat, b)
+			}
+			out.Release()
 		})
 	}
 }

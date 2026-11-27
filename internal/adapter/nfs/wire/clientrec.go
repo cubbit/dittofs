@@ -91,7 +91,7 @@ func AppendClientRec(dst []byte, r *ClientRec) ([]byte, error) {
 	}
 
 	e := Encoder{B: append(dst, ClientRecVersion)}
-	r.encodeXDR(&e, 0)
+	r.encodeXDR(&e, nil, 0)
 
 	if e.Err != nil {
 		return dst, fmt.Errorf("%w: %v", ErrRecCorrupt, e.Err)

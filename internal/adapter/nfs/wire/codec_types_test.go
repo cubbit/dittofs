@@ -1,5 +1,7 @@
 package wire_test
 
+import "github.com/cubbit/dittofs/pkg/resources"
+
 //go:generate go run ./gen -o codec_gen_test.go codec_types_test.go
 
 // The structs the codec's suite is written against (RFC 20 section 5.4): NFS's
@@ -125,6 +127,15 @@ type Write4Args struct {
 // Void is NULL's arguments and result (RFC 7530 section 15.1): void, no bytes
 // (RFC 4506 section 4.16).
 type Void struct{}
+
+// Segmented is READ4resok's shape for the codec's suite (RFC 7530 section
+// 16.23): its data a segment of the reply the generated encoder lends
+// through Attach, never copied in (RFC 20 section 5.3), and the decoder
+// reads as the record's bytes.
+type Segmented struct {
+	EOF  bool
+	Data *resources.Buf `xdr:"max=1048576"`
+}
 
 // Sample is no protocol's: a fixed-length array of three uint32, a bool, a
 // string and an array whose vectors sit at their bounds, and a field on the

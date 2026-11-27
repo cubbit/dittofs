@@ -18,7 +18,7 @@ func (x *SetClientIDArgs) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(SetClientIDArgs)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -32,9 +32,9 @@ func (x *SetClientIDArgs) decodeXDR(d *wire.Decoder, v uint32) {
 	x.CallbackIdent = d.Uint32()
 }
 
-func (x *SetClientIDArgs) encodeXDR(e *wire.Encoder, v uint32) {
-	x.Client.encodeXDR(e, v)
-	x.Callback.encodeXDR(e, v)
+func (x *SetClientIDArgs) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
+	x.Client.encodeXDR(e, out, v)
+	x.Callback.encodeXDR(e, out, v)
 	e.Uint32(x.CallbackIdent)
 }
 
@@ -62,7 +62,7 @@ func (x *ClientID) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(ClientID)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -75,7 +75,7 @@ func (x *ClientID) decodeXDR(d *wire.Decoder, v uint32) {
 	x.ID = d.Opaque(1024)
 }
 
-func (x *ClientID) encodeXDR(e *wire.Encoder, v uint32) {
+func (x *ClientID) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
 	e.Fixed(x.Verifier[:])
 	e.Opaque(x.ID, 1024)
 }
@@ -100,7 +100,7 @@ func (x *CBClient) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(CBClient)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -113,9 +113,9 @@ func (x *CBClient) decodeXDR(d *wire.Decoder, v uint32) {
 	x.Location.decodeXDR(d, v)
 }
 
-func (x *CBClient) encodeXDR(e *wire.Encoder, v uint32) {
+func (x *CBClient) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
 	e.Uint32(x.Program)
-	x.Location.encodeXDR(e, v)
+	x.Location.encodeXDR(e, out, v)
 }
 
 func (*CBClient) MaxWire(v uint32) int {
@@ -140,7 +140,7 @@ func (x *NetAddr) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(NetAddr)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -153,7 +153,7 @@ func (x *NetAddr) decodeXDR(d *wire.Decoder, v uint32) {
 	x.Addr = d.String(64)
 }
 
-func (x *NetAddr) encodeXDR(e *wire.Encoder, v uint32) {
+func (x *NetAddr) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
 	e.String(x.NetID, 16)
 	e.String(x.Addr, 64)
 }
@@ -178,7 +178,7 @@ func (x *SetattrArgs) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(SetattrArgs)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -191,9 +191,9 @@ func (x *SetattrArgs) decodeXDR(d *wire.Decoder, v uint32) {
 	x.Attrs.decodeXDR(d, v)
 }
 
-func (x *SetattrArgs) encodeXDR(e *wire.Encoder, v uint32) {
-	x.StateID.encodeXDR(e, v)
-	x.Attrs.encodeXDR(e, v)
+func (x *SetattrArgs) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
+	x.StateID.encodeXDR(e, out, v)
+	x.Attrs.encodeXDR(e, out, v)
 }
 
 func (*SetattrArgs) MaxWire(v uint32) int {
@@ -219,7 +219,7 @@ func (x *StateID) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(StateID)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -232,7 +232,7 @@ func (x *StateID) decodeXDR(d *wire.Decoder, v uint32) {
 	d.Fixed(x.Other[:])
 }
 
-func (x *StateID) encodeXDR(e *wire.Encoder, v uint32) {
+func (x *StateID) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
 	e.Uint32(x.Seqid)
 	e.Fixed(x.Other[:])
 }
@@ -257,7 +257,7 @@ func (x *FAttr) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(FAttr)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -275,7 +275,7 @@ func (x *FAttr) decodeXDR(d *wire.Decoder, v uint32) {
 	x.List = d.Opaque(4096)
 }
 
-func (x *FAttr) encodeXDR(e *wire.Encoder, v uint32) {
+func (x *FAttr) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
 	e.Count(len(x.Mask), 4)
 	for i0 := range x.Mask {
 		e.Uint32(x.Mask[i0])
@@ -303,7 +303,7 @@ func (x *ACL) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(ACL)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -320,10 +320,10 @@ func (x *ACL) decodeXDR(d *wire.Decoder, v uint32) {
 	}
 }
 
-func (x *ACL) encodeXDR(e *wire.Encoder, v uint32) {
+func (x *ACL) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
 	e.Count(len(x.ACEs), 65536)
 	for i0 := range x.ACEs {
-		x.ACEs[i0].encodeXDR(e, v)
+		x.ACEs[i0].encodeXDR(e, out, v)
 	}
 }
 
@@ -348,7 +348,7 @@ func (x *ACE) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(ACE)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -363,7 +363,7 @@ func (x *ACE) decodeXDR(d *wire.Decoder, v uint32) {
 	x.Who = d.String(1024)
 }
 
-func (x *ACE) encodeXDR(e *wire.Encoder, v uint32) {
+func (x *ACE) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
 	e.Uint32(x.Type)
 	e.Uint32(x.Flag)
 	e.Uint32(x.AccessMask)
@@ -392,7 +392,7 @@ func (x *OpenClaim) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(OpenClaim)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -420,7 +420,7 @@ func (x *OpenClaim) decodeXDR(d *wire.Decoder, v uint32) {
 	}
 }
 
-func (x *OpenClaim) encodeXDR(e *wire.Encoder, v uint32) {
+func (x *OpenClaim) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
 	e.Uint32(uint32(x.Claim))
 	switch {
 	case x.Claim == 0:
@@ -428,12 +428,12 @@ func (x *OpenClaim) encodeXDR(e *wire.Encoder, v uint32) {
 	case x.Claim == 1:
 		e.Uint32(x.DelegateType)
 	case x.Claim == 2:
-		x.DelegateCur.encodeXDR(e, v)
+		x.DelegateCur.encodeXDR(e, out, v)
 	case x.Claim == 3:
 		e.String(x.FileDelegatePrev, 255)
 	case x.Claim == 4 && v >= 1:
 	case x.Claim == 5 && v >= 1:
-		x.DelegateStateID.encodeXDR(e, v)
+		x.DelegateStateID.encodeXDR(e, out, v)
 	case x.Claim == 6 && v >= 1:
 	default:
 		e.NoArm(uint32(x.Claim))
@@ -469,7 +469,7 @@ func (x *DelegateCur) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(DelegateCur)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -482,8 +482,8 @@ func (x *DelegateCur) decodeXDR(d *wire.Decoder, v uint32) {
 	x.File = d.String(255)
 }
 
-func (x *DelegateCur) encodeXDR(e *wire.Encoder, v uint32) {
-	x.StateID.encodeXDR(e, v)
+func (x *DelegateCur) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
+	x.StateID.encodeXDR(e, out, v)
 	e.String(x.File, 255)
 }
 
@@ -509,7 +509,7 @@ func (x *SetTime) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(SetTime)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -526,11 +526,11 @@ func (x *SetTime) decodeXDR(d *wire.Decoder, v uint32) {
 	}
 }
 
-func (x *SetTime) encodeXDR(e *wire.Encoder, v uint32) {
+func (x *SetTime) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
 	e.Uint32(x.How)
 	switch {
 	case x.How == 1:
-		x.Time.encodeXDR(e, v)
+		x.Time.encodeXDR(e, out, v)
 	default:
 	}
 }
@@ -557,7 +557,7 @@ func (x *NFSTime) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(NFSTime)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -570,7 +570,7 @@ func (x *NFSTime) decodeXDR(d *wire.Decoder, v uint32) {
 	x.NSeconds = d.Uint32()
 }
 
-func (x *NFSTime) encodeXDR(e *wire.Encoder, v uint32) {
+func (x *NFSTime) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
 	e.Uint64(uint64(x.Seconds))
 	e.Uint32(x.NSeconds)
 }
@@ -595,7 +595,7 @@ func (x *PostOpFH) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(PostOpFH)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -610,10 +610,10 @@ func (x *PostOpFH) decodeXDR(d *wire.Decoder, v uint32) {
 	}
 }
 
-func (x *PostOpFH) encodeXDR(e *wire.Encoder, v uint32) {
+func (x *PostOpFH) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
 	e.Bool(x.Handle != nil)
 	if x.Handle != nil {
-		x.Handle.encodeXDR(e, v)
+		x.Handle.encodeXDR(e, out, v)
 	}
 }
 
@@ -638,7 +638,7 @@ func (x *FH3) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(FH3)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -650,7 +650,7 @@ func (x *FH3) decodeXDR(d *wire.Decoder, v uint32) {
 	x.Data = d.Opaque(64)
 }
 
-func (x *FH3) encodeXDR(e *wire.Encoder, v uint32) {
+func (x *FH3) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
 	e.Opaque(x.Data, 64)
 }
 
@@ -673,7 +673,7 @@ func (x *Write4Args) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(Write4Args)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -688,8 +688,8 @@ func (x *Write4Args) decodeXDR(d *wire.Decoder, v uint32) {
 	x.Data = d.Opaque(1048576)
 }
 
-func (x *Write4Args) encodeXDR(e *wire.Encoder, v uint32) {
-	x.StateID.encodeXDR(e, v)
+func (x *Write4Args) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
+	x.StateID.encodeXDR(e, out, v)
 	e.Uint64(x.Offset)
 	e.Uint32(uint32(x.Stable))
 	e.Opaque(x.Data, 1048576)
@@ -719,7 +719,7 @@ func (x *Void) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(Void)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -730,7 +730,7 @@ func (x *Void) EncodeWire(v uint32, out *resources.Buf) error {
 func (x *Void) decodeXDR(d *wire.Decoder, v uint32) {
 }
 
-func (x *Void) encodeXDR(e *wire.Encoder, v uint32) {
+func (x *Void) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
 }
 
 func (*Void) MaxWire(v uint32) int {
@@ -739,6 +739,50 @@ func (*Void) MaxWire(v uint32) int {
 
 func (x *Void) IsZero() bool {
 	return true
+}
+
+func (x *Segmented) DecodeWire(b []byte, v uint32) (int, error) {
+	d := wire.Decoder{B: b}
+	x.decodeXDR(&d, v)
+	return d.N, d.Err
+}
+
+func (x *Segmented) EncodeWire(v uint32, out *resources.Buf) error {
+	if x == nil {
+		x = new(Segmented)
+	}
+	e := wire.Encoder{B: out.B}
+	x.encodeXDR(&e, out, v)
+	if e.Err != nil {
+		return e.Err
+	}
+	out.B = e.B
+	return nil
+}
+
+func (x *Segmented) decodeXDR(d *wire.Decoder, v uint32) {
+	x.EOF = d.Bool()
+	x.Data = &resources.Buf{B: d.Opaque(1048576)}
+}
+
+func (x *Segmented) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
+	e.Bool(x.EOF)
+	e.Count(len(x.Data.B), 1048576)
+	out.B = e.B
+	out.Attach(x.Data)
+	e.B = out.B
+	if p := (4 - len(x.Data.B)%4) % 4; p != 0 {
+		e.B = append(e.B, make([]byte, p)...)
+	}
+}
+
+func (*Segmented) MaxWire(v uint32) int {
+	return 1048584
+}
+
+func (x *Segmented) IsZero() bool {
+	return !x.EOF &&
+		x.Data == nil
 }
 
 func (x *Sample) DecodeWire(b []byte, v uint32) (int, error) {
@@ -752,7 +796,7 @@ func (x *Sample) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(Sample)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -777,7 +821,7 @@ func (x *Sample) decodeXDR(d *wire.Decoder, v uint32) {
 	}
 }
 
-func (x *Sample) encodeXDR(e *wire.Encoder, v uint32) {
+func (x *Sample) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
 	for i0 := range x.Words {
 		e.Uint32(x.Words[i0])
 	}
