@@ -38,9 +38,9 @@ verification).
 
 - **Lucian's paths are read-only for the shared account**: `/srv/cubbit/journal-bench`
   (his checkout), `/var/tmp/dittofs-perf/journal` (his run folders),
-  `/var/tmp/dittofs-journal-bench` (his bench data dir), `/run/lock/dittofs-run.lock`
-  (his run lock — do not flock it). Never write, move, or prune anything there. His
-  artifacts ARE world-readable: fetch and read them freely.
+  `/var/tmp/dittofs-journal-bench` (his bench data dir). Never write, move, or prune
+  anything there. His artifacts ARE world-readable: fetch and read them freely. The one
+  shared EXCEPTION: `/run/lock/dittofs-run.lock` is there to be TAKEN (below).
 - **`BENCH_EXPORT_DEST` stays unset**: the scheduled runs export nothing and hand runs must
   keep it that way — results stay on the box and in your local archive, nowhere else.
 - **Check what's running first**: `pgrep -a -f "fio|bench-run|conformance"` and `uptime`
@@ -50,21 +50,24 @@ verification).
 
 ## The host's schedule (what to schedule around)
 
-`cat /etc/cron.d/dittofs-dt /etc/cron.d/dittofs-journal-bench` on the box confirms; as of
-2026-11-27:
+The owner's authoritative schedule lives in the infra repo (cubbit/dittofs-test-infra,
+docs/schedule.md); `cat /etc/cron.d/dittofs-dt /etc/cron.d/dittofs-journal-bench` on the
+box confirms the local half. As of 2026-11-27 (all CET):
 
-| When (CET) | What | Duration |
+| When | What | Holds the lock for |
 | --- | --- | --- |
+| daily 06:00 and 18:00 | scenario canary | ~30 min (waits up to 1 h) |
+| daily 18:45 | the nightly (perf night, then system scenarios); ends ~22:10 lately | hours |
+| Tue+Fri 08:30 | journal bench full (30 GiB rows) | up to 3.5 h (~1 h 45 m typical) |
+| Mon–Fri 13:00 | journal bench small | a few minutes |
+| any time a develop/main head lands | its check | ~25 min (skips and retries in 10 min) |
 | daily 12:50 | prune of old run folders | seconds |
-| Mon–Fri 13:00 | scheduled small run | ~20–25 min |
-| Tue+Fri 08:30 | scheduled full run (30 GiB rows) | ~1 h 45 m |
-| daily 18:45 | dt scenario night (18:00 canary first) | hours |
 
-Quiet windows run roughly 12:10–12:50, 13:30–17:30, and after ~21:00 — and on Tue/Fri
-mornings, after the 08:30 full finishes, about 10:15–12:10 is quiet too (the list is
-illustrative, not exhaustive: trust `pgrep` and `uptime` over it). Nothing that writes
-should overlap the 18:45 night; a full must start early enough to end before the 18:00
-canary.
+Quiet windows: about **22:15–05:45**, **07:00–12:45** (minus 08:30–~11:30 on Tue and
+Fri), and **13:15–17:45**. The list is illustrative, not exhaustive — trust `pgrep` and
+`uptime` over it. A hand run still holding the lock at **19:45 costs that night's
+nightly**: the nightly waits up to 1 h for the lock and then runs anyway, so plan hand
+runs to be done before the evening's work begins.
 
 ## Hand runs (the issued account's own runner, no Lucian involvement)
 
@@ -84,7 +87,7 @@ export BENCH_CHECKOUT=$HOME/journal-bench
 export BENCH_RUN_ROOT=$HOME/journal-runs
 export DITTOFS_BENCH_DIR=$HOME/journal-bench-data
 export BENCH_NOT_AFTER=$(date -d "today 14:30" +%s)   # full: the 18:00 canary minus its 3.5 h worst case
-nohup sh $HOME/journal-bench/test/journal/bench-run.sh full > $HOME/full-run.log 2>&1 &
+nohup flock -w 3600 /run/lock/dittofs-run.lock sh $HOME/journal-bench/test/journal/bench-run.sh full > $HOME/full-run.log 2>&1 &
 ```
 
 `BENCH_NOT_AFTER` differs per kind: the script's own budget is the 18:00 canary minus the
@@ -93,8 +96,21 @@ about 14:30 and a small after about 17:40. The scheduled wrapper computes exactl
 (`test/journal/bench-run.sh`'s header); a start cutoff later than this, or the expected
 run time, risks running a still-quiet-looking load into the canary.
 
-`BENCH_LOCK` unset means no lock — the hand run is its own collision manager; the script's
-quiet-load gate (waits for load < 4) still helps. The script fetches the branch tip and
+**The lock.** Every run, scheduled or by hand, takes `/run/lock/dittofs-run.lock`; the
+shared account can take it (no sudo). A hand run wraps the whole thing:
+
+```
+flock -w 3600 /run/lock/dittofs-run.lock sh $HOME/journal-bench/test/journal/bench-run.sh full
+```
+
+The scheduled runs hold it, your run waits for them, they wait for yours; the kernel
+releases it the moment the run ends, even on a crash, so it is never left stuck. A run
+that gives up waiting is skipped and logged, never retried. **Say it in the team channel
+first**, then take the lock, and prefer the quiet windows. And leave `BENCH_LOCK` unset
+precisely BECAUSE the wrapper holds the lock: `bench-run.sh` flocks `BENCH_LOCK` itself,
+so setting it to the same file makes the script's inner flock wait behind the wrapper's
+outer one — a deadlock on yourself. The script's quiet-load gate (waits for load < 4)
+still helps on top. The script fetches the branch tip and
 detaches at it (a run always measures the merged tip, never a stale tree), builds with the
 repo's pinned toolchain (auto-downloads on first use), and prunes only within its own
 root. Small ≈ 20–25 min; full ≈ 1 h 45 m.
