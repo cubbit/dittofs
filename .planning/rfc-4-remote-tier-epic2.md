@@ -168,7 +168,8 @@ subtasks and tests can cite them.
 | R15 | The body is read once, as a stream of exactly the size declared before its first byte; a stream shorter or longer than its size fails the put with `ErrInvalid`, as E4's guard does | MUST | §4.3, §6 R5; [epic 4](rfc-4-remote-tier-epic4.md) D8 | T2.1 |
 | R16 | A put is verified: where the store's `Checksum` is not None, a `sum` that does not match the body is `ErrCorrupt`, and nothing is stored, as on a service that checks the put (D5) | MUST | §4.1, §4.3, §4.8, §7.1 | T2.1 |
 | R17 | `Put` returns `nil` only once the block is stored; a put under an existing name replaces it | MUST | §4.3, §6 R5 | T2.1 |
-| R18 | A get returns exactly the bytes of its range, or of the whole block for the zero `Range`, or an error: a range that extends past the end is `ErrInvalid`, an absent block is `ErrNotFound`, and a get after a put of the name returned `nil` returns the block | MUST | §4.1, §4.4, §6 R6 | T2.1 |
+| R18 | A get returns exactly the bytes of its range, or of the whole block for the zero `Range`, or an error: a range that extends past the end is `ErrInvalid`, a range of no bytes other than the zero `Range` (a `Len` of zero or less) is `ErrInvalid` before any request, an absent block is `ErrNotFound`, and a get after a put of the name returned `nil` returns the block | MUST | §4.1, §4.4, §6 R6 | T2.1 |
+| R18a | Every call after `Close` but `Close` is refused with `ErrInvalid`; `Close` again returns `nil` | MUST | §4.1, §4.10 | T2.1 |
 | R19 | `Delete` returns one result per name, in order; an absent name's is `nil`; a batch of any size is accepted | MUST | §4.5, §6 R7 | T2.2 |
 | R20 | A listing yields every block that exists for the whole walk exactly once, in ascending name order from `after`, with its size and the time it was stored, at most `n` per call, and skips a key under the block namespace that is not a block name and counts it, in the load record (D7) | MUST | §4.6, §6 R8 | T2.2, T2.5 |
 | R21 | The store reads time only through the clock it is given, a `now func() time.Time` (D4) that the node's one clock and a test's virtual clock supply as they are; it defines no private clock and never calls `time.Now` | MUST | RFC index "Test harness" item 1; RFC 3 §1.4 | T2.1, T2.2 |
@@ -364,7 +365,9 @@ pkg/remote/memory/
     func Run(t *testing.T, open func(t *testing.T) Subject)
     ```
 
-    with the rows of R5 and R6, and a get of a never-put name (R18). Consumed by the in-memory
+    with the rows of R5 and R6, a get of a never-put name (R18), a get of a range of no bytes (R18),
+    and a put and a get after `Close` (R18a). Each of the last two rows is held by a store broken in
+    exactly its rule, which fails that row and no other. Consumed by the in-memory
     store's suite run here, E4's T4.8 and E5's T5.4.
   - `memory/store.go`:
 
