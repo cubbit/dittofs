@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -51,7 +52,15 @@ type reader struct {
 // read_timeout, and in counts its bytes of the direction the connection's
 // series resolved.
 func newReader(nc net.Conn, f Framer, recv *resources.BufPool, key netip.Addr, timeout time.Duration, in adder) *reader {
-	return &reader{nc: nc, framer: f, recv: recv, key: key, timeout: timeout, in: in, buf: make([]byte, readBufLen)}
+	return &reader{
+		nc:      nc,
+		framer:  f,
+		recv:    recv,
+		key:     key,
+		timeout: timeout,
+		in:      in,
+		buf:     make([]byte, readBufLen),
+	}
 }
 
 // Read returns the next record: its body, in a receive Buf reserved at its
@@ -263,10 +272,37 @@ func (c *Conn) readLoop() {
 			c.Close(fmt.Errorf("%w: %w", errAtRead, err))
 			return
 		}
-		c.p.serve(rec)
+
+		up := c.p.serve(rec)
 		// The record is served: only the buffer's leftovers are held now.
 		c.rd.served()
+		c.upMu.Lock()
+		after := c.afterServed
+		c.upMu.Unlock()
+
+		if after != nil {
+			after()
+		}
+
+		if err := c.awaitUpgrade(up); err != nil {
+			return
+		}
 	}
+}
+
+// takeHeld copies the bytes read and not consumed: what crypto/tls reads first
+// once the connection switched to TLS. It leaves the buffer as it is, for the
+// reader's goroutine, which is not reading, to reset in swap.
+func (r *reader) takeHeld() []byte {
+	return bytes.Clone(r.buf[r.off:r.n])
+}
+
+// swap makes nc the connection the reader reads from, its buffer's bytes
+// having gone to nc first.
+func (r *reader) swap(nc net.Conn) {
+	r.nc = nc
+	r.off, r.n = 0, 0
+	r.held.Store(false)
 }
 
 // waitForRoom waits while the writer's queue is at its bound, so a client that

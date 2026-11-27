@@ -31,6 +31,7 @@ var testOnlyEnvNames = []string{
 	"DITTOFS_BENCH_SCALE",
 	"DITTOFS_MIT_PAC_OUT",
 	"DITTOFS_FDB_OWN_CLUSTER",
+	"DITTOFS_FUZZ_TRACE",
 }
 
 // notExportedEnvNames are the allowed names the start, the key provider and

@@ -1,6 +1,7 @@
 package testproto
 
 import (
+	"crypto/tls"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -30,6 +31,7 @@ type Msg struct {
 	Handle  vfs.Handle // OpPutFH
 	Name    string     // OpCreate, OpPark
 	Target  uint64     // OpNotify, OpCancel: the message ID of the request it names; a Cancel carries it as its own ID, and its ID is ignored
+	Mode    uint8      // OpUpgrade: 0 succeeds, 1 answers not supported, 2 answers no reply
 	Payload []byte     // OpEcho
 	Offset  int64      // OpRead
 	Count   uint32     // OpRead: the bytes asked
@@ -129,6 +131,8 @@ func appendArguments(b []byte, m Msg) []byte {
 		b = append(b, m.Name...)
 	case OpNotify:
 		b = binary.BigEndian.AppendUint64(b, m.Target)
+	case OpUpgrade:
+		b = append(b, m.Mode)
 	case OpRead:
 		b = binary.BigEndian.AppendUint64(b, uint64(m.Offset))
 		b = binary.BigEndian.AppendUint32(b, m.Count)
@@ -152,6 +156,7 @@ func appendArguments(b []byte, m Msg) []byte {
 // balance its replies grant.
 type Client struct {
 	c       net.Conn
+	tls     *tls.Conn    // the connection once StartTLS switched it; nil before
 	balance atomic.Int64 // one goroutine may Send while another is in Recv
 }
 
@@ -174,6 +179,95 @@ func (c *Client) Send(msgs ...Msg) error {
 	}
 
 	return nil
+}
+
+// SendRaw writes b as it is, in one write: records back to back, or whatever
+// bytes a test needs on the wire at once. It charges no credits.
+func (c *Client) SendRaw(b []byte) error {
+	if _, err := c.c.Write(b); err != nil {
+		return fmt.Errorf("testproto: send: %w", err)
+	}
+
+	return nil
+}
+
+// StartTLS runs the client's handshake over the connection, which carries every
+// later message once it ends. Where msgs are given they are written in the same
+// write as the ClientHello, ahead of it, and the reply to them, sent in
+// plaintext, is read before the handshake goes on, and returned.
+func (c *Client) StartTLS(cfg *tls.Config, msgs ...Msg) ([]Reply, error) {
+	pc := &prefixConn{Conn: c.c}
+	if len(msgs) > 0 {
+		pc.prefix = Append(nil, msgs...)
+		pc.reading = true
+	}
+
+	tc := tls.Client(pc, cfg)
+	if err := tc.Handshake(); err != nil {
+		return nil, fmt.Errorf("testproto: handshake: %w", err)
+	}
+
+	c.c, c.tls = tc, tc
+
+	return pc.replies, pc.err
+}
+
+// TLS is the state of the client's TLS connection; the zero state before
+// StartTLS.
+func (c *Client) TLS() tls.ConnectionState {
+	if c.tls == nil {
+		return tls.ConnectionState{}
+	}
+
+	return c.tls.ConnectionState()
+}
+
+// prefixConn is the socket as a handshake starts over it: the bytes of prefix
+// go ahead of the first write, and, while reading is set, the first read first
+// takes the plaintext record that answers them off the socket.
+type prefixConn struct {
+	net.Conn
+	prefix  []byte
+	reading bool
+	replies []Reply
+	err     error
+}
+
+func (p *prefixConn) Write(b []byte) (int, error) {
+	if len(p.prefix) == 0 {
+		return p.Conn.Write(b)
+	}
+
+	out := append(p.prefix, b...)
+	p.prefix = nil
+	n, err := p.Conn.Write(out)
+
+	return max(n-(len(out)-len(b)), 0), err
+}
+
+func (p *prefixConn) Read(b []byte) (int, error) {
+	if p.reading {
+		p.reading = false
+
+		var prefix [lengthLen]byte
+		if _, err := io.ReadFull(p.Conn, prefix[:]); err != nil {
+			return 0, err
+		}
+
+		n, _, err := framer{}.BodyLen(prefix[:])
+		if err != nil {
+			return 0, err
+		}
+
+		body := make([]byte, n)
+		if _, err := io.ReadFull(p.Conn, body); err != nil {
+			return 0, err
+		}
+
+		p.replies, p.err = openReplies(body)
+	}
+
+	return p.Conn.Read(b)
 }
 
 // Recv reads one record and returns its replies, an interim included, adding
@@ -265,7 +359,10 @@ func Results(body []byte) (Head, []Result, error) {
 	}
 	tagLen := int(binary.BigEndian.Uint32(body[4:]))
 	if tagLen > len(body)-12 {
-		return Head{}, nil, fmt.Errorf("testproto: a compound's tag of %d bytes past its reply", tagLen)
+		return Head{}, nil, fmt.Errorf(
+			"testproto: a compound's tag of %d bytes past its reply",
+			tagLen,
+		)
 	}
 	status := Head{Status: core.Status(binary.BigEndian.Uint32(body)), Tag: body[8 : 8+tagLen]}
 	n := int(binary.BigEndian.Uint32(body[8+tagLen:]))
@@ -287,7 +384,10 @@ func Results(body []byte) (Head, []Result, error) {
 		body = body[resultHead+length:]
 	}
 	if len(body) > 0 {
-		return status, results, fmt.Errorf("testproto: %d bytes after a compound's last result", len(body))
+		return status, results, fmt.Errorf(
+			"testproto: %d bytes after a compound's last result",
+			len(body),
+		)
 	}
 
 	return status, results, nil

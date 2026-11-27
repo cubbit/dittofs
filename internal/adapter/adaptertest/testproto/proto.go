@@ -2,6 +2,7 @@ package testproto
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -103,6 +104,40 @@ type Protocol struct {
 	errs   *core.ErrorTable // the stages' own, for a refusal before Route returns a table
 	call   vfs.Call         // what every request's Call starts from
 	hold   *atomic.Int64    // version 2's hold, in nanoseconds; shared by every copy of p
+	up     *Upgrade         // what an Upgrade's Decode asks; nil: it asks nothing
+
+	// echoSeen, if not nil, receives the payload of each Echo the handler
+	// serves, before the reply; a test's observer, nil otherwise.
+	echoSeen func([]byte)
+}
+
+// Upgrade is what an OpUpgrade message's header stage asks of its connection:
+// a Conn.StartTLS under Config.
+type Upgrade struct {
+	Config *tls.Config
+	Gate   func()      // if not nil, the Decode calls it and waits for it to return, before it asks
+	Result func(error) // if not nil, receives what StartTLS returned, on the reader's goroutine
+	Twice  bool        // the Decode asks a second time, and Result receives both answers
+}
+
+// WithUpgrade is p with its OpUpgrade messages asking for TLS as u says.
+func (p *Protocol) WithUpgrade(u Upgrade) *Protocol {
+	q := *p
+	q.up = &u
+
+	return &q
+}
+
+// WithEchoSeen is p whose Echo handler hands f the payload of every Echo it
+// serves, before the reply: a test tells a served Echo from one the
+// connection never read. The copy rebuilds its own tables, whose Echo handler
+// closes over the copy, not over p.
+func (p *Protocol) WithEchoSeen(f func([]byte)) *Protocol {
+	q := *p
+	q.echoSeen = f
+	q.tables = sync.OnceValue(q.build)
+
+	return &q
 }
 
 // SetHold makes version 2 hold a request the service answered ErrDelay for d
@@ -166,13 +201,18 @@ func (p *Protocol) Tables() []*core.OpTable {
 func (p *Protocol) NewConn(c *core.Conn) core.Stages {
 	cs := &connState{p: p, c: c}
 	if p.bare {
-		return core.Stages{Header: headerCodec{}, Router: &router{cs}, Errors: p.errs, Protocol: Name}
+		return core.Stages{
+			Header:   headerCodec{c: c, up: p.up},
+			Router:   &router{cs},
+			Errors:   p.errs,
+			Protocol: Name,
+		}
 	}
 	credits := newFlow()
 	cs.replay = &replay{pool: p.pool, flow: credits, m: map[replayKey][]byte{}}
 
 	return core.Stages{
-		Header:     headerCodec{flow: credits},
+		Header:     headerCodec{flow: credits, c: c, up: p.up},
 		Router:     &router{cs},
 		Errors:     p.errs,
 		Security:   security{},
@@ -235,7 +275,8 @@ func (rt *router) request(h core.Header, prev *core.Request) (*core.Request, err
 	// A connection keeps what it negotiated: a request in a version above it
 	// is refused, one below it is served by that version's table.
 	if n := rt.cs.version.Load(); n != 0 && uint32(v) > n {
-		return nil, fmt.Errorf("testproto: version %d on a connection that negotiated %d: %w", v, n, core.ErrVersion)
+		return nil, fmt.Errorf("testproto: version %d on a connection that negotiated %d: %w",
+			v, n, core.ErrVersion)
 	}
 	var s *state
 	if prev != nil && h.Related() {
@@ -261,10 +302,15 @@ func (rt *router) request(h core.Header, prev *core.Request) (*core.Request, err
 		}
 	}
 	s.sid, s.tid = hd.session(), hd.tree()
-	r := &core.Request{Call: rt.cs.p.call, Version: v, Level: core.NeedsNothing, Conn: rt.cs.c, State: s}
+
+	r := &core.Request{
+		Call: rt.cs.p.call, Version: v, Level: core.NeedsNothing,
+		Conn: rt.cs.c, State: s,
+	}
 	if rt.cs.version.Load() != 0 {
 		r.Level = core.NeedsNegotiated
-		if carried, expires, hasTree := rt.cs.p.reg.look(s.sid, rt.cs, s.tid); carried && !rt.cs.p.bare {
+		if carried, expires, hasTree := rt.cs.p.reg.look(s.sid, rt.cs, s.tid); carried &&
+			!rt.cs.p.bare {
 			r.Level = core.NeedsSession
 			if hasTree {
 				r.Level = core.NeedsTree
@@ -347,7 +393,10 @@ func (p *Protocol) errorRows(holds bool) []core.ErrorRow {
 		// Version 1 answers ErrMoved with a move signal on Create, its one
 		// operation that uses the current filehandle, as NFSv4 does; its other
 		// operations, and version 2, have none and send no reply (RFC 20 §3.1).
-		rows = append(rows, core.ErrorRow{Err: core.ErrMoved, Ops: []uint32{OpCreate}, Status: StatusMoved})
+		rows = append(
+			rows,
+			core.ErrorRow{Err: core.ErrMoved, Ops: []uint32{OpCreate}, Status: StatusMoved},
+		)
 	}
 
 	return rows
@@ -374,30 +423,101 @@ func (p *Protocol) ops() []*core.Op {
 	both := core.Range{First: 1, Last: 2}
 
 	return []*core.Op{
-		{Code: OpSession, Name: "Session", Versions: both, Needs: core.NeedsNegotiated, Expired: true, Decode: core.Bind(
-			decodeSession, noBound[sessionReq], nil, nil, nil, p.session, encodeNothing[empty])},
-		{Code: OpLogoff, Name: "Logoff", Versions: both, Needs: core.NeedsSession, Role: core.RoleRelease, Expired: true, Decode: core.Bind(
-			noArguments[empty], noBound[empty], nil, nil, nil, p.logoff, encodeNothing[empty])},
+		{
+			Code:     OpSession,
+			Name:     "Session",
+			Versions: both,
+			Needs:    core.NeedsNegotiated,
+			Expired:  true,
+			Decode: core.Bind(
+				decodeSession, noBound[sessionReq], nil, nil, nil, p.session, encodeNothing[empty]),
+		},
+		{
+			Code:     OpLogoff,
+			Name:     "Logoff",
+			Versions: both,
+			Needs:    core.NeedsSession,
+			Role:     core.RoleRelease,
+			Expired:  true,
+			Decode: core.Bind(
+				noArguments[empty], noBound[empty], nil, nil, nil, p.logoff, encodeNothing[empty]),
+		},
 		{Code: OpTree, Name: "Tree", Versions: both, Needs: core.NeedsSession, Decode: core.Bind(
 			noArguments[empty], noBound[empty], nil, nil, nil, p.tree, encodeNothing[empty])},
-		{Code: OpNotify, Name: "Notify", Versions: both, Needs: core.NeedsNothing, Decode: core.Bind(
-			decodeTarget, noBound[targetReq], nil, nil, nil, p.notify, encodeNothing[empty])},
-		{Code: OpViolate, Name: "Violate", Versions: both, Needs: core.NeedsNothing, Decode: core.Bind(
-			noArguments[empty], noBound[empty], nil, nil, nil, violate, encodeNothing[empty])},
-		{Code: OpPark, Name: "Park", Versions: core.Range{First: 2, Last: 2}, Needs: core.NeedsTree | core.NeedsFH, Decode: core.Bind(
-			decodeName, nameBound, nil, nil, nil, p.park, encodeName)},
-		{Code: OpNegotiate, Name: "Negotiate", Versions: both, Needs: core.NeedsNothing, Decode: core.Bind(
-			noArguments[empty], noBound[empty], nil, nil, nil, negotiate, encodeVersion)},
-		{Code: OpPutFH, Name: "PutFH", Versions: both, Needs: core.NeedsTree, Role: core.RoleContext, Decode: core.Bind(
-			decodeHandle, noBound[handleReq], nil, nil, handleOf, putFH, encodeNothing[empty])},
+		{
+			Code:     OpNotify,
+			Name:     "Notify",
+			Versions: both,
+			Needs:    core.NeedsNothing,
+			Decode: core.Bind(
+				decodeTarget, noBound[targetReq], nil, nil, nil, p.notify, encodeNothing[empty]),
+		},
+		{
+			Code:     OpViolate,
+			Name:     "Violate",
+			Versions: both,
+			Needs:    core.NeedsNothing,
+			Decode: core.Bind(
+				noArguments[empty], noBound[empty], nil, nil, nil, violate, encodeNothing[empty]),
+		},
+		{
+			Code:     OpPark,
+			Name:     "Park",
+			Versions: core.Range{First: 2, Last: 2},
+			Needs:    core.NeedsTree | core.NeedsFH,
+			Decode: core.Bind(
+				decodeName, nameBound, nil, nil, nil, p.park, encodeName),
+		},
+		{
+			Code:     OpNegotiate,
+			Name:     "Negotiate",
+			Versions: both,
+			Needs:    core.NeedsNothing,
+			Decode: core.Bind(
+				noArguments[empty], noBound[empty], nil, nil, nil, negotiate, encodeVersion),
+		},
+		{
+			Code:     OpPutFH,
+			Name:     "PutFH",
+			Versions: both,
+			Needs:    core.NeedsTree,
+			Role:     core.RoleContext,
+			Decode: core.Bind(
+				decodeHandle, noBound[handleReq], nil, nil, handleOf, putFH, encodeNothing[empty]),
+		},
 		{Code: OpEcho, Name: "Echo", Versions: both, Needs: core.NeedsNothing, Decode: core.Bind(
-			decodeEcho, echoBound, nil, echoRole, nil, echo, encodeEcho)},
-		{Code: OpCreate, Name: "Create", Versions: both, Needs: core.NeedsTree | core.NeedsFH, Cacheable: true, Decode: core.Bind(
-			decodeName, noBound[nameReq], p.inSession, nil, nil, p.create, encodeNothing[empty])},
+			decodeEcho, echoBound, nil, echoRole, nil, p.echo, encodeEcho)},
+		{
+			Code:      OpCreate,
+			Name:      "Create",
+			Versions:  both,
+			Needs:     core.NeedsTree | core.NeedsFH,
+			Cacheable: true,
+			Decode: core.Bind(
+				decodeName,
+				noBound[nameReq],
+				p.inSession,
+				nil,
+				nil,
+				p.create,
+				encodeNothing[empty],
+			),
+		},
 		{Code: OpPanic, Name: "Panic", Versions: both, Needs: core.NeedsNothing, Decode: core.Bind(
 			noArguments[empty], noBound[empty], nil, nil, nil, panics, encodeNothing[empty])},
-		{Code: OpRead, Name: "Read", Versions: both, Needs: core.NeedsTree | core.NeedsFH, Decode: core.Bind(
-			decodeRead, readBound, nil, nil, nil, p.read, encodeRead)},
+		{
+			Code: OpUpgrade, Name: "Upgrade", Versions: both, Needs: core.NeedsNothing,
+			Decode: core.Bind(
+				decodeMode, noBound[modeReq], nil, nil, nil, upgrade, encodeNothing[empty]),
+		},
+		{
+			Code:     OpRead,
+			Name:     "Read",
+			Versions: both,
+			Needs:    core.NeedsTree | core.NeedsFH,
+			Decode: core.Bind(
+				decodeRead, readBound, nil, nil, nil, p.read, encodeRead),
+		},
 	}
 }
 
@@ -486,6 +606,16 @@ func decodeEcho(b []byte, _ core.Version, req *echoReq) (int, error) {
 func echoBound(_ *core.Request, req *echoReq, _ int) (int, bool) { return len(req.payload), true }
 
 func echoRole(_ *core.Request, req *echoReq) core.Role { return req.role }
+
+// echo hands the payload it serves to the test that asked to see it, then
+// answers it as the Echo handler does.
+func (p *Protocol) echo(ctx context.Context, r *core.Request, req *echoReq) (*[]byte, error) {
+	if p.echoSeen != nil {
+		p.echoSeen(req.payload)
+	}
+
+	return echo(ctx, r, req)
+}
 
 // echo answers the payload, errNotFailure where the payload is NotFailure,
 // and errNotFailure joined to vfs.ErrIO where it is JoinedIO.
@@ -634,6 +764,34 @@ func encodeRead(rep *readRep, _ core.Version, out *resources.Buf) error {
 	out.B = append(append(out.B, eof), rep.data...)
 
 	return nil
+}
+
+// modeReq is Upgrade's arguments: how its call ends.
+type modeReq struct {
+	mode uint8
+}
+
+func decodeMode(b []byte, _ core.Version, req *modeReq) (int, error) {
+	if len(b) < 1 {
+		return 0, errors.New("testproto: an Upgrade with no mode")
+	}
+
+	req.mode = b[0]
+
+	return 1, nil
+}
+
+// upgrade answers mode 0 with success, mode 1 with an error its table maps
+// (not supported) and mode 2 with the one its table answers no reply.
+func upgrade(_ context.Context, _ *core.Request, req *modeReq) (*empty, error) {
+	switch req.mode {
+	case 1:
+		return nil, core.ErrNotSupported
+	case 2:
+		return nil, core.ErrDraining
+	}
+
+	return &empty{}, nil
 }
 
 // panics is Panic's handler.
