@@ -1,6 +1,6 @@
 # Assign Reviewers: request one maintainer on every new PR, picked at random
 # from the author's own reviewer pool. An author outside the table, or a pool
-# emptied by an exclusion, falls back to any maintainer but the author.
+# emptied by an exclusion, falls back to any known maintainer but the author.
 #
 # A stacked PR, one whose base branch is the head of another open PR, instead
 # inherits the people of the PR below it: its author, whoever is still
@@ -87,9 +87,11 @@ jobs:
             pool="${pool/llucian-iws/}"
           fi
 
-          # Maintainers are the repo's collaborators with write access.
-          [ -n "${pool// /}" ] || pool=$(gh api "repos/$REPO/collaborators" --paginate \
-            --jq '.[] | select(.permissions.push) | .login' | grep -vx "$AUTHOR")
+          # An author outside the team (Dependabot, an outside contributor) or an
+          # emptied pool falls back to the known maintainers, not to every
+          # collaborator with write access: that list also holds bots and people
+          # who do not review here.
+          [ -n "${pool// /}" ] || pool=$(printf '%s\n' $known | grep -vx "$AUTHOR")
 
           pick=$(printf '%s\n' $pool | shuf -n 1)
           gh pr edit "$PR" --repo "$REPO" --add-reviewer "$pick"
