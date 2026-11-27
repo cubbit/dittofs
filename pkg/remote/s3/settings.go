@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Settings is a store configuration's settings (RFC 13 Appendix B) that the S3
@@ -20,8 +22,13 @@ type Settings struct {
 	Endpoint string `json:"endpoint" class:"live" location:"store"`
 	// Region is the region requests are signed for.
 	Region string `json:"region" class:"live"`
-	// TrustRoots is a PEM bundle of certificates that replace the system's
-	// roots when the client verifies the endpoint; "" is the system's roots.
+	// TrustRoots is a PEM bundle of CA certificates the client verifies the
+	// endpoint against. The client dials only HTTPS and never skips
+	// verification, so set it when the endpoint's certificate comes from a CA
+	// the system does not trust: a private or company CA, or a self-signed
+	// test endpoint. It replaces the system's roots for this store rather than
+	// adding to them, so it holds every CA the endpoint's chain needs; "" uses
+	// the system's roots.
 	TrustRoots string `json:"trust_roots" class:"live"`
 	// Bucket is the bucket every object of the store lives in.
 	Bucket string `json:"bucket" class:"bound" location:"store"`
@@ -71,8 +78,9 @@ func (s NamespaceSettings) Validate() error {
 }
 
 // checkEndpoint refuses an endpoint that is not an https URL with a host
-// (RFC 4 C.3), and one carrying user info, which would put a credential in a
-// setting that is no secret (RFC 13 §7). Its error never holds the endpoint,
+// (RFC 4 C.3), and one carrying user info, a query or a fragment: user info or
+// a pre-signed query would put a credential in a setting that is no secret
+// (RFC 13 §7), and the client builds every request URL from the endpoint. Its error never holds the endpoint,
 // which url.Parse's would.
 func checkEndpoint(endpoint string) error {
 	u, err := url.Parse(endpoint)
@@ -85,16 +93,26 @@ func checkEndpoint(endpoint string) error {
 		return errors.New("names no host")
 	case u.User != nil:
 		return errors.New("holds user info")
+	case u.RawQuery != "" || u.ForceQuery:
+		return errors.New("holds a query")
+	case strings.Contains(endpoint, "#"):
+		return errors.New("holds a fragment")
 	}
 	return nil
 }
 
 // checkPrefix refuses a prefix that is empty or does not end in "/", so a
 // namespace's keys never run on into a sibling's (ns/ beside ns2/). It does not
-// judge whether one prefix nests inside another (a/ beside a/b/).
+// judge whether one prefix nests inside another (a/ beside a/b/). It also
+// refuses a prefix that is not valid UTF-8 or holds a control character.
 func checkPrefix(prefix string) error {
-	if !strings.HasSuffix(prefix, "/") {
+	switch {
+	case !strings.HasSuffix(prefix, "/"):
 		return errors.New(`does not end in "/"`)
+	case !utf8.ValidString(prefix):
+		return errors.New("is not valid UTF-8, which an S3 key must be")
+	case strings.ContainsFunc(prefix, unicode.IsControl):
+		return errors.New("holds a control character")
 	}
 	return nil
 }

@@ -61,6 +61,10 @@ func TestSettingsValidate(t *testing.T) {
 		{"no scheme", func(s *Settings) { s.Endpoint = "s3.example.com" }, []string{"endpoint", "not https"}},
 		{"host-less endpoint", func(s *Settings) { s.Endpoint = "https://" }, []string{"endpoint", "no host"}},
 		{"endpoint with user info", func(s *Settings) { s.Endpoint = "https://user:pw@s3.example.com" }, []string{"endpoint", "user info"}},
+		{"endpoint with a query", func(s *Settings) { s.Endpoint = "https://s3.example.com/?X-Amz-Signature=s" }, []string{"endpoint", "query"}},
+		{"endpoint with an empty query", func(s *Settings) { s.Endpoint = "https://s3.example.com?" }, []string{"endpoint", "query"}},
+		{"endpoint with a fragment", func(s *Settings) { s.Endpoint = "https://s3.example.com/#f" }, []string{"endpoint", "fragment"}},
+		{"endpoint with an empty fragment", func(s *Settings) { s.Endpoint = "https://s3.example.com#" }, []string{"endpoint", "fragment"}},
 		{"port only endpoint", func(s *Settings) { s.Endpoint = "https://:443" }, []string{"endpoint", "no host"}},
 		{"unparsable endpoint", func(s *Settings) { s.Endpoint = "https://exa mple.com\x7f" }, []string{"endpoint", "not a URL"}},
 		{"empty endpoint", func(s *Settings) { s.Endpoint = "" }, []string{"endpoint", "not https"}},
@@ -129,7 +133,7 @@ func TestSettingsValidateStorageClass(t *testing.T) {
 
 // No refusal of the endpoint prints it, since url.Parse's error would.
 func TestSettingsValidateEndpointNotPrinted(t *testing.T) {
-	for _, endpoint := range []string{"https://user:hunter2@host", "https://hunter2\x7f", "https://:hunter2@"} {
+	for _, endpoint := range []string{"https://user:hunter2@host", "https://host/?sig=hunter2", "https://host/#hunter2", "https://hunter2\x7f", "https://:hunter2@"} {
 		s := good()
 		s.Endpoint = endpoint
 		err := s.Validate()
@@ -168,6 +172,10 @@ func TestNamespaceSettingsValidate(t *testing.T) {
 		{"", `prefix: does not end in "/"`},
 		{"ns", `prefix: does not end in "/"`},
 		{"ns/", ""},
+		{"\xffns/", "prefix: is not valid UTF-8"},
+		{"a\x00/", "prefix: holds a control character"},
+		{"a\x7f/", "prefix: holds a control character"},
+		{"caf\u00e9/", ""},
 		{"a/b/", ""},
 	}
 	for _, c := range cases {
