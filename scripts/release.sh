@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Cut a release: bump flake.nix on develop, fast-forward main to it, tag it.
+# A patch of a released line, made on main, is scripts/hotfix.sh instead.
 #
 # Usage: scripts/release.sh X.Y.Z[-rcN]
 #
@@ -20,7 +21,9 @@ git fetch -q origin develop main --tags
 [[ "$(git branch --show-current)" == develop ]] || die "not on develop"
 [[ -z "$(git status --porcelain --untracked-files=no)" ]] || die "tracked files have uncommitted changes"
 [[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/develop)" ]] || die "develop is not in sync with origin/develop"
-git merge-base --is-ancestor origin/main HEAD || die "origin/main is not an ancestor of develop"
+# A hotfix (scripts/hotfix.sh) moves main past develop until its back-merge lands.
+git merge-base --is-ancestor origin/main HEAD ||
+  die "origin/main is not an ancestor of develop: a hotfix was not merged back. Merge it first: git switch --detach origin/develop && git merge -S origin/main (add -s ours if the fix does not apply to develop) && git push origin HEAD:develop"
 ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null || die "tag $tag already exists"
 
 # decision: a release candidate may ship without a changelog section; its notes

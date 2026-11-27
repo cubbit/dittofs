@@ -51,6 +51,7 @@ suites:
       - test/common/known-failures_test.sh
       - test/nfs-mount/nfstest/parse-results_test.sh   # the grader the knfsd baseline keeps
       - test/scenarios/lib/slack_test.sh       # the Slack poster and its daily threads
+      - scripts/hotfix_test.sh                 # hotfix.sh's version and branch checks
       - test/new-package-tests.sh {base}       # a new package carries a test of its own
       # A docs: commit changes only documentation, and no commit credits an AI tool. Both run
       # on pushes too, since planning commits reach develop without a pull request. The PR title
