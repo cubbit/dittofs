@@ -114,7 +114,8 @@ func TestKeys(t *testing.T) {
 }
 
 // Building settings starts no goroutine, keyed or unkeyed. The count is
-// process-wide, so this test never runs in parallel.
+// process-wide, so this test never runs in parallel, and no test in this
+// binary may leave a goroutine running that starts others.
 func TestNewSettingsStartsNoGoroutine(t *testing.T) {
 	sample := []metrics.Sample{{Name: "/sched/goroutines-created:goroutines"}}
 	created := func() uint64 {
@@ -131,7 +132,7 @@ func TestNewSettingsStartsNoGoroutine(t *testing.T) {
 		before := created()
 		for range 100 {
 			if _, err := NewSettings(1<<20, tc.encrypting, tc.chunking, idKey); err != nil {
-				t.Fatal(err)
+				t.Fatalf("%s NewSettings(1 MiB): got %v, want nil", tc.name, err)
 			}
 		}
 		if n := created() - before; n != 0 {

@@ -6,6 +6,8 @@ package params
 // Settings is one namespace's chunking settings: the configured Target, the
 // Min and Max derived from it, the gear table it cuts under and how many top
 // bits of the fingerprint the boundary test reads before Target and from it on.
+// The table is held by pointer, so == tells two values apart by table identity:
+// two values built from the same Target and key are not equal.
 type Settings struct {
 	target, min, max int
 	before, after    int
@@ -20,8 +22,10 @@ type Settings struct {
 // refuses a Target and keys first, so New never sees a refused one; New stays
 // free of hashing so a test builds a value over any table, hand-built or
 // fuzzed. The ceiling is the seal's: code inside pkg/carver can still build a
-// value over a table no key produced, or over a target that is not a power of
-// two, and is trusted not to.
+// value over a table no key produced, or over any target CheckTarget refuses,
+// and is trusted not to. Over such a target the value is wrong, not refused:
+// below 8 the bit counts reach zero or go negative, so every byte passes the
+// test, and from 1<<62 on the loop below never ends.
 //
 // decision: the value holds the two bit counts, never masks, and no start-up
 // check compares a mask with Target. The chunker tests fp>>(64−m) == 0 with m

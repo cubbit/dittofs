@@ -50,11 +50,12 @@ func NewSettings(target int, encrypting bool, chunkingKey, chunkIDKey [32]byte) 
 		return carver.Settings{}, fmt.Errorf("%w: an encrypting namespace with no chunking key", carver.ErrInvalidSettings)
 	}
 
-	if !encrypting {
-		return params.New(target, unkeyedGear()), nil
+	g := unkeyedGear()
+	if encrypting {
+		g = keyedGear(chunkingKey)
 	}
 
-	return params.New(target, keyedGear(chunkingKey)), nil
+	return params.New(target, g), nil
 }
 
 // CheckTarget refuses, with carver.ErrInvalidSettings, a Target that is not a
@@ -80,8 +81,7 @@ func unkeyedGear() *[256]uint64 {
 	ctx.Flags |= guts.FlagRoot
 	out := guts.CompressNode(ctx)
 
-	var iv [8]uint32
-	copy(iv[:], out[:8])
+	iv := [8]uint32(out[:8])
 
 	return gear(guts.CompressChunk(nil, &iv, 0, guts.FlagDeriveKeyMaterial))
 }
@@ -117,7 +117,11 @@ func keyedGear(key [32]byte) *[256]uint64 {
 func gear(n guts.Node) *[256]uint64 {
 	n.Flags |= guts.FlagRoot
 
-	var buf [2 * guts.MaxSIMD * guts.BlockSize]byte
+	// Two calls fill the table only while one fills 1,024 bytes; this fails to
+	// compile if a library version changes that.
+	const _ = uint(guts.MaxSIMD*guts.BlockSize-1024) + uint(1024-guts.MaxSIMD*guts.BlockSize)
+
+	var buf [2048]byte
 	for i := range 2 {
 		n.Counter = uint64(i * guts.MaxSIMD)
 		guts.CompressBlocks((*[guts.MaxSIMD * guts.BlockSize]byte)(buf[i*guts.MaxSIMD*guts.BlockSize:]), n)
