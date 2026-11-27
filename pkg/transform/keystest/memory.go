@@ -1,4 +1,4 @@
-// Package keystest holds every keys.Provider to RFC 5 §3.1: Memory, an
+// Package keystest holds every keys.Provider to RFC 5 §2.5, §2.7 and §3.1: Memory, an
 // in-memory provider for the tests of the chain, the stages and the engine,
 // and Run, the provider suite Memory and every real provider pass.
 package keystest
@@ -15,9 +15,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/transform/keys"
 )
-
-// fingerprintLabel is what a fingerprint MACs under the material (RFC 5 §2.5).
-const fingerprintLabel = "dittofs key check v1"
 
 // slot names one piece of material: the namespace it was given in, its kind
 // and its ID.
@@ -62,7 +59,7 @@ func NewMemory() *Memory {
 // fingerprint is HMAC-SHA256(material, "dittofs key check v1") (RFC 5 §2.5).
 func fingerprint(material []byte) [32]byte {
 	mac := hmac.New(sha256.New, material)
-	mac.Write([]byte(fingerprintLabel))
+	mac.Write([]byte("dittofs key check v1"))
 
 	return [32]byte(mac.Sum(nil))
 }
@@ -71,10 +68,11 @@ func fingerprint(material []byte) [32]byte {
 // the errors keys.Provider names: ErrMaterialUnavailable once its content no
 // longer matches its fingerprint, ErrMaterialDestroyed once it is destroyed.
 //
-// decision: Current of a kind never given in ns is ErrUnknownMaterial, the
-// error Get gives for the same absence, rather than ErrMaterialUnavailable,
-// which names an outage: RFC 5 §3.1 does not say, and the provider suite holds
-// every provider to the same answer. Withdraw this if RFC 5 names another error.
+// decision: Current of a kind never given in ns is ErrUnknownMaterial, as
+// keys.Provider states, the error Get gives for the same absence, rather than
+// ErrMaterialUnavailable, which names an outage. RFC 5 §3.1 is silent on it,
+// and the provider suite holds every provider to the same answer. Withdraw
+// this if RFC 5 names another error.
 func (m *Memory) Current(_ context.Context, ns entity.NamespaceID, kind string) (keys.MaterialID, error) {
 	m.calls.Add(1)
 
@@ -156,9 +154,7 @@ func (m *Memory) Destroy(id keys.MaterialID) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	e := m.entry(id)
-	e.destroyed = true
-	e.content = nil
+	m.entry(id).destroyed = true
 }
 
 // entry returns id's entry, panicking on an ID never given. m.mu must be held.

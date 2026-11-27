@@ -13,7 +13,10 @@ import (
 
 // Harness is a provider under the suite: the provider, and the calls the
 // suite sets it up and reads it through, as Memory's methods of the same names
-// define them. A real provider is adapted to it over its own records.
+// define them. A real provider is adapted to it over its own records, and an
+// adapter that cannot set one up fails the test through t.Fatal on the t
+// newHarness was given. A row gives each ID once, so an adapter may refuse a
+// second Give of one.
 type Harness interface {
 	keys.Provider
 
@@ -47,6 +50,7 @@ type row struct {
 // rows is the suite, in the order Run runs it.
 var rows = []row{
 	{"namespaces", namespaces},
+	{"kinds", kinds},
 	{"current", currentIsLatest},
 	{"unknown", unknown},
 	{"replaced", replaced},
@@ -94,16 +98,10 @@ func isCurrent(ctx context.Context, h Harness, ns entity.NamespaceID, kind strin
 	return served(ctx, h, got, content)
 }
 
-// refused reports whether err is want, and only want of the material errors.
+// refused reports whether err is want.
 func refused(call string, err, want error) error {
 	if !errors.Is(err, want) {
 		return fmt.Errorf("%s: got %v, want %v", call, err, want)
-	}
-
-	for _, other := range []error{keys.ErrUnknownMaterial, keys.ErrMaterialUnavailable, keys.ErrMaterialDestroyed} {
-		if other != want && errors.Is(err, other) {
-			return fmt.Errorf("%s: got %v, which is also %v, want %v alone", call, err, other, want)
-		}
 	}
 
 	return nil
@@ -112,7 +110,8 @@ func refused(call string, err, want error) error {
 // Every call names its namespace (RFC 5 §2.5, §7 T14): two namespaces given a
 // data key under one ID each serve their own, Current of one never names the
 // other's, Get of an ID in a namespace never given it is ErrUnknownMaterial,
-// and Current of a kind given only in another namespace fails. Catches a lookup by ID alone.
+// and Current of a kind given only in another namespace fails. Catches a
+// lookup by ID alone, and one that falls back to another namespace.
 func namespaces(ctx context.Context, h Harness) error {
 	nsA, nsB := namespace(1), namespace(2)
 
@@ -157,6 +156,20 @@ func namespaces(ctx context.Context, h Harness) error {
 	return nil
 }
 
+// A kind is specific to what consumes it, so an ID given as one kind is
+// ErrUnknownMaterial looked up as another (RFC 5 §2.5). Catches a lookup that
+// ignores the kind.
+func kinds(ctx context.Context, h Harness) error {
+	ns := namespace(1)
+	id := h.Give(ns, keys.KindDataKey, "data", materialA)
+
+	asOther := id
+	asOther.Kind = keys.KindChunkIDKey
+	_, err := h.Get(ctx, asOther)
+
+	return refused(fmt.Sprintf("Get of %s %q as %s", keys.KindDataKey, id.ID, keys.KindChunkIDKey), err, keys.ErrUnknownMaterial)
+}
+
 // Current is the material new bodies of a kind use in a namespace (RFC 5
 // §3.1): a second Give of a kind becomes current while the first still reads,
 // and a Give of another kind leaves it current. Catches a provider serving
@@ -199,7 +212,9 @@ func unknown(ctx context.Context, h Harness) error {
 
 // Material whose content no longer matches its recorded fingerprint is
 // refused as ErrMaterialUnavailable, by Get and by Current (RFC 5 §2.5, §2.7,
-// §7 T12). Catches a provider that re-fingerprints what it holds.
+// §7 T12), even when the caller names the new content's fingerprint. Catches
+// a provider that re-fingerprints what it holds, and one that checks the
+// content against the caller's fingerprint.
 func replaced(ctx context.Context, h Harness) error {
 	ns := namespace(1)
 	id := h.Give(ns, keys.KindDataKey, "replaced", materialA)
@@ -207,6 +222,13 @@ func replaced(ctx context.Context, h Harness) error {
 
 	_, err := h.Get(ctx, id)
 	if err := refused(`Get of replaced ID "replaced"`, err, keys.ErrMaterialUnavailable); err != nil {
+		return err
+	}
+
+	asB := id
+	asB.Fingerprint = h.Give(namespace(2), keys.KindChunkingKey, "probe", materialB).Fingerprint
+	_, err = h.Get(ctx, asB)
+	if err := refused(`Get of replaced ID "replaced" naming its new content's fingerprint`, err, keys.ErrMaterialUnavailable); err != nil {
 		return err
 	}
 
@@ -238,26 +260,41 @@ func destroyed(ctx context.Context, h Harness) error {
 }
 
 // Calls rises by exactly one for each Current and each Get, failing calls
-// included, so a test can assert the provider was asked nothing (RFC 5 §8.2
-// T12, T14). Catches a count that skips errors.
+// included, and not at all for Give, Replace or Destroy, so a test can assert
+// the provider was asked nothing across its own setup (RFC 5 §8.2 T12, T14).
+// Catches a count that skips errors, and one that counts setup.
 func calls(ctx context.Context, h Harness) error {
 	ns := namespace(1)
-	id := h.Give(ns, keys.KindDataKey, "counted", materialA)
 	never := keys.MaterialID{Namespace: ns, Kind: keys.KindDataKey, ID: "never-given"}
+
+	before := h.Calls()
+	id := h.Give(ns, keys.KindDataKey, "counted", materialA)
+	gone := h.Give(ns, keys.KindChunkIDKey, "gone", materialB)
+	h.Replace(gone, materialC)
+	h.Destroy(gone)
+
+	if got := int64(h.Calls()) - int64(before); got != 0 {
+		return fmt.Errorf("Calls rose by %d over a Give, a Replace and a Destroy, want 0", got)
+	}
 
 	for _, c := range []struct {
 		name string
+		fail bool
 		call func() error
 	}{
-		{"a Current that succeeds", func() error { _, err := h.Current(ctx, ns, keys.KindDataKey); return err }},
-		{"a Get that succeeds", func() error { _, err := h.Get(ctx, id); return err }},
-		{"a Current that fails", func() error { _, err := h.Current(ctx, ns, keys.KindChunkingKey); return err }},
-		{"a Get that fails", func() error { _, err := h.Get(ctx, never); return err }},
+		{"a Current that succeeds", false, func() error { _, err := h.Current(ctx, ns, keys.KindDataKey); return err }},
+		{"a Get that succeeds", false, func() error { _, err := h.Get(ctx, id); return err }},
+		{"a Current that fails", true, func() error { _, err := h.Current(ctx, ns, keys.KindChunkingKey); return err }},
+		{"a Get that fails", true, func() error { _, err := h.Get(ctx, never); return err }},
 	} {
 		before := h.Calls()
-		_ = c.call()
+		err := c.call()
 
-		if got := h.Calls() - before; got != 1 {
+		if (err != nil) != c.fail {
+			return fmt.Errorf("%s: got error %v", c.name, err)
+		}
+
+		if got := int64(h.Calls()) - int64(before); got != 1 {
 			return fmt.Errorf("Calls rose by %d over %s, want 1", got, c.name)
 		}
 	}
