@@ -1613,6 +1613,117 @@ func TestPassAHandOverRefusedForAnotherRetirementFreesNothing(t *testing.T) {
 	}
 }
 
+// TestPassARefusedHandOverCarriesTheSourceOnce re-creates the hand-over race
+// for a source that holds a carried record: another retirement takes the
+// source's claim in the gap between the unit's release of it and the
+// retirer's ledger claim, so the hand-over is refused after the carry placed
+// and registered its copy, and that retirement lets the claim go without
+// retiring, before the run's next selection. The source's own registration
+// stays until a retirement takes it, so a run that offered the source again
+// would carry the record a second time: two live copies where one is owed,
+// each drawing on the repack reserve. The run must carry it once and leave
+// the source to the retirement that comes later.
+//
+// The pass is built here over the core's own pieces, with a selector of the
+// test's own, so the release can run inside the run's next selection through
+// the selector's snapshot seam. The live reclaim worker races the hook for
+// the claim: either holder refuses the hand-over the same way, so the test
+// asserts the copies, not who held the claim. When the worker retires the
+// whole source before the unit's retirement, the unit answers that the source
+// left the set and the run never offers it again, so the test passes without
+// reaching the skip set: it fails on a double carry whenever a claim refuses
+// the hand-over, which is the order the hook sets up.
+func TestPassARefusedHandOverCarriesTheSourceOnce(t *testing.T) {
+	p := newPassFixture(t)
+	f := p.f
+	file := copyFile(5)
+	tr := f.core.Liveness()
+	rec, _, _, _ := f.plantRemoval(t, copyTag, file, format.KindTruncate, core.ChangeTruncate,
+		core.Extent{Off: 1 << 20}, core.Extent{Off: 1 << 20, Len: math.MaxInt64 - 1<<20}, false)
+	// The unsettled removal registers with the core's tracker, the one its
+	// retirer releases a retired segment's registrations from.
+	tr.Register(rec)
+
+	src := rec.Seg
+
+	f.sealSource(t, file)
+	f.waitSpares(t)
+
+	// held is set once the hook's own claim won; the snapshot seam lets it
+	// go at the run's next selection, and only then, so the hook never
+	// releases a claim the worker holds.
+	var (
+		held  atomic.Bool
+		fired atomic.Bool
+	)
+
+	f.core.Retirer().SetRetireHook(func(id core.SegmentID, _ segment.Reason) {
+		if id != src || !fired.CompareAndSwap(false, true) {
+			return
+		}
+
+		held.Store(f.set.Claim(id))
+	})
+
+	sel := reclaim.NewSelector(f.set, f.ix, f.un, nil, nil)
+	sel.SetAfterSnapshot(func() {
+		if held.CompareAndSwap(true, false) {
+			f.set.Release(src)
+		}
+	})
+	t.Cleanup(func() {
+		if held.Load() {
+			f.set.Release(src)
+		}
+	})
+
+	d := f.core.Durability()
+	cop := reclaim.NewCopier(f.ix, f.counters, f.core.Streams(), f.un, tr, f.core.Domains(), nil,
+		f.corrupt, f.clock, slog.New(slog.DiscardHandler), nil, nil, nil, nil)
+	pass := reclaim.NewPass(reclaim.PassConfig{
+		Selector:   sel,
+		Copier:     cop,
+		Tracker:    tr,
+		Index:      f.ix,
+		Set:        f.set,
+		Durability: d,
+		Durable:    d,
+		Retirer:    f.core.Retirer(),
+	})
+	t.Cleanup(pass.Stop)
+
+	out, err := pass.Run(t.Context(), 1<<20, reclaim.Scope{Segments: []core.SegmentID{src}})
+	if err != nil {
+		t.Fatalf("Run over the source whose hand-over another retirement refused: %v", err)
+	}
+
+	if !fired.Load() {
+		t.Fatal("the hook never fired for the source's hand-over, want it in the race's gap")
+	}
+
+	copies := 0
+
+	for _, r := range f.set.Snapshot() {
+		if r.ID == src {
+			continue
+		}
+
+		at := rec
+		at.Seg = r.ID
+		copies += tr.LivePlacementsOf(at)
+	}
+
+	if copies != 1 {
+		t.Fatalf("live carried copies of the removal record outside its source = %d, want 1: "+
+			"a refused hand-over must not let the run carry the source again", copies)
+	}
+
+	if out.Segments != 1 {
+		t.Fatalf("units the run ran = %d, want 1: "+
+			"the source whose hand-over was refused is offered once per run", out.Segments)
+	}
+}
+
 // TestPassAHandOverAfterAnotherRetirementFinishedFreesNothing pins the other
 // leg of the hand-over race: the other retirement completes whole inside the
 // gap between the unit's claim release and the retirer's ledger claim, so the

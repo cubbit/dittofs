@@ -87,6 +87,9 @@ func TestALossRecordCarriedFromItsSegmentJournalLevel(t *testing.T) {
 	// storage back this early, before any settle covers the marker.
 	f.WaitSpares()
 	f.Advance(2 * journaltest.IdleSealAge)
+	// The seal wait has its own bound: the loss wait above may have spent
+	// most of the first one.
+	deadline = time.Now().Add(backgroundWait)
 	for time.Now().Before(deadline) {
 		if s, ok := segmentInfo(f, loc.Segment); ok && s.Sealed {
 			break
@@ -135,7 +138,17 @@ func TestALossRecordCarriedFromItsSegmentJournalLevel(t *testing.T) {
 	// no more than the copy's header past its last catalogued point —
 	// sits below the idle sealer's threshold and never seals within this
 	// row's window, so no retirement of it can be the settle's proof.
+	// The Retired bit is set in the retirer's hook, before the durable
+	// signal that releases the source's own registration, so the count is
+	// polled, bounded, until it names the one copy. A second carried copy
+	// never leaves without a settle, so it still fails the row here.
+	deadline = time.Now().Add(backgroundWait)
 	regsBefore := f.J.Inspect().LiveRecords()
+	for regsBefore != 1 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+
+		regsBefore = f.J.Inspect().LiveRecords()
+	}
 	if regsBefore != 1 {
 		t.Fatalf("the journal holds %d live registrations before the settle, want the one carried copy: the damaged source's registration retired with its segment above", regsBefore)
 	}
