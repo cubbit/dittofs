@@ -17,7 +17,7 @@ import (
 // bound, however short the body, so a crafted body listing three stages
 // costs two chunk-sized buffers per read; Encode returns a fresh []Encoded,
 // each with a copy of its pinned material, and copies the last output once
-// behind the envelope. Pool the scratch, or take a caller's buffer in the
+// behind the envelope; Decode hands its steps one census view, which escapes. Pool the scratch, or take a caller's buffer in the
 // signatures, when a put or get profile shows these allocations.
 
 // Encode runs the configured transforms in stage order, each under its pinned
@@ -92,11 +92,16 @@ func (a *attempt) Encode(ctx context.Context, dst []byte, hash [32]byte, plain [
 // §3.1); an output above its bound is transform.ErrTooLarge. The first listed
 // step decodes into dst, every other into a buffer of its own, and a result
 // sharing memory with body is copied into dst, so the caller may reuse body.
-// Every error is one of RFC 5 §2.7's five, and no transform's own error
-// crosses it (decodeErr).
-func (c *chain) Decode(ctx context.Context, ns entity.NamespaceID, dst []byte, hash [32]byte, body []byte, limit int, _ []transform.Encoded) ([]byte, error) {
+// A body without a transform the chain requires is refused before any step
+// decodes (required), and each step reaches material only through a view of
+// census in ns (census). Every error is one of RFC 5 §2.7's five, and no
+// transform's own error crosses it (decodeErr).
+func (c *chain) Decode(ctx context.Context, ns entity.NamespaceID, dst []byte, hash [32]byte, body []byte, limit int, listed []transform.Encoded) ([]byte, error) {
 	p, err := c.decode.parseEnvelope(body)
 	if err != nil {
+		return nil, err
+	}
+	if err := c.required(ns, &p); err != nil {
 		return nil, err
 	}
 	var bounds [stages]int
@@ -111,13 +116,14 @@ func (c *chain) Decode(ctx context.Context, ns entity.NamespaceID, dst []byte, h
 		}
 		return append(dst[:0], in...), nil
 	}
+	view := &census{p: c.keys, ns: ns, listed: listed}
 	for i := p.n - 1; i >= 0; i-- {
 		t, bound := p.steps[i], bounds[i]
 		buf := dst[:0]
 		if i > 0 {
 			buf = make([]byte, 0, bound)
 		}
-		out, err := t.Decode(ctx, ns, buf, hash, in, bound, noMaterial{})
+		out, err := t.Decode(ctx, ns, buf, hash, in, bound, view)
 		if err != nil {
 			return nil, decodeErr(ctx, t.ID(), err)
 		}
@@ -165,22 +171,4 @@ func decodeErr(ctx context.Context, id transform.ID, err error) error {
 		}
 	}
 	return fmt.Errorf("%w: decoding with transform %#04x: %s", transform.ErrMalformed, id, err)
-}
-
-// noMaterial is the provider each step's Decode receives: it answers nothing,
-// so a body whose decode needs material fails as transform.ErrMalformed.
-//
-// ponytail: no decode reaches material yet: a body whose decode needs any is
-// ErrMalformed, so an intact encrypted body reads as corrupt, against
-// transform.Chain.Decode's contract for census-listed material. Replace it
-// with a view answering for the material IDs of the block's census in the
-// namespace being read (RFC 5 §2.5) before any codec decodes through it.
-type noMaterial struct{}
-
-func (noMaterial) Current(context.Context, entity.NamespaceID, string) (keys.MaterialID, error) {
-	return keys.MaterialID{}, transform.ErrMalformed
-}
-
-func (noMaterial) Get(context.Context, keys.MaterialID) ([]byte, error) {
-	return nil, transform.ErrMalformed
 }

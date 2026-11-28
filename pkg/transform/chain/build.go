@@ -6,17 +6,21 @@ import (
 	"math"
 	"slices"
 
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/transform"
 	"github.com/cubbit/dittofs/pkg/transform/keys"
 )
 
 // chain is a built transform.Chain: the configured transforms in stage order,
-// the store's decode set, and the provider Pin reads current material from.
+// the store's decode set, the provider Pin reads current material from and a
+// decode's census view asks, and what every body read must carry.
 type chain struct {
-	decode *decodeSet
-	steps  []transform.Transform // the configured transforms, in stage order
-	kinds  [][]string            // each step's Kinds, read once at build
-	keys   keys.Provider
+	decode   *decodeSet
+	steps    []transform.Transform // the configured transforms, in stage order
+	kinds    [][]string            // each step's Kinds, read once at build
+	keys     keys.Provider
+	require  []transform.ID                // Deps.Require, resolved at build
+	encrypts func(entity.NamespaceID) bool // Deps.Encrypts
 }
 
 var _ transform.Chain = (*chain)(nil)
@@ -42,6 +46,7 @@ func (r *registry) newChain(ctx context.Context, cfg []transform.Config, m keys.
 		deps.Logger.ErrorContext(ctx, "chain: the transform chain cannot be built", "transform", name, "reason", err)
 		return nil, err
 	}
+	c.encrypts = deps.Encrypts
 	return c, nil
 }
 
@@ -75,7 +80,8 @@ func (r *registry) assemble(ctx context.Context, cfg []transform.Config, m keys.
 	if unknown != "" {
 		return nil, unknown, fmt.Errorf("chain: transform %q is not registered", unknown)
 	}
-	if _, _, unknown := r.resolve(require); unknown != "" {
+	reqIDs, _, unknown := r.resolve(require)
+	if unknown != "" {
 		return nil, unknown, fmt.Errorf("chain: required transform %q is not registered", unknown)
 	}
 	set, name, err := r.build(ctx, m)
@@ -138,7 +144,7 @@ func (r *registry) assemble(ctx context.Context, cfg []transform.Config, m keys.
 		}
 		steps[i], kinds[i] = t, k
 	}
-	return &chain{decode: set, steps: steps, kinds: kinds, keys: m}, "", nil
+	return &chain{decode: set, steps: steps, kinds: kinds, keys: m, require: reqIDs}, "", nil
 }
 
 // MaxDecodeLen answers from the decode set, never from the configured
