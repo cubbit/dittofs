@@ -12,7 +12,7 @@ import (
 )
 
 // maxEmptyReads is how many reads in a row may return no bytes and no error
-// before Cut gives up on the reader.
+// before Cut fails with io.ErrNoProgress; bufio.Reader uses the same bound.
 const maxEmptyReads = 100
 
 // Cut cuts one unbroken stretch read from r, whose first byte sits at file
@@ -25,9 +25,9 @@ const maxEmptyReads = 100
 // emitted, and consumed says how far Cut cut: how far, from base, the chunks
 // emit accepted reach. A reader that keeps returning no bytes and no error
 // fails it with io.ErrNoProgress. An error from r or emit stops Cut and is
-// returned as it came. A negative base, or a stretch whose next byte would sit past
-// math.MaxInt64, fails it with an error wrapping fs.ErrInvalid, so offsets
-// never overflow.
+// returned as it came. A negative base, or a stretch whose next byte would
+// sit past math.MaxInt64, fails it with an error wrapping fs.ErrInvalid, so
+// offsets never overflow.
 func Cut(r io.Reader, base int64, s carver.Settings, buf []byte, realEnd bool,
 	emit func(carver.Chunk, []byte) error,
 ) (consumed int64, err error) {
@@ -53,10 +53,9 @@ func Cut(r io.Reader, base int64, s carver.Settings, buf []byte, realEnd bool,
 		// is always in view and NextBoundary sees under Max bytes only at the
 		// stretch's end. A buffer of exactly Max moves up to Max bytes per
 		// chunk; a larger one moves less often, which is the caller's to size
-		// (RFC 2 §10.5, at most 2 × Max). A reader that returns no bytes and
-		// no error maxEmptyReads times in a row fails Cut with
-		// io.ErrNoProgress, the bound bufio.Reader's fill uses, so such a
-		// reader is neither taken for the end nor read for ever.
+		// (RFC 2 §10.5, at most 2 × Max). Empty reads are bounded by
+		// maxEmptyReads in a row, so a stalled reader is neither taken for
+		// the end nor read for ever.
 		if !eof && hi-lo < s.Max() {
 			hi = copy(buf, buf[lo:hi])
 			lo = 0
@@ -83,9 +82,9 @@ func Cut(r io.Reader, base int64, s carver.Settings, buf []byte, realEnd bool,
 					return consumed, rerr
 				}
 
-				if k > 0 || eof {
+				if k > 0 {
 					empty = 0
-				} else if empty++; empty == maxEmptyReads {
+				} else if empty++; !eof && empty == maxEmptyReads {
 					return consumed, io.ErrNoProgress
 				}
 			}

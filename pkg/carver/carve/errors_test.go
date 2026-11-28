@@ -3,6 +3,7 @@ package carve_test
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"slices"
 	"testing"
@@ -73,6 +74,16 @@ func checkPrefix(t *testing.T, name string, got, ref []carver.Chunk) {
 	}
 }
 
+// checkClean fails t unless got is the clean run ref, chunk for chunk.
+func checkClean(t *testing.T, name string, got, ref []carver.Chunk) {
+	t.Helper()
+
+	checkPrefix(t, name, got, ref)
+	if len(got) != len(ref) {
+		t.Fatalf("%s: %d chunks, want the clean run's %d", name, len(got), len(ref))
+	}
+}
+
 // emit failing at the third chunk stops Cut with that error, unwrapped, after
 // two chunks; consumed counts those two and not the refused one, so a retry
 // from consumed re-offers the refused chunk's bytes.
@@ -96,9 +107,8 @@ func TestCutStopsOnEmitsError(t *testing.T) {
 	if err != errPlanted {
 		t.Fatalf("Cut with emit failing at chunk 3: err %v, want the planted error itself", err)
 	}
-	checkPrefix(t, "emit failing at chunk 3", got, ref)
-	if len(got) != 3 {
-		t.Fatalf("emit failing at chunk 3: emit saw %d chunks, want 3", len(got))
+	if !slices.Equal(got, ref[:3]) {
+		t.Fatalf("emit failing at chunk 3: emit saw %v, want the clean run's first 3, %v", got, ref[:3])
 	}
 	if want := int64(ref[0].Length) + int64(ref[1].Length); consumed != want {
 		t.Fatalf("emit failing at chunk 3: consumed %d, want %d, the two chunks emit accepted", consumed, want)
@@ -106,8 +116,9 @@ func TestCutStopsOnEmitsError(t *testing.T) {
 }
 
 // A reader returning bytes with an error stops Cut before those bytes are cut,
-// at every byte of a stretch's second fill and past it, and the error comes
-// back unwrapped. One-byte reads make the byte that comes with the error the
+// and the error comes back unwrapped: at the first byte, the first fill's last
+// byte, the second fill's first and middle bytes, and the stretch's last byte.
+// Every other offset is the fault sweep's. One-byte reads make the byte that comes with the error the
 // last one served, so no chunk may reach it.
 func TestCutStopsBeforeBytesThatCameWithAnError(t *testing.T) {
 	s := settings64K(t, [32]byte{0: 1})
@@ -120,7 +131,7 @@ func TestCutStopsBeforeBytesThatCameWithAnError(t *testing.T) {
 		if err != errPlanted {
 			t.Fatalf("a reader failing with byte %d: err %v, want the planted error itself", n-1, err)
 		}
-		checkPrefix(t, "a reader failing", got, ref)
+		checkPrefix(t, fmt.Sprintf("a reader failing with byte %d", n-1), got, ref)
 		if len(got) > 0 {
 			if last := got[len(got)-1]; last.Offset+int64(last.Length) > n-1 {
 				t.Fatalf("a reader failing with byte %d: a chunk ends at %d, past the bytes served before the error", n-1, last.Offset+int64(last.Length))
@@ -145,10 +156,7 @@ func TestCutAwkwardReadersGiveTheCleanRun(t *testing.T) {
 		{"HalfReader", iotest.HalfReader},
 		{"DataErrReader", iotest.DataErrReader},
 	} {
-		got := mustCut(t, tc.r(bytes.NewReader(data)), 0, s, s.Max())
-		if !slices.Equal(got, ref) {
-			t.Errorf("%s: %d chunks, want the clean run's %d, chunk for chunk", tc.name, len(got), len(ref))
-		}
+		checkClean(t, tc.name, mustCut(t, tc.r(bytes.NewReader(data)), 0, s, s.Max()), ref)
 	}
 }
 
@@ -176,17 +184,24 @@ func TestCutReturnsTheReadersError(t *testing.T) {
 }
 
 // A reader returning no bytes and no error is not the end: 99 such reads in a
-// row and then its data give the clean run, and 100 fail Cut with
-// io.ErrNoProgress rather than spin on it.
+// row and then its data give the clean run, and so do 99 before every piece
+// of a stretch served in pieces that straddle the refills, since a read with
+// bytes ends the run; 100 in a row fail Cut with io.ErrNoProgress rather than
+// spin on it.
 func TestCutBoundsEmptyReads(t *testing.T) {
 	s := settings64K(t, [32]byte{0: 1})
 	data := carvetest.Bytes(carvetest.Random, 13, 3*s.Max())
 	ref := mustCut(t, bytes.NewReader(data), 0, s, s.Max())
 
-	got := mustCut(t, &stall{r: bytes.NewReader(data), n: 99}, 0, s, s.Max())
-	if !slices.Equal(got, ref) {
-		t.Errorf("99 empty reads: %d chunks, want the clean run's %d, chunk for chunk", len(got), len(ref))
+	checkClean(t, "99 empty reads", mustCut(t, &stall{r: bytes.NewReader(data), n: 99}, 0, s, s.Max()), ref)
+
+	var pieces []io.Reader
+	for p := data; len(p) > 0; {
+		k := min(len(p), 10007)
+		pieces = append(pieces, &stall{r: bytes.NewReader(p[:k]), n: 99})
+		p = p[k:]
 	}
+	checkClean(t, fmt.Sprintf("99 empty reads before each of %d pieces", len(pieces)), mustCut(t, io.MultiReader(pieces...), 0, s, s.Max()), ref)
 
 	got, err := cut(t, &stall{r: bytes.NewReader(data), n: 100}, 0, s, s.Max())
 	if err != io.ErrNoProgress || len(got) != 0 {
