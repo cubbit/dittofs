@@ -17,13 +17,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/transform/keys"
 )
 
-// Register makes a transform available for configuration, by name, and for
-// decoding, by ID (RFC 5 §2.5, §3.1). It is called at init; a duplicate ID
-// panics, since an ID is assigned once and never reused (RFC 5 §4), and so does
-// a duplicate name, since a configuration names its transform by name. Until
-// the registry is built it records nothing.
-func Register(id transform.ID, name string, f transform.Factory) {}
-
 // NewChain builds the configured transforms, each through its registered
 // Factory with m, and the decoders of every registered transform (RFC 5
 // §2.5). It refuses, rather than building a chain without it (RFC 5 §2.7): a
