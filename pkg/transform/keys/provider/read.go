@@ -81,6 +81,8 @@ func (p *Provider) Open(ctx context.Context, ns entity.NamespaceID) error {
 // Both are answered from the cache: a kind is given only through the
 // provider's own update, which refreshes it.
 func (p *Provider) Current(ctx context.Context, ns entity.NamespaceID, kind string) (keys.MaterialID, error) {
+	p.calls.Add(1)
+
 	set, err := p.set(ctx, ns)
 	if err != nil {
 		return keys.MaterialID{}, err
@@ -122,6 +124,7 @@ func (p *Provider) Current(ctx context.Context, ns entity.NamespaceID, kind stri
 // An ID the cached records lack reloads the namespace once before it is
 // ErrUnknownMaterial, so a record another writer added is found.
 func (p *Provider) Get(ctx context.Context, id keys.MaterialID) ([]byte, error) {
+	p.calls.Add(1)
 	s := slot{id.Kind, id.ID}
 
 	p.cache.mu.RLock()
@@ -134,9 +137,11 @@ func (p *Provider) Get(ctx context.Context, id keys.MaterialID) ([]byte, error) 
 		// reload of one whose cached rows lack the ID.
 		var err error
 		if set, err = p.load(ctx, id.Namespace); err != nil {
+			p.misses.miss(id, false)
 			return nil, err
 		}
 		if e = set[s]; e == nil {
+			p.misses.miss(id, true)
 			return nil, fmt.Errorf("provider: %s %x of namespace %s: %w", id.Kind, id.ID, id.Namespace, keys.ErrUnknownMaterial)
 		}
 	}

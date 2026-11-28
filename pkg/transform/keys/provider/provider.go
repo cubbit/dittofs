@@ -18,6 +18,7 @@ import (
 
 	"github.com/cubbit/dittofs/internal/keyfile"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/transform/keys"
 )
 
 // Row is one key record as the metadata store holds it: its kind, ID and
@@ -82,6 +83,8 @@ type Provider struct {
 	log     *slog.Logger
 	now     func() time.Time
 	cache   cache
+	calls   atomic.Uint64 // Current and Get calls, failing ones included
+	misses  misses
 
 	// masterKeyID names the key-file master key; aead holds the key itself,
 	// which never leaves this process.
@@ -217,5 +220,7 @@ func build(masterKeyID [16]byte, key []byte, deps Deps) (*Provider, error) {
 	}
 	p.cache.sets = make(map[entity.NamespaceID]map[slot]*entry)
 	p.cache.epochs = make(map[entity.NamespaceID]uint64)
+	p.misses.unknown = make(map[keys.MaterialID]struct{})
+	p.misses.unavailable = make(map[keys.MaterialID]struct{})
 	return p, nil
 }
