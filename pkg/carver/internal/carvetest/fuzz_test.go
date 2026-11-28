@@ -1,7 +1,6 @@
 package carvetest
 
 import (
-	"encoding/binary"
 	"fmt"
 	"slices"
 	"testing"
@@ -28,22 +27,18 @@ func tiles(target, length int, ends []int) error {
 }
 
 // The reference's chunks tile every input within C4's bounds, and cutting
-// again from any chunk's end gives the same later ends, so no state crosses a
-// boundary. A fuzzed byte slice rarely grows past Min, so the target fuzzes
-// the generator's parameters instead: the input's seed, kind and length, up
-// to 4 × Max, the Target, and the seed of a random gear table, which reaches
-// content-defined cuts at every profile.
+// again from any chunk's end gives the same later ends, so no cut depends on a
+// byte before its chunk's start. A fuzzed byte slice rarely grows past Min, so
+// the target fuzzes the generator's parameters instead: the input's seed, kind
+// and length, up to 4 × Max, the Target, and the seed of a random gear table,
+// which reaches content-defined cuts at every profile.
 func FuzzReferenceBounds(f *testing.F) {
 	f.Fuzz(func(t *testing.T, seed uint64, kind uint8, length uint32, target uint8, tableSeed uint64) {
 		tg := Targets[int(target)%len(Targets)]
-		k := Kind(int(kind) % (int(RandomRepeat) + 1))
+		k := kinds[int(kind)%len(kinds)]
 		n := int(length % uint32(16*tg+1))
 
-		var g [256]uint64
-		words := Bytes(Random, tableSeed, 8*len(g))
-		for i := range g {
-			g[i] = binary.LittleEndian.Uint64(words[8*i:])
-		}
+		g := le(Bytes(Random, tableSeed, 8*256))
 
 		p := Bytes(k, seed, n)
 		ends := Boundaries(&g, tg, p)
