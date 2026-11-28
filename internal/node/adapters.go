@@ -106,9 +106,9 @@ func listenPort(addr string) uint16 {
 }
 
 // adapterDeps is the one Deps the node hands every adapter it builds (RFC 20
-// §3.4): the filesystem, the node's budgets, registry and logger, and its
-// watchdog, which each accept loop registers with. Every other field is
-// zero: the node hands its adapters no tracer (`Config.Tracer` is the
+// §3.4): the filesystem, the installation's ID and the node's own, the node's
+// budgets, registry and logger, and its watchdog, which each accept loop
+// registers with. Every other field is zero: the node hands its adapters no tracer (`Config.Tracer` is the
 // journals'), so SampleRatio samples none (RFC 25 §8.1).
 //
 // decision: an accept loop reports idle every 10 s on the runtime's clock,
@@ -117,9 +117,10 @@ func listenPort(addr string) uint16 {
 // that moves the node's clock past 60 s while an adapter serves finds
 // liveness failed, so the node's tests serve none while they do. Overturned
 // when a test must, and then by a clock in Deps.
-func adapterDeps(fs vfs.Service, b *resources.Budgets, m *metrics.Registry, log *slog.Logger, w *health.Watchdog) adapter.Deps {
+func adapterDeps(fs vfs.Service, server adapter.Server, b *resources.Budgets, m *metrics.Registry, log *slog.Logger, w *health.Watchdog) adapter.Deps {
 	return adapter.Deps{
 		VFS:     fs,
+		Server:  server,
 		Budgets: b,
 		Metrics: m,
 		Logger:  log,

@@ -12,6 +12,12 @@ type Client struct {
 	entity.ClientRecord
 	Expires time.Duration // the Deps.Clock.Elapsed reading its lease ends at, at this node; zero: no lease
 	Pending *Pending      // a proposed instance awaiting its confirm
+	// Proved is an input of Propose and Connect, held in a proposal for its
+	// confirm: the caller proves the machine credential a Protect record
+	// stands on. Without it a caller of the record's own principal is still
+	// refused the name of one, at Propose, at a Connect with no proposal, and
+	// at the Connect that confirms a proposal (by what Propose was given).
+	Proved bool
 }
 
 // Pending is a proposed client instance awaiting its confirm. It is held only

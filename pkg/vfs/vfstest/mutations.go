@@ -122,6 +122,11 @@ func (rec *Mutations) Record(ctx context.Context, c vfs.Call, cl vfs.ClientID) (
 	return rec.s.Record(ctx, c, cl)
 }
 
+func (rec *Mutations) ClientByName(ctx context.Context, c vfs.Call, p vfs.Protocol, name []byte) (_ vfs.ClientRecord, _, _ bool, err error) {
+	defer rec.start(Mutation{Op: vfs.OpClientByName})(&err)
+	return rec.s.ClientByName(ctx, c, p, name)
+}
+
 func (rec *Mutations) Renew(ctx context.Context, c vfs.Call, cl vfs.ClientID) (_ vfs.ClientStatus, err error) {
 	defer rec.start(Mutation{Op: vfs.OpRenew, Client: cl})(&err)
 	return rec.s.Renew(ctx, c, cl)

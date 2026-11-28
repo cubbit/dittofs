@@ -780,6 +780,41 @@ func TestAnNFSv4ClientIsOwnedByItsMappedPrincipal(t *testing.T) {
 	}
 }
 
+// A protected client's name is refused to its own principal unless the call
+// proves the machine (a ticket under integrity), at a Connect with no
+// proposal as at Propose; a call that proves it reboots the client.
+func TestAProtectedClientsNameNeedsTheMachineProof(t *testing.T) {
+	s := newShares(t, nil, nil)
+	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
+	ctx := t.Context()
+	info := vfs.ClientInfo{Protocol: entity.ProtocolNFSv4, Name: []byte("linux-host"), Boot: [8]byte{1}, Protect: true, Recovery: entity.RecoverStatus}
+
+	proved := s.as(t, 1000, inLab)
+	unproved := s.as(t, 1000, inLab)
+	unproved.Identity.Protection = vfs.ProtectionNone // a ticket without integrity does not prove the machine
+
+	p, err := s.Propose(ctx, proved, info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info.Proposal = &p
+	id, _, err := s.Connect(ctx, proved, info, &vfstest.Callbacks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	info.Proposal, info.Boot = nil, [8]byte{2}
+	if _, _, err := s.Connect(ctx, unproved, info, &vfstest.Callbacks{}); !clientInUse(err) {
+		t.Fatalf("an unproved Connect with a new Boot answered %v, want ClientInUse", err)
+	}
+	if rec, err := s.Record(ctx, proved, id); err != nil || rec.Boot != [8]byte{1} {
+		t.Fatalf("after the refusal: %+v, %v; want the record kept", rec, err)
+	}
+	if again, _, err := s.Connect(ctx, proved, info, &vfstest.Callbacks{}); err != nil || again == id {
+		t.Fatalf("a proved Connect with a new Boot: id %d, %v; want a reboot to a new ID", again, err)
+	}
+}
+
 // An NFSv4 client proposed by a call proving nothing, which maps to the
 // well-known anonymous, holds no Owner and is unprotected, as every
 // anonymous caller maps alike: a signed-in principal naming it is not
@@ -1432,5 +1467,56 @@ func TestARepeatedLastDisconnectDropsTheCallbacks(t *testing.T) {
 	}
 	if _, ok := s.reg.cb[id]; ok {
 		t.Error("a repeated last Disconnect answering StaleClient kept the client's Callbacks")
+	}
+}
+
+// ClientByName reads the confirmed record under (protocol, name) and says
+// whether the call's mapped principal owns it: another principal gets the
+// record with sameOwner false, an unknown name and one only a proposal holds
+// are not found, and the read leaves no proposal behind.
+func TestClientByNameReadsTheRecordAndComparesThePrincipal(t *testing.T) {
+	s := newShares(t, nil, nil)
+	alice := s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
+	s.user(t, "mallory", "1001", s.share, entity.AccessReadWrite)
+	ctx := t.Context()
+	info := vfs.ClientInfo{Protocol: entity.ProtocolNFSv4, Name: []byte("linux-host"), Boot: [8]byte{4}, Protect: true, Adapter: []byte{1}, Recovery: entity.RecoverStatus}
+	p, err := s.Propose(ctx, s.as(t, 1000, inLab), info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info.Proposal = &p
+	id, _, err := s.Connect(ctx, s.as(t, 1000, inLab), info, &vfstest.Callbacks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		who  string
+		call vfs.Call
+		same bool
+	}{
+		{"alice", s.as(t, 1000, inLab), true},
+		{"mallory", s.as(t, 1001, outside), false},
+		{"nobody", vfs.Call{Identity: vfs.Identity{Proof: vfs.ProofNone, Client: inLab}}, false},
+	} {
+		rec, found, same, err := s.ClientByName(ctx, tc.call, entity.ProtocolNFSv4, info.Name)
+		if err != nil || !found || same != tc.same || rec.ID != id || rec.Boot != info.Boot || rec.Owner != alice.Principal || !rec.Protect || !bytes.Equal(rec.Adapter, info.Adapter) {
+			t.Errorf("%s: id %d boot %v owner %v found %v sameOwner %v, %v; want alice's record found, sameOwner %v",
+				tc.who, rec.ID, rec.Boot, rec.Owner, found, same, err, tc.same)
+		}
+	}
+
+	if _, found, _, err := s.ClientByName(ctx, s.as(t, 1000, inLab), entity.ProtocolNFSv4, []byte("unknown")); err != nil || found {
+		t.Errorf("an unknown name: found %v, %v; want not found", found, err)
+	}
+	pending := vfs.ClientInfo{Protocol: entity.ProtocolNFSv4, Name: []byte("only-proposed"), Boot: [8]byte{1}, Recovery: entity.RecoverStatus}
+	if _, err := s.Propose(ctx, s.as(t, 1000, inLab), pending); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, _, err := s.ClientByName(ctx, s.as(t, 1000, inLab), entity.ProtocolNFSv4, pending.Name); err != nil || found {
+		t.Errorf("a name only a proposal holds: found %v, %v; want not found", found, err)
+	}
+	if rec, err := s.Record(ctx, s.as(t, 1000, inLab), id); err != nil || rec.Pending != nil {
+		t.Errorf("after the reads: pending %+v, %v; want none", rec.Pending, err)
 	}
 }

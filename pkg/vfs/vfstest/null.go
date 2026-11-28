@@ -43,6 +43,10 @@ func (Null) Record(ctx context.Context, c vfs.Call, cl vfs.ClientID) (vfs.Client
 	return vfs.ClientRecord{}, nil
 }
 
+func (Null) ClientByName(ctx context.Context, c vfs.Call, p vfs.Protocol, name []byte) (vfs.ClientRecord, bool, bool, error) {
+	return vfs.ClientRecord{}, false, false, nil
+}
+
 func (Null) Renew(ctx context.Context, c vfs.Call, cl vfs.ClientID) (vfs.ClientStatus, error) {
 	return vfs.ClientStatus{}, nil
 }

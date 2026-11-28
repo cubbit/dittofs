@@ -1,0 +1,14 @@
+# The same result for an owner already confirmed, with the session sequence 7 stored (RFC 8881 section
+# 18.35.4, item 3): EXCHGID4_FLAG_CONFIRMED_R set and the sequence ID 8. The client ID is the placeholder.
+0000002a                               # resop: OP_EXCHANGE_ID (42)
+00000000                               # status: NFS4_OK
+00000000 00000001                      # eir_clientid, placeholder
+00000008                               # eir_sequenceid: 7 + 1
+80010000                               # eir_flags: EXCHGID4_FLAG_CONFIRMED_R and USE_NON_PNFS
+00000000                               # eir_state_protect: SP4_NONE
+00000000 00000007                      # so_minor_id
+00000010                               # so_major_id
+a0a1a2a3 a4a5a6a7 a8a9aaab acadaeaf
+00000010                               # eir_server_scope
+a0a1a2a3 a4a5a6a7 a8a9aaab acadaeaf
+00000000                               # eir_server_impl_id<1>: none

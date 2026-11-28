@@ -22,6 +22,10 @@ type State struct {
 	Cur, Saved Current // the current filehandle and stateid, and SAVEFH's copy
 	MaxReply   int     // the session's ca_maxresponsesize, set by SEQUENCE; 0: no SEQUENCE ran
 	MaxCached  int     // its ca_maxresponsesize_cached where sa_cachethis is set; 0: not cached
+
+	// Bound is the connection's list of bound sessions, shared by every
+	// COMPOUND on it; nil where the state was built without a connection.
+	Bound *Bound
 }
 
 // Current is a current filehandle and the current stateid beside it (RFC 8881

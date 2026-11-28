@@ -82,6 +82,7 @@ type stage struct {
 	served      served
 	errs        *core.ErrorTable
 	conn        *core.Conn
+	bound       *Bound // the connection's sessions; nil without a connection
 	established atomic.Bool
 }
 
@@ -219,6 +220,8 @@ func (s *stage) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.R
 			req: core.Request{Version: hd.Version(), Level: core.NeedsNothing, Conn: s.conn},
 		}
 		cr.req.State = &cr.state
+
+		cr.state.Bound = s.bound
 		if err := s.build(&cr.req, &cr.gids, flavour, parms, c); err != nil {
 			return nil, nil, err
 		}

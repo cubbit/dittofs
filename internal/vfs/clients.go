@@ -65,7 +65,9 @@ func (fs *Filesystem) Propose(ctx context.Context, c vfs.Call, info vfs.ClientIn
 	if err != nil {
 		return vfs.Proposal{}, err
 	}
-	p, err := fs.clients.Propose(ctx, record(c, info, who.Principal), c.Identity.Client)
+	cl := record(c, info, who.Principal)
+	cl.Proved = c.Identity.Proof >= vfs.ProofTicket && c.Identity.Protection >= vfs.ProtectionIntegrity
+	p, err := fs.clients.Propose(ctx, cl, c.Identity.Client)
 	return p, openErr(err)
 }
 
@@ -102,7 +104,9 @@ func (fs *Filesystem) Connect(ctx context.Context, c vfs.Call, info vfs.ClientIn
 	if err != nil {
 		return 0, 0, err
 	}
-	id, gen, err := fs.clients.Connect(ctx, record(c, info, who.Principal), info.Proposal)
+	cl := record(c, info, who.Principal)
+	cl.Proved = c.Identity.Proof >= vfs.ProofTicket && c.Identity.Protection >= vfs.ProtectionIntegrity
+	id, gen, err := fs.clients.Connect(ctx, cl, info.Proposal)
 	if err != nil {
 		return 0, 0, openErr(err)
 	}
@@ -123,6 +127,24 @@ func (fs *Filesystem) AddSession(ctx context.Context, c vfs.Call, cl vfs.ClientI
 	defer done()
 	rec, err := fs.clients.AddSession(ctx, cl, entity.NodeID{}, prev, next)
 	return rec, openErr(err)
+}
+
+// ClientByName reads the confirmed record under (p, name) through open
+// state's table, never the store, and compares the call's mapped principal
+// with its Owner there, as Propose does. It proposes nothing and writes
+// nothing.
+func (fs *Filesystem) ClientByName(ctx context.Context, c vfs.Call, p vfs.Protocol, name []byte) (vfs.ClientRecord, bool, bool, error) {
+	ctx, done, err := fs.enter(ctx)
+	if err != nil {
+		return vfs.ClientRecord{}, false, false, err
+	}
+	defer done()
+	who, err := fs.who(ctx, c, 0)
+	if err != nil {
+		return vfs.ClientRecord{}, false, false, err
+	}
+	rec, found, same, err := fs.clients.ByName(ctx, p, name, who.Principal)
+	return rec, found, same, openErr(err)
 }
 
 func (fs *Filesystem) Record(ctx context.Context, c vfs.Call, cl vfs.ClientID) (vfs.ClientRecord, error) {

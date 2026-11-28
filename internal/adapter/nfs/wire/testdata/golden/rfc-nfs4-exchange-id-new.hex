@@ -1,0 +1,15 @@
+# One member's result for a new owner (RFC 8881 section 18.35.1 and 16.2): OP_EXCHANGE_ID, NFS4_OK
+# and EXCHANGE_ID4resok, by hand. The client ID is the placeholder 1, which the test replaces with the
+# one the service gave; the sequence ID is the low half of the confirm 01..08, 0x05060708.
+0000002a                               # resop: OP_EXCHANGE_ID (42)
+00000000                               # status: NFS4_OK
+00000000 00000001                      # eir_clientid, placeholder
+05060708                               # eir_sequenceid
+00010000                               # eir_flags: EXCHGID4_FLAG_USE_NON_PNFS
+00000000                               # eir_state_protect: SP4_NONE
+00000000 00000007                      # eir_server_owner.so_minor_id: the node, 7
+00000010                               # so_major_id, opaque<>: 16 bytes, the installation
+a0a1a2a3 a4a5a6a7 a8a9aaab acadaeaf
+00000010                               # eir_server_scope, opaque<>: the same 16 bytes
+a0a1a2a3 a4a5a6a7 a8a9aaab acadaeaf
+00000000                               # eir_server_impl_id<1>: none

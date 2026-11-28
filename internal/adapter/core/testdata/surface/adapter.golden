@@ -49,6 +49,8 @@ type Deps struct {
 	Watch func(loop string) Loop
 
 	DialClient func(ctx context.Context, from netip.Addr, to netip.AddrPort) (net.Conn, error)
+
+	Server Server
 }
 
 type Health struct {
@@ -60,6 +62,11 @@ type Loop interface {
 	Turn()
 	Idle()
 	Close()
+}
+
+type Server struct {
+	Installation [16]byte
+	Node         [16]byte
 }
 
 type Serving struct {

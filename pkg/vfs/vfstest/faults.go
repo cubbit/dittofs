@@ -159,6 +159,13 @@ func (f *FaultService) Record(ctx context.Context, c vfs.Call, cl vfs.ClientID) 
 	return f.inner.Record(ctx, c, cl)
 }
 
+func (f *FaultService) ClientByName(ctx context.Context, c vfs.Call, p vfs.Protocol, name []byte) (vfs.ClientRecord, bool, bool, error) {
+	if err := f.at(ctx, vfs.OpClientByName); err != nil {
+		return vfs.ClientRecord{}, false, false, err
+	}
+	return f.inner.ClientByName(ctx, c, p, name)
+}
+
 func (f *FaultService) Renew(ctx context.Context, c vfs.Call, cl vfs.ClientID) (vfs.ClientStatus, error) {
 	if err := f.at(ctx, vfs.OpRenew); err != nil {
 		return vfs.ClientStatus{}, err

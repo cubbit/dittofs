@@ -4,8 +4,10 @@
 package nfs
 
 import (
+	"crypto/rand"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/cubbit/dittofs/internal/adapter/core"
 	v4 "github.com/cubbit/dittofs/internal/adapter/nfs/ops/v4"
@@ -58,10 +60,41 @@ func tables(d adapter.Deps) protocol.Tables {
 	aux := errorTable(core.Status(wire.StatusAccept | wire.AcceptSystemErr))
 	return protocol.Tables{
 		V3:    table("nfs3", errorTable(core.Status(wire.NFS3ErrServerFault))),
-		V4:    v4.Table(&v4.Handlers{VFS: d.VFS}),
+		V4:    v4.Table(handlers(d)),
 		Mount: table("nfs3", aux),
 		NLM:   table("nfs3", aux),
 		NSM:   table("nfs3", aux),
+	}
+}
+
+// hostClock is the pending table's clock: the host's.
+type hostClock struct{}
+
+// Now is the host's time.
+func (hostClock) Now() time.Time {
+	return time.Now()
+}
+
+// handlers builds NFSv4's handlers: the service its operations call, the
+// constructor of the callbacks value Connect registers per client (RFC 20
+// section 3.3), the table of proposals EXCHANGE_ID holds until their confirm
+// and the node's sessions, which that constructor's value ends at a lease's
+// expiry, and what the node is called to a client.
+//
+// ponytail: nothing sweeps the proposals but the calls that touch the table,
+// since core gives a protocol no hook at Stop to end a ticker with; an idle
+// node keeps at most the 4 MiB its 4,096 proposals are charged until the next
+// EXCHANGE_ID or CREATE_SESSION, and after a Stop the charges of the proposals
+// still held never come back to the budget. Add the ticker and a release at
+// Stop when core has that hook.
+func handlers(d adapter.Deps) *v4.Handlers {
+	sessions := protocol.NewSessions(d.Budgets, hostClock{}, rand.Reader)
+
+	return &v4.Handlers{
+		VFS:       d.VFS,
+		Callbacks: newCallbacks(sessions),
+		Sessions:  sessions,
+		Server:    v4.Server(d.Server),
 	}
 }
 
@@ -70,9 +103,16 @@ func tables(d adapter.Deps) protocol.Tables {
 // that do not decode GARBAGE_ARGS; any other error is fault (RFC 21 section
 // 11.5).
 func errorTable(fault core.Status) *core.ErrorTable {
-	return core.NewErrorTable(fault,
-		core.ErrorRow{Err: core.ErrNotSupported, Status: core.Status(wire.StatusAccept | wire.AcceptProcUnavail)},
-		core.ErrorRow{Err: core.ErrDecode, Status: core.Status(wire.StatusAccept | wire.AcceptGarbageArgs)},
+	return core.NewErrorTable(
+		fault,
+		core.ErrorRow{
+			Err:    core.ErrNotSupported,
+			Status: core.Status(wire.StatusAccept | wire.AcceptProcUnavail),
+		},
+		core.ErrorRow{
+			Err:    core.ErrDecode,
+			Status: core.Status(wire.StatusAccept | wire.AcceptGarbageArgs),
+		},
 	)
 }
 

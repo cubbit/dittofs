@@ -21,7 +21,34 @@ var addr = netip.MustParseAddr("192.0.2.1")
 func nfs(name string, boot byte, owner entity.Principal) Client {
 	return Client{ClientRecord: entity.ClientRecord{
 		Protocol: entity.ProtocolNFSv4, Name: []byte(name), Boot: [8]byte{boot}, Owner: owner, Protect: !owner.IsZero(), Recovery: entity.RecoverStatus,
-	}}
+	}, Proved: !owner.IsZero()}
+}
+
+// A name whose record is protected is refused to its own principal when that
+// caller does not prove the credential, whatever the boot: nothing is
+// proposed, and the record stays. The same caller proving it is answered.
+func TestProtectedNameRefusesUnprovedOwner(t *testing.T) {
+	f := newFixture(t)
+	alice := entity.NewUser()
+	c := nfs("a", 1, alice)
+	id := f.connect(t, c)
+
+	for _, boot := range []byte{1, 2} {
+		u := nfs("a", boot, alice)
+		u.Proved = false
+
+		if _, err := f.Propose(ctx, u, addr); !errors.Is(err, ErrClientInUse) {
+			t.Fatalf("boot %d unproved: %v, want ErrClientInUse", boot, err)
+		}
+	}
+
+	if rec, err := f.Record(ctx, id); err != nil || rec.Boot != c.Boot {
+		t.Fatalf("after the refusals: %+v, %v; want the record kept", rec.ClientRecord, err)
+	}
+
+	if _, err := f.Propose(ctx, nfs("a", 2, alice), addr); err != nil {
+		t.Fatalf("proved: %v, want a proposal", err)
+	}
 }
 
 // connect proposes c and confirms the proposal, failing the test on an error.
@@ -39,6 +66,88 @@ func (f *fixture) connect(t *testing.T, c Client) entity.ClientID {
 		t.Fatalf("Connect answered %d, the proposal %d", id, p.Client)
 	}
 	return id
+}
+
+// An unproved caller's proposal that lands after the owner connected the
+// protected record, as when both proposed before either connected, does not
+// replace it: the confirm is ErrClientInUse and the record stays.
+func TestProtectedRecordRefusesLateUnprovedConfirm(t *testing.T) {
+	f := newFixture(t)
+	alice := entity.NewUser()
+	u := nfs("a", 2, alice)
+	u.Proved = false
+
+	pu, err := f.Propose(ctx, u, addr)
+	if err != nil {
+		t.Fatalf("unproved Propose on a free name: %v", err)
+	}
+
+	m := nfs("a", 1, alice)
+	id := f.connect(t, m)
+
+	// the proposal of u was overwritten by m's; put it back as a write that
+	// raced m's Connect would have left it
+	key := keyOf(u.ClientRecord)
+
+	f.cmu.Lock()
+	f.pending[key] = pending{
+		Pending: Pending{ID: pu.Client, Boot: u.Boot, Owner: alice, Confirm: pu.Confirm, Expires: f.d.Clock.Elapsed() + leasePeriod},
+		source:  source(addr),
+	}
+	f.cmu.Unlock()
+
+	if _, _, err := f.Connect(ctx, u, &pu); !errors.Is(err, ErrClientInUse) {
+		t.Fatalf("late unproved confirm: %v, want ErrClientInUse", err)
+	}
+
+	if rec, err := f.Record(ctx, id); err != nil || rec.Boot != m.Boot || !rec.Protect {
+		t.Fatalf("after the refusal: %+v, %v; want the protected record kept", rec.ClientRecord, err)
+	}
+}
+
+// A Connect with no proposal is refused a protected name as Propose is: an
+// unproved caller of the record's own principal, with a new Boot, does not
+// reboot it, and the record stays.
+func TestProtectedNameRefusesUnprovedDirectConnect(t *testing.T) {
+	f := newFixture(t)
+	alice := entity.NewUser()
+	c := nfs("a", 1, alice)
+	id := f.connect(t, c)
+
+	u := nfs("a", 2, alice)
+	u.Proved = false
+
+	if _, _, err := f.Connect(ctx, u, nil); !errors.Is(err, ErrClientInUse) {
+		t.Fatalf("unproved Connect with no proposal: %v, want ErrClientInUse", err)
+	}
+
+	if rec, err := f.Record(ctx, id); err != nil || rec.Boot != c.Boot || !rec.Protect {
+		t.Fatalf("after the refusal: %+v, %v; want the protected record kept", rec.ClientRecord, err)
+	}
+}
+
+// A proposal keeps what its caller proved: an unproved one made while the name
+// was free, confirmed after a protected record took the name, is refused.
+func TestProposalKeepsWhatItsCallerProved(t *testing.T) {
+	f := newFixture(t)
+	alice := entity.NewUser()
+	u := nfs("a", 2, alice)
+	u.Proved = false
+
+	pu, err := f.Propose(ctx, u, addr)
+	if err != nil {
+		t.Fatalf("Propose on a free name: %v", err)
+	}
+
+	m := nfs("a", 1, alice)
+	m.ID = 900
+	if err := f.d.Clients.Create(ctx, m.ClientRecord); err != nil {
+		t.Fatalf("seed the protected record: %v", err)
+	}
+
+	if _, _, err := f.Connect(ctx, u, &pu); !errors.Is(err, ErrClientInUse) {
+		t.Fatalf("confirm of an unproved proposal over a protected record: %v, want ErrClientInUse", err)
+	}
 }
 
 // A client is found by (protocol, name): the same Boot keeps its ID, after a
@@ -1081,5 +1190,66 @@ func TestASecondStartRaisesNoEpoch(t *testing.T) {
 	}
 	if next != f.epoch+1 {
 		t.Errorf("the epoch after a refused second Start: next raise %d, want %d", next, f.epoch+1)
+	}
+}
+
+// ByName finds the confirmed record under (protocol, name) and says whether
+// the caller is its owner: another principal still gets the record, and a
+// record with no owner is anyone's. It writes nothing.
+func TestByNameFindsTheConfirmedRecordAndItsOwner(t *testing.T) {
+	f := newFixture(t)
+	alice, bob := entity.NewUser(), entity.NewUser()
+	id := f.connect(t, nfs("host-a", 7, alice))
+	anon := f.connect(t, nfs("host-n", 3, entity.Principal{}))
+
+	f.fs.Counts.Take()
+	for _, tc := range []struct {
+		name      string
+		who       entity.Principal
+		want      entity.ClientID
+		boot      byte
+		sameOwner bool
+	}{
+		{"host-a", alice, id, 7, true},
+		{"host-a", bob, id, 7, false},
+		{"host-n", bob, anon, 3, true},
+	} {
+		c, found, same, err := f.ByName(ctx, entity.ProtocolNFSv4, []byte(tc.name), tc.who)
+		if err != nil || !found || same != tc.sameOwner || c.ID != tc.want || c.Boot != [8]byte{tc.boot} {
+			t.Errorf("%s: id %d boot %v found %v sameOwner %v, %v; want id %d boot %d found, sameOwner %v",
+				tc.name, c.ID, c.Boot, found, same, err, tc.want, tc.boot, tc.sameOwner)
+		}
+		if c.Pending != nil {
+			t.Errorf("%s: a proposal came back with the record: %+v", tc.name, c.Pending)
+		}
+	}
+	if n := f.fs.Counts.Take(); n.Sets+n.Deletes != 0 {
+		t.Errorf("ByName wrote %d keys, want none", n.Sets+n.Deletes)
+	}
+}
+
+// A name nobody confirmed, one held only by a proposal, another protocol's
+// name and a record whose lease has lapsed are not found.
+func TestByNameIgnoresProposalsOtherProtocolsAndLapsedLeases(t *testing.T) {
+	f := newFixture(t)
+	alice := entity.NewUser()
+	if _, err := f.Propose(ctx, nfs("only-pending", 1, alice), addr); err != nil {
+		t.Fatal(err)
+	}
+	f.connect(t, nfs("host-a", 1, alice))
+
+	if _, found, _, err := f.ByName(ctx, entity.ProtocolNFSv4, []byte("nobody"), alice); err != nil || found {
+		t.Errorf("an unknown name: found %v, %v; want not found", found, err)
+	}
+	if c, found, _, err := f.ByName(ctx, entity.ProtocolNFSv4, []byte("only-pending"), alice); err != nil || found {
+		t.Errorf("a name only a proposal holds: found %v (%+v), %v; want not found", found, c.ClientRecord, err)
+	}
+	if _, found, _, err := f.ByName(ctx, entity.ProtocolSMB, []byte("host-a"), alice); err != nil || found {
+		t.Errorf("the same name under another protocol: found %v, %v; want not found", found, err)
+	}
+
+	f.clock.advance(leasePeriod + time.Second)
+	if _, found, _, err := f.ByName(ctx, entity.ProtocolNFSv4, []byte("host-a"), alice); err != nil || found {
+		t.Errorf("a record whose lease lapsed: found %v, %v; want not found", found, err)
 	}
 }

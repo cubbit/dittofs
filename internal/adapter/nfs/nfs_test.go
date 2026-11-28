@@ -586,7 +586,8 @@ func TestEachTableMapsCoresRefusals(t *testing.T) {
 		tooManyOps   = 10070 // NFS4ERR_TOO_MANY_OPS
 		compoundProc = 1
 	)
-	ts := tables(adapter.Deps{})
+
+	ts := tables(adapter.Deps{Budgets: adaptertest.Budgets()})
 	members := ts.V4.Ops[compoundProc].Members
 	other := errors.New("an error no row names")
 	for _, tc := range []struct {
