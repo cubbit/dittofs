@@ -1,6 +1,6 @@
 go test fuzz v1
 uint64(6)
 byte(5)
-uint32(1048576)
+uint32(2148532223)
 byte(0)
 uint64(106)

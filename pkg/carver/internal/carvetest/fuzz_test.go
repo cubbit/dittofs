@@ -2,6 +2,7 @@ package carvetest
 
 import (
 	"fmt"
+	"math/bits"
 	"slices"
 	"testing"
 )
@@ -36,7 +37,8 @@ func FuzzReferenceBounds(f *testing.F) {
 	f.Fuzz(func(t *testing.T, seed uint64, kind uint8, length uint32, target uint8, tableSeed uint64) {
 		tg := Targets[int(target)%len(Targets)]
 		k := kinds[int(kind)%len(kinds)]
-		n := int(length % uint32(16*tg+1))
+		// length is a fraction of 4 × Max, bit-reversed so the mutator's small values reach every size.
+		n := int(uint64(bits.Reverse32(length)) * uint64(16*tg+1) >> 32)
 
 		g := le(Bytes(Random, tableSeed, 8*256))
 

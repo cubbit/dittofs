@@ -152,7 +152,7 @@ suites:
     tier: nightly
     cmd:
       - go test -run=^$ -fuzz=^FuzzReferenceBounds$ -fuzztime=10m ./pkg/carver/internal/carvetest/
-      - { sh: 'git ls-files -o -- ":(glob)**/testdata/fuzz/**" | while IFS= read -r f; do mkdir -p "{out}/$(dirname "$f")" && cp "$f" "{out}/$f" || exit 1; done' }
+      - { sh: 'fs=$(git ls-files -o --exclude-standard -- ":(glob)**/testdata/fuzz/**") || exit 1; test -n "$fs" || exit 0; printf "%s\n" "$fs" | while IFS= read -r f; do mkdir -p {out}/"$(dirname "$f")" && cp "$f" {out}/"$f" || exit 1; done' }
     timeout: { test: 15m, cell: 20m }
   # The journal's conformance checks, behind their own tag: they fail until the journal they
   # check is written, and each failure is a known one, so the unit suite would turn red on them.
