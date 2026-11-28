@@ -32,7 +32,12 @@ var process = newRegistry()
 // transform_decode_failures_total{error="malformed"} sees a planted envelope;
 // unregistered labels a block written by a transform since dropped from the
 // build. A transform registering either would share its series with them.
-var reserved = []string{"envelope", "unregistered"}
+const (
+	nameEnvelope     = "envelope"
+	nameUnregistered = "unregistered"
+)
+
+var reserved = []string{nameEnvelope, nameUnregistered}
 
 // registered is one Register call.
 type registered struct {
@@ -54,6 +59,9 @@ func newRegistry() *registry {
 func (r *registry) register(id transform.ID, name string, f transform.Factory) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if f == nil || name == "" {
+		panic(fmt.Sprintf("chain: transform %q (ID %#04x) registers without a name or a factory", name, id))
+	}
 	if slices.Contains(reserved, name) {
 		panic(fmt.Sprintf("chain: transform %q (ID %#04x) takes a name the chain reserves", name, id))
 	}
@@ -67,24 +75,19 @@ func (r *registry) register(id transform.ID, name string, f transform.Factory) {
 	r.byName[name] = id
 }
 
-// decoder is one registered transform, built for decoding.
-type decoder struct {
-	name string
-	t    transform.Transform
-}
-
 // decodeSet is every registered transform, built once for one store (RFC 5
 // §2.5): Chain.Decode looks a body's transforms up here by the envelope's IDs,
 // never in the configured chain.
 type decodeSet struct {
-	byID map[transform.ID]decoder
+	byID map[transform.ID]transform.Transform
 	// stages groups the decoders by stage, StageCompress first, for
 	// maxDecodeLen.
 	stages [3][]transform.Transform
 }
 
 // build builds every registered transform with empty settings and the store's
-// provider m. It refuses a transform whose factory fails, whose ID is not the
+// provider m, holding the registry's lock, so a factory must not call
+// Register. It refuses a transform whose factory fails, whose ID is not the
 // one it registered under (the envelope and the census would name the wrong
 // transform), or whose stage is not one of the three (RFC 5 §2.3).
 //
@@ -99,12 +102,15 @@ type decodeSet struct {
 func (r *registry) build(ctx context.Context, m keys.Provider) (*decodeSet, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	s := &decodeSet{byID: make(map[transform.ID]decoder, len(r.byID))}
+	s := &decodeSet{byID: make(map[transform.ID]transform.Transform, len(r.byID))}
 	for _, id := range slices.Sorted(maps.Keys(r.byID)) {
 		reg := r.byID[id]
 		t, err := reg.factory(ctx, map[string]any{}, m)
 		if err != nil {
 			return nil, fmt.Errorf("chain: building transform %q for decoding: %w", reg.name, err)
+		}
+		if t == nil {
+			return nil, fmt.Errorf("chain: transform %q's factory returned no transform", reg.name)
 		}
 		if got := t.ID(); got != id {
 			return nil, fmt.Errorf("chain: transform %q registered as ID %#04x reports ID %#04x", reg.name, id, got)
@@ -113,7 +119,7 @@ func (r *registry) build(ctx context.Context, m keys.Provider) (*decodeSet, erro
 		if st < transform.StageCompress || st > transform.StageRedundancy {
 			return nil, fmt.Errorf("chain: transform %q declares stage %d, not one of the three", reg.name, st)
 		}
-		s.byID[id] = decoder{name: reg.name, t: t}
+		s.byID[id] = t
 		s.stages[st-transform.StageCompress] = append(s.stages[st-transform.StageCompress], t)
 	}
 	return s, nil

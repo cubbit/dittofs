@@ -2,18 +2,18 @@ package chain_test
 
 import (
 	"context"
-	"encoding/binary"
+	"errors"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/transform"
 	"github.com/cubbit/dittofs/pkg/transform/keys"
 )
 
-// pad is a test transform that appends zero bytes to its input: fixed of them,
-// plus half the input's length when half is set, so with neither it is an
-// identity. Its ID, stage and kinds are parameters, so one type stands in any
-// stage and under any ID, a wrong one included. It uses no material, even when
-// it declares a kind.
+// pad is a test transform whose bound adds fixed bytes to its input, plus half
+// the input's length when half is set, so with neither it is an identity. Its
+// ID, stage and kinds are parameters, so one type stands in any stage and
+// under any ID, a wrong one included. It uses no material, even when it
+// declares a kind.
 type pad struct {
 	id    transform.ID
 	stage transform.Stage
@@ -44,37 +44,13 @@ func (p pad) Kinds() []string                                 { return p.kinds }
 func (p pad) MaxEncodedLen(n int, _ []keys.MaterialID) int    { return n + p.extra(n) }
 func (p pad) LengthOf(n int, _ []keys.MaterialID) (int, bool) { return n + p.extra(n), true }
 
-func (p pad) LengthKey() []byte {
-	k := binary.BigEndian.AppendUint64(nil, uint64(p.fixed))
-	if p.half {
-		return append(k, 1)
-	}
-	return append(k, 0)
+// The encoding half lands with the chain's encode and decode, and its tests.
+func (p pad) LengthKey() []byte { return nil }
+func (p pad) Encode(context.Context, entity.NamespaceID, []keys.MaterialID, []byte, [32]byte, []byte) (transform.Encoded, error) {
+	return transform.Encoded{}, errors.ErrUnsupported
 }
-
-func (p pad) Encode(_ context.Context, _ entity.NamespaceID, _ []keys.MaterialID, dst []byte, _ [32]byte, plain []byte) (transform.Encoded, error) {
-	body := append(dst[:0], plain...)
-	body = append(body, make([]byte, p.extra(len(plain)))...)
-	return transform.Encoded{Body: body, Applied: true, Version: 1}, nil
-}
-
-func (p pad) Decode(_ context.Context, _ entity.NamespaceID, dst []byte, _ [32]byte, body []byte, max int, _ keys.Provider) ([]byte, error) {
-	n := len(body) - p.fixed
-	if p.half {
-		n = (2*n + 1) / 3 // the n for which n + n/2 is len(body) - fixed
-	}
-	if n < 0 || n+p.extra(n) != len(body) {
-		return nil, transform.ErrMalformed
-	}
-	for _, b := range body[n:] {
-		if b != 0 {
-			return nil, transform.ErrMalformed
-		}
-	}
-	if n > max {
-		return nil, transform.ErrTooLarge
-	}
-	return append(dst[:0], body[:n]...), nil
+func (p pad) Decode(context.Context, entity.NamespaceID, []byte, [32]byte, []byte, int, keys.Provider) ([]byte, error) {
+	return nil, errors.ErrUnsupported
 }
 
 // factory builds p, whatever the settings.
@@ -85,9 +61,13 @@ func (p pad) factory() transform.Factory {
 }
 
 // failing is a factory that fails with err, as a transform that cannot start
-// does.
+// does; nilTransform is one that returns neither a transform nor an error.
 func failing(err error) transform.Factory {
 	return func(context.Context, map[string]any, keys.Provider) (transform.Transform, error) {
 		return nil, err
 	}
+}
+
+func nilTransform(context.Context, map[string]any, keys.Provider) (transform.Transform, error) {
+	return nil, nil
 }

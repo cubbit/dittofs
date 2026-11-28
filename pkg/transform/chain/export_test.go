@@ -22,9 +22,23 @@ func (r Registry) Register(id transform.ID, name string, f transform.Factory) {
 // MaxDecodeLen builds this registry's decode set for provider m and returns
 // its bound of n bytes, or the build's error.
 func (r Registry) MaxDecodeLen(ctx context.Context, m keys.Provider, n int) (int, error) {
-	s, err := r.r.build(ctx, m)
+	got, err := r.MaxDecodeLens(ctx, m, n)
 	if err != nil {
 		return 0, err
 	}
-	return s.maxDecodeLen(n), nil
+	return got[0], nil
+}
+
+// MaxDecodeLens builds one decode set for provider m and returns its bound of
+// each of ns, in order.
+func (r Registry) MaxDecodeLens(ctx context.Context, m keys.Provider, ns ...int) ([]int, error) {
+	s, err := r.r.build(ctx, m)
+	if err != nil {
+		return nil, err
+	}
+	got := make([]int, len(ns))
+	for i, n := range ns {
+		got[i] = s.maxDecodeLen(n)
+	}
+	return got, nil
 }

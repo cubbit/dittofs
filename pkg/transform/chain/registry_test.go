@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -42,6 +43,7 @@ func TestRegisterRefusesDuplicates(t *testing.T) {
 		{"a name twice", idB, "first", []string{`"first"`, "0x8001", "0x8002"}},
 		{"envelope", idB, "envelope", []string{`"envelope"`, "reserves"}},
 		{"unregistered", idB, "unregistered", []string{`"unregistered"`, "reserves"}},
+		{"no name", idB, "", []string{"0x8002", "without a name"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := chain.NewRegistry()
@@ -59,6 +61,17 @@ func TestRegisterRefusesDuplicates(t *testing.T) {
 	}
 }
 
+// A factory is called only at a store's open, so a nil one panics at Register,
+// at init, rather than there.
+func TestRegisterRefusesNilFactory(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	r := chain.NewRegistry()
+	msg := panicOf(func() { r.Register(idA, "first", nil) })
+	if !strings.Contains(msg, `"first"`) || !strings.Contains(msg, "factory") {
+		t.Errorf("Register(0x8001, \"first\", nil) panic = %q, want one naming \"first\" and its factory", msg)
+	}
+}
+
 // A registered transform the decode set cannot use fails the build, although
 // no configuration names it: one outside the three stages, one reporting
 // another ID than it registered under, which the envelope and the census would
@@ -71,9 +84,11 @@ func TestDecodeSetBuildRefuses(t *testing.T) {
 		f    transform.Factory
 		want string
 	}{
+		{"stage 0", pad{id: idB, stage: 0}.factory(), "stage 0"},
 		{"stage 4", pad{id: idB, stage: 4}.factory(), "stage 4"},
 		{"another ID", pad{id: idC, stage: transform.StageEncrypt}.factory(), "0x8003"},
 		{"failing factory", failing(boom), boom.Error()},
+		{"no transform", nilTransform, "no transform"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := chain.NewRegistry()
@@ -126,6 +141,8 @@ func TestMaxDecodeLen(t *testing.T) {
 		{"nothing registered", nil, 1000, 1000 + 8},
 		{"half, then identity", []pad{half(idA, transform.StageCompress), {id: idB, stage: transform.StageEncrypt}}, 1000, 1500 + 8},
 		{"half in two stages", []pad{half(idA, transform.StageCompress), half(idB, transform.StageRedundancy)}, 1000, 2250 + 8},
+		{"fixed, then half", []pad{{id: idA, stage: transform.StageCompress, fixed: 1000}, half(idB, transform.StageRedundancy)}, 1000, 3000 + 8},
+		{"half, then fixed", []pad{half(idA, transform.StageCompress), {id: idB, stage: transform.StageRedundancy, fixed: 1000}}, 1000, 2500 + 8},
 		{"one stage, small n", []pad{{id: idA, stage: transform.StageCompress, fixed: 1000}, half(idB, transform.StageCompress)}, 100, 1100 + 8},
 		{"one stage, large n", []pad{{id: idA, stage: transform.StageCompress, fixed: 1000}, half(idB, transform.StageCompress)}, 10000, 15000 + 8},
 	} {
@@ -142,5 +159,21 @@ func TestMaxDecodeLen(t *testing.T) {
 				t.Errorf("MaxDecodeLen(%d) = %d, want %d", tc.n, got, tc.want)
 			}
 		})
+	}
+}
+
+// One decode set answers each n from every stage's maximum at that n, so the
+// transform that bounds a stage at a small n does not bound it at a large one.
+func TestMaxDecodeLenChoosesPerCall(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	r := chain.NewRegistry()
+	r.Register(idA, "fixed", pad{id: idA, stage: transform.StageCompress, fixed: 1000}.factory())
+	r.Register(idB, "half", pad{id: idB, stage: transform.StageCompress, half: true}.factory())
+	got, err := r.MaxDecodeLens(context.Background(), keystest.NewMemory(), 100, 10000, 100)
+	if err != nil {
+		t.Fatalf("MaxDecodeLens: err = %v", err)
+	}
+	if want := []int{1108, 15008, 1108}; !slices.Equal(got, want) {
+		t.Errorf("MaxDecodeLen of 100, 10000, 100 over one decode set = %v, want %v", got, want)
 	}
 }
