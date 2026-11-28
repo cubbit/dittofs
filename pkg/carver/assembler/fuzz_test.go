@@ -9,12 +9,13 @@ import (
 	"github.com/cubbit/dittofs/pkg/carver"
 )
 
-// The generator's bounds: what the chunker can cut, and keys per chunk well
-// inside any budget a commit is given.
+// The generator's bounds: what the chunker can cut, keys per chunk far from
+// any integer limit, and up to 10⁴ chunks a pass.
 const (
 	maxChunkLen  = 16 << 20 // the largest chunker Max RFC 2 §3.7 accepts
 	maxChunkKeys = 2048
 	maxStream    = 10_000
+	maxCount     = 1024 // assembler.go's maxChunks, the block format's count cap N
 )
 
 // FuzzFold folds a random pass and asserts checkPlans over it: the plans' refs
@@ -27,25 +28,28 @@ func FuzzFold(f *testing.F) {
 	// MinBlockTarget, the count cap less one, K's slack over the largest
 	// chunk's keys, block keys, file keys, MaxAge in seconds. Each is reduced
 	// into its range, never skipped.
+	//
 	// An all-zero pass.
 	f.Add(uint64(1), uint16(500), uint16(7), uint8(100), uint8(0), uint32(1<<10), uint32(64<<10), uint16(1), uint16(1), uint32(0), uint16(1023), uint16(40), uint8(5), uint8(1), uint16(60))
 	// Closed by the count cap.
 	f.Add(uint64(2), uint16(1000), uint16(3), uint8(0), uint8(0), uint32(1<<10), uint32(0), uint16(1), uint16(0), uint32(0), uint16(7), uint16(60000), uint8(3), uint8(1), uint16(60))
 	// Closed by K at every block, zero refs carrying keys.
-	f.Add(uint64(3), uint16(2000), uint16(40), uint8(40), uint8(10), uint32(1<<10), uint32(0), uint16(50), uint16(50), uint32(63<<20), uint16(1023), uint16(0), uint8(5), uint8(1), uint16(60))
+	f.Add(uint64(3), uint16(2000), uint16(40), uint8(40), uint8(10), uint32(1<<10), uint32(0), uint16(50), uint16(49), uint32(63<<20), uint16(1023), uint16(0), uint8(5), uint8(1), uint16(60))
 	// A single chunk at exactly K.
-	f.Add(uint64(4), uint16(1), uint16(1), uint8(0), uint8(0), uint32(1<<20), uint32(0), uint16(100), uint16(0), uint32(3<<20), uint16(1023), uint16(0), uint8(3), uint8(1), uint16(60))
+	f.Add(uint64(4), uint16(1), uint16(1), uint8(0), uint8(0), uint32(1<<20), uint32(0), uint16(99), uint16(0), uint32(3<<20), uint16(1023), uint16(0), uint8(3), uint8(1), uint16(60))
+	// Two chunks of one file whose commit is exactly K: one plan, not two.
+	f.Add(uint64(6), uint16(2), uint16(1), uint8(0), uint8(0), uint32(1<<20), uint32(0), uint16(49), uint16(0), uint32(3<<20), uint16(1023), uint16(50), uint8(3), uint8(1), uint16(60))
 	// A mixed pass.
 	f.Add(uint64(5), uint16(10000), uint16(300), uint8(20), uint8(20), uint32(16<<10), uint32(1<<20), uint16(0), uint16(8), uint32(3<<20), uint16(1023), uint16(500), uint8(3), uint8(1), uint16(30))
 	f.Fuzz(func(t *testing.T, seed uint64, chunks, files uint16, zeros, repeats uint8, minLen, lenSpread uint32, minKeys, keySpread uint16, target uint32, maxChunks, slack uint16, blockKeys, fileKeys uint8, maxAge uint16) {
 		n := int(chunks) % (maxStream + 1)
 		lo := 1 + int32(minLen%maxChunkLen)
 		hi := lo + int32(lenSpread%uint32(maxChunkLen-lo+1))
-		kLo := int(minKeys) % (maxChunkKeys + 1)
+		kLo := 1 + int(minKeys)%maxChunkKeys // a ref writes at least its own key
 		kHi := kLo + int(keySpread)%(maxChunkKeys-kLo+1)
 		cfg := carver.AssemblerConfig{
 			BlockTarget: carver.MinBlockTarget + int64(target)%(carver.MaxBlockTarget-carver.MinBlockTarget+1),
-			MaxChunks:   1 + int(maxChunks)%1024,
+			MaxChunks:   1 + int(maxChunks)%maxCount,
 			BlockKeys:   int(blockKeys),
 			FileKeys:    int(fileKeys),
 			MaxAge:      time.Duration(maxAge) * time.Second,
@@ -66,8 +70,8 @@ func FuzzFold(f *testing.F) {
 
 // randomStream draws n chunks over files files, one after another, through
 // stream: zeroPct of them all zeros, repeatPct a repeat of one of the last 64
-// chunks that are not, lengths in lo..hi, Keys in kLo..kHi and Oldest up to
-// twice maxAge before t0.
+// chunks that are not, lengths in lo..hi, Keys in kLo..kHi and Oldest from
+// twice maxAge before t0 to maxAge after it, one in a hundred the zero time.
 func randomStream(rng *rand.Rand, n, files, zeroPct, repeatPct int, lo, hi int32, kLo, kHi int, maxAge time.Duration) []carver.ChunkInfo {
 	length := make([]int32, n)
 	of := make([]int, n) // the earlier chunk a repeat copies, -1 if none
@@ -97,7 +101,10 @@ func randomStream(rng *rand.Rand, n, files, zeroPct, repeatPct int, lo, hi int32
 	s := stream(rng.Int64N(1<<20), byFile...)
 	for i := range s {
 		s[i].Keys = kLo + rng.IntN(kHi-kLo+1)
-		s[i].Oldest = t0.Add(-time.Duration(rng.Int64N(int64(2*maxAge) + 1)))
+		s[i].Oldest = t0.Add(time.Duration(rng.Int64N(int64(3*maxAge)+1)) - 2*maxAge)
+		if rng.IntN(100) == 0 {
+			s[i].Oldest = time.Time{}
+		}
 		switch {
 		case isZero[i]:
 			zero(s, i, i+1)
