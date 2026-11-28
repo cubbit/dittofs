@@ -11,13 +11,10 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
 
-// foldedGiB is how many chunk bytes each run of TestAllocsFoldMemory folds.
-const foldedGiB = 1 << 30
-
-// heldAfterGiB folds foldedGiB of distinct carried chunks of size bytes, 16 to
-// a block, dropping every plan Add returns, and reports the live heap the fold
-// holds after its last Add: LiveHeap after it minus LiveHeap before New,
-// signed, since the heap can end lower than it began.
+// heldAfterGiB folds 1 GiB of distinct carried chunks of size bytes, 16 to a
+// block, dropping every plan Add returns, and returns the live heap the fold
+// holds after its last Add, signed because the heap can end lower than it
+// began.
 func heldAfterGiB(t *testing.T, size int32) int64 {
 	t.Helper()
 	cfg := carver.AssemblerConfig{BlockTarget: 16 * int64(size), MaxChunks: 1024, KeyBudget: 1 << 30}
@@ -29,7 +26,9 @@ func heldAfterGiB(t *testing.T, size int32) int64 {
 	if err != nil {
 		t.Fatalf("New(%+v): %v", cfg, err)
 	}
-	for i := range int64(foldedGiB / int64(size)) {
+	// Chunks are made one at a time, not by stream, so no input slice that
+	// grows with the chunk count sits in the measured heap.
+	for i := range int64(1<<30) / int64(size) {
 		var h entity.ChunkHash
 		binary.BigEndian.PutUint64(h[:], uint64(i+1))
 		f.Add(carver.ChunkInfo{File: file, Chunk: carver.Chunk{Offset: i * int64(size), Length: size, Hash: h}, Keys: 1, Oldest: t0})
@@ -39,22 +38,32 @@ func heldAfterGiB(t *testing.T, size int32) int64 {
 	return int64(after) - int64(before)
 }
 
-// TestAllocsFoldMemory checks that the fold's memory does not grow with the
-// bytes it folds or with its chunks' sizes (RFC 2 §5.5): 1 GiB folded as 64 KiB
-// chunks into 1 MiB blocks, 64 times as many chunks as the same GiB folded as
-// 4 MiB chunks into 64 MiB blocks, leaves the same live heap within 1 MiB. A
-// fold that kept every closed plan holds about 3.5 MiB more at 64 KiB chunks,
-// and one that kept a buffer per chunk length holds 63 MiB more at 4 MiB.
+// TestAllocsFoldMemory checks that the fold's memory grows neither with the
+// bytes or chunks it folds nor with its chunks' sizes (RFC 2 §5.5): 1 GiB
+// folded as 64 KiB chunks into 1 MiB blocks, and as 4 MiB chunks into 64 MiB
+// blocks, each leaves at most 256 KiB live, and the two differ by at most
+// 1 MiB. A constant fold holds a few KiB; one that kept a 48-byte record per
+// chunk holds about 840 KiB at 64 KiB chunks, one that kept every closed plan
+// about 3.5 MiB, and one that kept a buffer of each chunk's length about 4 MiB
+// at 4 MiB chunks.
 func TestAllocsFoldMemory(t *testing.T) {
 	if prof.RaceEnabled {
-		t.Skip("the race detector's shadow memory makes the live heap unmeasurable")
+		t.Skip("the race detector changes how much heap the runtime keeps")
 	}
-	const tolerance = 1 << 20
+	const held, apart = 256 << 10, 1 << 20
 
 	small := heldAfterGiB(t, 64<<10)
 	large := heldAfterGiB(t, 4<<20)
 	t.Logf("live heap held after 1 GiB: %d bytes at 64 KiB chunks, %d bytes at 4 MiB chunks", small, large)
-	if d := small - large; d > tolerance || d < -tolerance {
-		t.Errorf("live heap held after 1 GiB: got %d bytes at 64 KiB chunks and %d at 4 MiB, differing by %d, want within %d", small, large, d, tolerance)
+	for _, r := range []struct {
+		name string
+		got  int64
+	}{{"64 KiB", small}, {"4 MiB", large}} {
+		if r.got > held {
+			t.Errorf("live heap held after 1 GiB at %s chunks: got %d bytes, want at most %d", r.name, r.got, held)
+		}
+	}
+	if d := small - large; d > apart || d < -apart {
+		t.Errorf("live heap held after 1 GiB: 64 KiB and 4 MiB chunks differ by %d bytes, want within %d", d, apart)
 	}
 }
