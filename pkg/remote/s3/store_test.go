@@ -440,6 +440,30 @@ func TestGuard(t *testing.T) {
 	}
 }
 
+// A put can return while net/http's writer is still reading the body, when the
+// service answers before the last byte; the guard must then never read the
+// source again, which the caller may have closed or reused.
+func TestGuardReadsNothingOnceStopped(t *testing.T) {
+	src := bytes.NewReader([]byte("0123456789"))
+	g := &guard{src: src, left: 10}
+
+	if n, err := g.Read(make([]byte, 4)); n != 4 || err != nil {
+		t.Fatalf("first read = %d, %v; want 4, nil", n, err)
+	}
+
+	if read, err := g.stop(); read != 4 || err != nil {
+		t.Fatalf("stop = %d, %v; want 4, nil", read, err)
+	}
+
+	if n, err := g.Read(make([]byte, 4)); n != 0 || err == nil {
+		t.Errorf("a read after stop = %d, %v; want 0 and an error", n, err)
+	}
+
+	if left := src.Len(); left != 6 {
+		t.Errorf("the source has %d bytes left after a read past stop, want 6 unread", left)
+	}
+}
+
 func TestOutcome(t *testing.T) {
 	for _, tc := range []struct {
 		err           error
