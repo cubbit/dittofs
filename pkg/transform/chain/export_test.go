@@ -42,3 +42,8 @@ func (r Registry) MaxDecodeLens(ctx context.Context, m keys.Provider, ns ...int)
 	}
 	return got, nil
 }
+
+// NewChain is NewChain over this registry.
+func (r Registry) NewChain(ctx context.Context, cfg []transform.Config, m keys.Provider, deps Deps) (transform.Chain, error) {
+	return r.r.newChain(ctx, cfg, m, deps)
+}

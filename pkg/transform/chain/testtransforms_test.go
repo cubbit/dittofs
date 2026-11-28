@@ -71,3 +71,15 @@ func failing(err error) transform.Factory {
 func nilTransform(context.Context, map[string]any, keys.Provider) (transform.Transform, error) {
 	return nil, nil
 }
+
+// onSetting is a fault wrapper over factory f: a build whose settings carry
+// key runs fault instead, so a transform builds for decoding, with empty
+// settings, and fails, or builds another transform, when configured with key.
+func onSetting(key string, f, fault transform.Factory) transform.Factory {
+	return func(ctx context.Context, s map[string]any, m keys.Provider) (transform.Transform, error) {
+		if _, ok := s[key]; ok {
+			return fault(ctx, s, m)
+		}
+		return f(ctx, s, m)
+	}
+}

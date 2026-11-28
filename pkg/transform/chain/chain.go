@@ -6,8 +6,6 @@ package chain
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"log/slog"
 	"strconv"
 	"time"
@@ -18,35 +16,23 @@ import (
 )
 
 // NewChain builds the configured transforms, each through its registered
-// Factory with m, and the decoders of every registered transform (RFC 5
-// §2.5). It refuses, rather than building a chain without it (RFC 5 §2.7): a
-// deps without its Logger, Recorder or Encrypts, or a nil m, with an error
-// naming the member, so a nil Encrypts never makes the implicit encrypt-stage
-// check fail open and a nil Logger, Recorder or m fails here rather than
-// panicking at its first use; an unregistered name, in cfg or in
-// deps.Require; a factory's failure; a duplicate, two transforms of one
-// stage, or a list out of stage order (RFC 5 §2.3); a transform, configured
-// or registered, whose Stage is not one of StageCompress, StageEncrypt and
-// StageRedundancy; and an encrypt stage beside a compress stage whose
-// settings do not carry with_encryption: accept (RFC 5 §3.2). Only an
-// untyped nil Recorder is refused: a Recorder holding a nil pointer is the
-// caller's bug. Until the chain is built, a configuration that passes every
-// check above gets errors.ErrUnsupported.
+// Factory with its settings and m, and the decoders of every registered
+// transform (RFC 5 §2.5). It refuses, rather than building a chain without it
+// (RFC 5 §2.7): a deps without its Logger, Recorder or Encrypts, or a nil m,
+// with an error naming the member, so a nil Encrypts never makes the implicit
+// encrypt-stage check fail open and a nil Logger, Recorder or m fails here
+// rather than panicking at its first use; an unregistered name, in cfg or in
+// deps.Require; a factory's failure, for decoding or for cfg; a duplicate,
+// two transforms of one stage, or a list out of stage order (RFC 5 §2.3),
+// never reordering it; a transform, configured or registered, whose Stage is
+// not one of StageCompress, StageEncrypt and StageRedundancy, or that
+// reports another ID than it registered under; and an encrypt stage beside a
+// compress stage whose settings do not carry with_encryption: accept (RFC 5
+// §3.2). Every refusal but a missing member of deps is logged once at Error,
+// with the reason and the transform at fault (RFC 5 §6). Only an untyped nil
+// Recorder is refused: a Recorder holding a nil pointer is the caller's bug.
 func NewChain(ctx context.Context, cfg []transform.Config, m keys.Provider, deps Deps) (transform.Chain, error) {
-	for _, d := range []struct {
-		name    string
-		missing bool
-	}{
-		{"Deps.Logger", deps.Logger == nil},
-		{"Deps.Recorder", deps.Recorder == nil},
-		{"Deps.Encrypts", deps.Encrypts == nil},
-		{"the keys provider", m == nil},
-	} {
-		if d.missing {
-			return nil, fmt.Errorf("chain: %s is missing", d.name)
-		}
-	}
-	return nil, errors.ErrUnsupported
+	return process.newChain(ctx, cfg, m, deps)
 }
 
 // Deps is what a chain takes from its caller, the node's content wiring,
