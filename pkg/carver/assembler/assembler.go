@@ -1,9 +1,6 @@
 // Package assembler is the block assembler (RFC 2 §5): the fold that packs one
 // pass's chunks into block plans. It does no I/O, keeps nothing between passes
 // and declares no interface. Only the node's content wiring imports it.
-//
-// Add and Finish are stubs behind their final signatures, returning their zero
-// values.
 package assembler
 
 import (
@@ -22,7 +19,12 @@ const maxChunks = 1024
 // Fold packs one pass's chunks into block plans (RFC 2 §5). One Fold serves
 // one pass and does no I/O; the plans it returns inherit the pass's namespace
 // and chunk-ID key, which the pass, not the plan, records.
-type Fold struct{}
+type Fold struct {
+	cfg      carver.AssemblerConfig
+	open     *carver.BlockPlan // the pending plan, nil until a chunk opens one
+	carried  int64             // the open plan's carried bytes
+	finished bool
+}
 
 // New starts a pass's fold. It refuses, with carver.ErrInvalidSettings naming
 // the field, a BlockTarget outside carver.MinBlockTarget to
@@ -57,7 +59,7 @@ func New(c carver.AssemblerConfig) (*Fold, error) {
 	case c.MaxAge < 0:
 		return nil, fmt.Errorf("%w: MaxAge %v is negative", carver.ErrInvalidSettings, c.MaxAge)
 	}
-	return &Fold{}, nil
+	return &Fold{cfg: c}, nil
 }
 
 // Add folds in the next chunk, in file order, and returns the plans it closed
@@ -69,14 +71,59 @@ func New(c carver.AssemblerConfig) (*Fold, error) {
 // fail and nothing is adopted. The lookup, the error and an adopted
 // disposition arrive together with the dedup oracle, which changes this
 // signature.
+//
+// Add panics after Finish: a fold serves one pass.
 func (f *Fold) Add(c carver.ChunkInfo) ([]carver.BlockPlan, carver.Disposition) {
-	return nil, 0
+	if f.finished {
+		panic("assembler: Add after Finish: a fold serves one pass")
+	}
+	var closed []carver.BlockPlan
+	// A full plan is closed only when the next carried chunk arrives, never
+	// when it fills, so the refs that follow it can still join its commit.
+	if f.open != nil && f.full() {
+		closed = []carver.BlockPlan{*f.open}
+		f.open, f.carried = nil, 0
+	}
+	if f.open == nil {
+		f.open = &carver.BlockPlan{}
+	}
+	f.open.Carried = append(f.open.Carried, c)
+	f.open.Refs = append(f.open.Refs, c)
+	f.carried += int64(c.Length)
+	return closed, carver.Carried
 }
 
 // Finish closes the pass at now, which the caller supplies, and returns its
 // last plan, nil if none is open. held is true when that plan is short and held
 // back: the caller puts none of it, reports none of its extents and leaves them
-// dirty for the next pass.
+// dirty for the next pass. A short plan is put once its oldest ref is at least
+// MaxAge old at now; an Oldest after now reads as young. After Finish, Add and
+// Finish panic.
 func (f *Fold) Finish(now time.Time) (last *carver.BlockPlan, held bool) {
-	return nil, false
+	if f.finished {
+		panic("assembler: Finish after Finish: a fold serves one pass")
+	}
+	f.finished = true
+	if f.open == nil || f.full() {
+		return f.open, false
+	}
+	return f.open, now.Sub(oldest(f.open.Refs)) < f.cfg.MaxAge
+}
+
+// full reports whether the open plan has reached the block target in carried
+// bytes or holds the count cap's chunks.
+func (f *Fold) full() bool {
+	return f.carried >= f.cfg.BlockTarget || len(f.open.Carried) >= f.cfg.MaxChunks
+}
+
+// oldest is the earliest Oldest among refs; a zero Oldest is older than any
+// time, so its plan is always old enough to put.
+func oldest(refs []carver.ChunkInfo) time.Time {
+	o := refs[0].Oldest
+	for _, r := range refs[1:] {
+		if r.Oldest.Before(o) {
+			o = r.Oldest
+		}
+	}
+	return o
 }
