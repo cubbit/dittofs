@@ -18,11 +18,15 @@ import (
 // fetching is keyed whose Decode reads each material ID its body names from
 // the provider it is given, by kind and ID alone, as a body names it. askIn,
 // when set, is the namespace it asks in instead of the one being read;
-// current makes it ask for the current material instead, as no decode may.
+// current makes it ask for the current material too, as no decode may; want,
+// when set, is the content it must be given, or the body is ErrMalformed;
+// remap, when set, rewrites every error Get returns.
 type fetching struct {
 	keyed
 	askIn   *entity.NamespaceID
 	current bool
+	want    []byte
+	remap   error
 }
 
 func (f fetching) Decode(ctx context.Context, ns entity.NamespaceID, dst []byte, hash [32]byte, body []byte, limit int, m keys.Provider) ([]byte, error) {
@@ -40,8 +44,15 @@ func (f fetching) Decode(ctx context.Context, ns entity.NamespaceID, dst []byte,
 			return nil, transform.ErrMalformed
 		}
 		id := string(rest[1 : 1+int(rest[0])])
-		if _, err := m.Get(ctx, keys.MaterialID{Namespace: ns, Kind: kind, ID: id}); err != nil {
+		got, err := m.Get(ctx, keys.MaterialID{Namespace: ns, Kind: kind, ID: id})
+		if err != nil && f.remap != nil {
+			err = f.remap
+		}
+		if err != nil {
 			return nil, err
+		}
+		if f.want != nil && !bytes.Equal(got, f.want) {
+			return nil, transform.ErrMalformed
 		}
 		rest = rest[1+int(rest[0]):]
 	}
@@ -56,7 +67,8 @@ func (f fetching) factory() transform.Factory {
 var otherNS = entity.NamespaceID{2}
 
 // sealer is the encrypt-stage transform the census tests decode through.
-var sealer = fetching{keyed: keyed{id: idB, stage: transform.StageEncrypt, version: 1, kinds: []string{keys.KindDataKey}}}
+// It must be given d1's content in ns, span(0, 32).
+var sealer = fetching{keyed: keyed{id: idB, stage: transform.StageEncrypt, version: 1, kinds: []string{keys.KindDataKey}}, want: span(0, 32)}
 
 // censusRegistry registers sealer as seal, a second encrypt-stage transform
 // as seal2, an identity compressor and a redundancy step adding half.
@@ -69,18 +81,17 @@ func censusRegistry() chain.Registry {
 	return r
 }
 
-// sealed encodes chunk through seal under p's current data key of namespace
+// encoded encodes "chunk" through the chain cfg names, pinned for namespace
 // n, and returns the body and its census.
-func sealed(t *testing.T, r chain.Registry, p keys.Provider, n entity.NamespaceID) ([]byte, []transform.Encoded) {
+func encoded(t *testing.T, r chain.Registry, p keys.Provider, n entity.NamespaceID, cfg ...string) ([]byte, []transform.Encoded) {
 	t.Helper()
-	c := mustBuild(t, r, p, names("seal")...)
-	a, err := c.Pin(context.Background(), n)
+	a, err := mustBuild(t, r, p, names(cfg...)...).Pin(context.Background(), n)
 	if err != nil {
 		t.Fatalf("Pin(%s): %v", n, err)
 	}
 	body, encs, err := a.Encode(context.Background(), nil, hash, []byte("chunk"))
 	if err != nil {
-		t.Fatalf("Encode: %v", err)
+		t.Fatalf("Encode(%v): %v", cfg, err)
 	}
 	return body, encs
 }
@@ -99,10 +110,10 @@ func TestDecodeAsksOnlyForCensusMaterial(t *testing.T) {
 	ctx := context.Background()
 	r, p := censusRegistry(), keystest.NewMemory()
 	d1 := p.Give(ns, keys.KindDataKey, "d1", span(0, 32))
-	body, encs := sealed(t, r, p, ns)
+	body, encs := encoded(t, r, p, ns, "seal")
 	d2 := p.Give(ns, keys.KindDataKey, "d2", span(32, 64))
 	o1 := p.Give(otherNS, keys.KindDataKey, "d1", span(64, 96))
-	otherBody, otherEncs := sealed(t, r, p, otherNS)
+	otherBody, otherEncs := encoded(t, r, p, otherNS, "seal")
 	if !bytes.Equal(body, otherBody) {
 		t.Fatalf("bodies under each namespace's d1 differ: %x and %x, want one body naming d1", body, otherBody)
 	}
@@ -136,22 +147,27 @@ func TestDecodeAsksOnlyForCensusMaterial(t *testing.T) {
 	}
 	t.Run("its own census", func(t *testing.T) {
 		c := mustBuild(t, r, p, names("seal")...)
+		before := p.Calls()
 		if out, err := c.Decode(ctx, ns, nil, hash, body, chunkMax, encs); err != nil || string(out) != "chunk" {
 			t.Errorf("Decode = %q, %v, want the chunk", out, err)
+		}
+		if p.Calls() == before {
+			t.Errorf("the provider recorded no call, want the decode to have read d1")
 		}
 	})
 }
 
-// printChecked is a fault wrapper over a provider: Get refuses, as
-// ErrMaterialUnavailable, an ID whose fingerprint is not the one Give
-// recorded, as a provider checking the fingerprint it is handed would.
+// printChecked wraps the in-memory provider, which deliberately ignores the
+// fingerprint it is handed, with the check a provider comparing it makes: Get
+// refuses, as ErrMaterialUnavailable, an ID asked with another fingerprint
+// than want.
 type printChecked struct {
 	*keystest.Memory
-	given map[string][32]byte
+	want [32]byte
 }
 
 func (p printChecked) Get(ctx context.Context, id keys.MaterialID) ([]byte, error) {
-	if id.Fingerprint != p.given[id.ID] {
+	if id.Fingerprint != p.want {
 		return nil, fmt.Errorf("%s %q asked with another fingerprint: %w", id.Kind, id.ID, keys.ErrMaterialUnavailable)
 	}
 	return p.Memory.Get(ctx, id)
@@ -164,9 +180,9 @@ func TestDecodeHandsTheProviderTheCensusEntry(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	m := keystest.NewMemory()
 	d1 := m.Give(ns, keys.KindDataKey, "d1", span(0, 32))
-	p := printChecked{m, map[string][32]byte{"d1": d1.Fingerprint}}
+	p := printChecked{m, d1.Fingerprint}
 	r := censusRegistry()
-	body, encs := sealed(t, r, p, ns)
+	body, encs := encoded(t, r, p, ns, "seal")
 	c := mustBuild(t, r, p, names("seal")...)
 	if out, err := c.Decode(context.Background(), ns, nil, hash, body, chunkMax, encs); err != nil || string(out) != "chunk" {
 		t.Errorf("Decode = %q, %v, want the chunk, the provider asked with the census's fingerprint", out, err)
@@ -192,7 +208,7 @@ func TestDecodeReportsMaterialErrors(t *testing.T) {
 	r := censusRegistry()
 	writer := keystest.NewMemory()
 	writer.Give(ns, keys.KindDataKey, "d1", span(0, 32))
-	body, encs := sealed(t, r, writer, ns)
+	body, encs := encoded(t, r, writer, ns, "seal")
 
 	t.Run("unknown, then loaded", func(t *testing.T) {
 		p := keystest.NewMemory()
@@ -239,18 +255,6 @@ func TestRequire(t *testing.T) {
 	r, p := censusRegistry(), keystest.NewMemory()
 	p.Give(ns, keys.KindDataKey, "d1", span(0, 32))
 	p.Give(otherNS, keys.KindDataKey, "d1", span(32, 64))
-	encode := func(n entity.NamespaceID, cfg ...string) ([]byte, []transform.Encoded) {
-		t.Helper()
-		a, err := mustBuild(t, r, p, names(cfg...)...).Pin(ctx, n)
-		if err != nil {
-			t.Fatalf("Pin: %v", err)
-		}
-		body, encs, err := a.Encode(ctx, nil, hash, []byte("chunk"))
-		if err != nil {
-			t.Fatalf("Encode(%v): %v", cfg, err)
-		}
-		return body, encs
-	}
 	type body struct {
 		ns   entity.NamespaceID
 		cfg  []string
@@ -266,7 +270,7 @@ func TestRequire(t *testing.T) {
 		"other parity": {ns: otherNS, cfg: []string{"parity"}},
 	}
 	for _, b := range bodies {
-		b.body, b.encs = encode(b.ns, b.cfg...)
+		b.body, b.encs = encoded(t, r, p, b.ns, b.cfg...)
 	}
 	encryptsNS := func(n entity.NamespaceID) bool { return n == ns }
 	for _, tc := range []struct {
@@ -307,6 +311,47 @@ func TestRequire(t *testing.T) {
 				t.Errorf("Decode of body %q asked the provider %d times before its refusal, want none", tc.body, p.Calls()-before)
 			case !tc.refused && (err != nil || string(out) != "chunk"):
 				t.Errorf("Decode of body %q = %q, %v, want the chunk", tc.body, out, err)
+			}
+		})
+	}
+}
+
+// TestCensusVerdictOutranksTheStep decodes through transforms that rewrite
+// every Get error: a planted ID is still ErrMalformed, never an outage, and a
+// destroyed key is still destroyed, never corruption (RFC 5 §2.7).
+func TestCensusVerdictOutranksTheStep(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	ctx := context.Background()
+	p := keystest.NewMemory()
+	d1 := p.Give(ns, keys.KindDataKey, "d1", span(0, 32))
+	body, encs := encoded(t, censusRegistry(), p, ns, "seal")
+	for _, tc := range []struct {
+		name    string
+		remap   error
+		census  []transform.Encoded
+		destroy bool
+		want    error
+		notWant []error
+	}{
+		{"a planted ID rewritten to unavailable", keys.ErrMaterialUnavailable, nil, false, transform.ErrMalformed, []error{keys.ErrMaterialUnavailable}},
+		{"a planted ID rewritten to unknown", fmt.Errorf("lost: %w", keys.ErrUnknownMaterial), nil, false, transform.ErrMalformed, []error{keys.ErrMaterialUnavailable, keys.ErrUnknownMaterial}},
+		{"a destroyed key rewritten to a plain error", errors.New("no key"), encs, true, keys.ErrMaterialDestroyed, []error{transform.ErrMalformed}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.destroy {
+				p.Destroy(d1)
+				defer p.Give(ns, keys.KindDataKey, "d1", span(0, 32))
+			}
+			r := chain.NewRegistry()
+			r.Register(idB, "seal", fetching{keyed: sealer.keyed, remap: tc.remap}.factory())
+			_, err := mustBuild(t, r, p, names("seal")...).Decode(ctx, ns, nil, hash, body, chunkMax, tc.census)
+			if !errors.Is(err, tc.want) {
+				t.Errorf("Decode = %v, want %v", err, tc.want)
+			}
+			for _, nw := range tc.notWant {
+				if errors.Is(err, nw) {
+					t.Errorf("Decode = %v, want it not to be %v", err, nw)
+				}
 			}
 		})
 	}
