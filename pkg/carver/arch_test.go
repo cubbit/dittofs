@@ -79,14 +79,16 @@ var surfaces = []surface{
 		dir: "internal/params",
 		exports: []string{
 			"func Bits(s Settings) (before int, after int)",
+			"func ChunkIDKey(s Settings) [32]byte",
 			"func Gear(s Settings) *[256]uint64",
 			"func New(target int, gear *[256]uint64) Settings",
+			"func WithChunkIDKey(s Settings, key [32]byte) Settings",
 			"type Settings struct{}",
 			"func (Settings).Max() int",
 			"func (Settings).Min() int",
 			"func (Settings).Target() int",
 		},
-		// The value, the function that builds it and two readers; no state.
+		// The value, the functions that build it and its readers; no state.
 		purity: archtest.Purity{Funcs: true},
 	},
 	{

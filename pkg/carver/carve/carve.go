@@ -2,8 +2,7 @@
 // the chunk ID and the block name. It keeps nothing between calls and
 // declares no interface. Only the node's content wiring imports it.
 //
-// Cut and ChunkID are stubs behind their final signatures: a function with
-// an error returns errors.ErrUnsupported, one without returns its zero value.
+// Cut is a stub behind its final signature: it returns errors.ErrUnsupported.
 package carve
 
 import (
@@ -11,7 +10,6 @@ import (
 	"io"
 
 	"github.com/cubbit/dittofs/pkg/carver"
-	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
 
 // Cut cuts one unbroken stretch read from r, whose first byte sits at file
@@ -28,11 +26,4 @@ func Cut(r io.Reader, base int64, s carver.Settings, buf []byte, realEnd bool,
 	emit func(carver.Chunk, []byte) error,
 ) (consumed int64, err error) {
 	return 0, errors.ErrUnsupported
-}
-
-// ChunkID is the chunk ID of p: BLAKE3's keyed hash under s's chunk-ID key,
-// over p and nothing else. It panics on a zero Settings, which only a caller
-// that skipped NewSettings holds.
-func ChunkID(s carver.Settings, p []byte) entity.ChunkHash {
-	return entity.ChunkHash{}
 }

@@ -55,7 +55,7 @@ func NewSettings(target int, encrypting bool, chunkingKey, chunkIDKey [32]byte) 
 		g = keyedGear(chunkingKey)
 	}
 
-	return params.New(target, g), nil
+	return params.WithChunkIDKey(params.New(target, g), chunkIDKey), nil
 }
 
 // CheckTarget refuses, with carver.ErrInvalidSettings, a Target that is not a
