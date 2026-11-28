@@ -12,7 +12,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -320,6 +322,9 @@ func TestGetOfAFlippedWholeBlock(t *testing.T) {
 				t.Errorf("the reader ended with %v, want ErrTransient", err)
 			}
 			noSDKType(t, "the reader's end", err)
+			if typ := awsType(err); typ != "" {
+				t.Errorf("the reader's end %v unwraps to the SDK's %s", err, typ)
+			}
 
 			want := bytes.Clone(b)
 			want[7] ^= 0xff
@@ -332,6 +337,36 @@ func TestGetOfAFlippedWholeBlock(t *testing.T) {
 			}
 		})
 	}
+}
+
+// awsType names the first error in err's tree whose type an aws package
+// declares, unexported ones such as the SDK's checksum validation error
+// among them; "" when there is none.
+func awsType(err error) string {
+	if err == nil {
+		return ""
+	}
+
+	typ := reflect.TypeOf(err)
+	if typ.Kind() == reflect.Pointer {
+		typ = typ.Elem()
+	}
+	if strings.HasPrefix(typ.PkgPath(), "github.com/aws/") {
+		return typ.String()
+	}
+
+	switch u := err.(type) {
+	case interface{ Unwrap() error }:
+		return awsType(u.Unwrap())
+	case interface{ Unwrap() []error }:
+		for _, e := range u.Unwrap() {
+			if typ := awsType(e); typ != "" {
+				return typ
+			}
+		}
+	}
+
+	return ""
 }
 
 func TestGetAfterAPutCutOffFindsNothing(t *testing.T) {
