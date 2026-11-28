@@ -3,8 +3,10 @@ package carve_test
 import (
 	"bytes"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"slices"
 	"testing"
 	"testing/iotest"
@@ -207,4 +209,146 @@ func TestCutBoundsEmptyReads(t *testing.T) {
 	if err != io.ErrNoProgress || len(got) != 0 {
 		t.Errorf("100 empty reads: %d chunks and %v, want none and io.ErrNoProgress", len(got), err)
 	}
+}
+
+// decision: the fault sweep's size is set by this flag, never by
+// testing.Short(): not every run that checks a change passes -short, so a
+// sweep keyed on it would run at full size under the race detector there and
+// exceed the run's timeout. Without the flag the sweep fails the reader one
+// byte before, at and after every chunk end and every refill, and at 256
+// seeded offsets; with it, at every offset of the stretch. The flag exists in
+// this package's test binary alone, so a run that sets it names this package
+// only. Key the size on testing.Short() instead if every such run passes
+// -short, or if the full sweep fits their timeout under the race detector.
+var sweepFull = flag.Bool("carver.sweep-full", false, "run the carver's fault sweep at every byte offset")
+
+// sweepCut is one Cut over r at base 0 through buf that fails emit at chunk
+// failAtChunk, counted from 1 (0: never), checking that each chunk handed to
+// emit holds data's bytes at its offset.
+func sweepCut(t *testing.T, name string, data []byte, r io.Reader, s carver.Settings, buf []byte, failAtChunk int) ([]carver.Chunk, int64, error) {
+	t.Helper()
+
+	var got []carver.Chunk
+	consumed, err := carve.Cut(r, 0, s, buf, true, func(c carver.Chunk, p []byte) error {
+		end := c.Offset + int64(c.Length)
+		if c.Offset < 0 || end > int64(len(data)) {
+			t.Fatalf("%s: chunk %+v lies outside the stretch's [0, %d)", name, c, len(data))
+		}
+		if !bytes.Equal(p, data[c.Offset:end]) {
+			t.Fatalf("%s: chunk %+v: emit was handed %d bytes unequal to the stretch's [%d, %d)", name, c, len(p), c.Offset, end)
+		}
+		got = append(got, c)
+		if len(got) == failAtChunk {
+			return errPlanted
+		}
+
+		return nil
+	})
+
+	return got, consumed, err
+}
+
+// sweepOffsets is where the reduced sweep fails the reader: one byte before,
+// at and after every chunk end of ref and every refill point, and 256 offsets
+// from a fixed seed, within [0, n]. Through a buffer of Max bytes Cut refills
+// before every chunk, reading until Max bytes past the chunk's start are held,
+// so the refill points are each chunk's start plus Max.
+func sweepOffsets(ref []carver.Chunk, s carver.Settings, n int64) []int64 {
+	var out []int64
+	for _, c := range ref {
+		for _, a := range []int64{c.Offset + int64(c.Length), c.Offset + int64(s.Max())} {
+			for d := int64(-1); d <= 1; d++ {
+				if a+d <= n {
+					out = append(out, a+d)
+				}
+			}
+		}
+	}
+	rng := rand.New(rand.NewPCG(19, 23))
+	for range 256 {
+		out = append(out, rng.Int64N(n+1))
+	}
+	slices.Sort(out)
+
+	return slices.Compact(out)
+}
+
+// The fault sweep of RFC 2 §10.3, over 640 KiB of Random at the smallest
+// Target through a buffer of Max bytes: about ten chunks and ten refills.
+// The reader fails having served n bytes, the last of them handed over with
+// the error, for each n of sweepOffsets, or for every n with
+// -carver.sweep-full. Cut must stop before the bytes that came with the
+// error, so it delivers exactly the clean chunks whose fill completed before
+// them, those starting more than Max bytes before n: a part-built chunk
+// handed over short, a chunk cut from the bytes the error came with, or an
+// error lost at the read that fills the buffer, fails at its offset. emit
+// then fails at every chunk, and Cut delivers the clean run up to that chunk.
+// After each failure a retry through the same buffer gives the clean run, so
+// nothing a failed call leaves in the buffer changes a later cut.
+func TestFaultSweep(t *testing.T) {
+	s := settings64K(t, [32]byte{0: 1})
+	data := carvetest.Bytes(carvetest.Random, 17, 640<<10)
+	buf := make([]byte, s.Max())
+
+	ref, _, err := sweepCut(t, "the clean run", data, bytes.NewReader(data), s, buf, 0)
+	if err != nil || len(ref) < 8 {
+		t.Fatalf("the clean run: %d chunks and %v, want at least 8 and no error", len(ref), err)
+	}
+
+	retry := func(name string) {
+		t.Helper()
+		got, _, err := sweepCut(t, name+", the retry", data, bytes.NewReader(data), s, buf, 0)
+		if err != nil {
+			t.Fatalf("%s, the retry: err %v, want nil", name, err)
+		}
+		checkClean(t, name+", the retry", got, ref)
+	}
+
+	offsets := sweepOffsets(ref, s, int64(len(data)))
+	if *sweepFull {
+		offsets = offsets[:0]
+		for n := range int64(len(data)) + 1 {
+			offsets = append(offsets, n)
+		}
+	}
+
+	for _, n := range offsets {
+		name := fmt.Sprintf("the reader failing having served %d bytes", n)
+		got, consumed, err := sweepCut(t, name, data, &failAt{r: bytes.NewReader(data), n: n, err: errPlanted}, s, buf, 0)
+		if err != errPlanted {
+			t.Fatalf("%s: err %v, want the planted error itself", name, err)
+		}
+		// The byte at n-1 came with the error, so only chunks with Max bytes
+		// in view before it are cut.
+		want := ref[:heldAt(ref, 0, n-1, s)]
+		checkClean(t, name, got, want)
+		if w := sum(want); consumed != w {
+			t.Fatalf("%s: consumed %d, want %d, the chunks emit accepted", name, consumed, w)
+		}
+		retry(name)
+	}
+
+	for i := 1; i <= len(ref); i++ {
+		name := fmt.Sprintf("emit failing at chunk %d", i)
+		got, consumed, err := sweepCut(t, name, data, bytes.NewReader(data), s, buf, i)
+		if err != errPlanted {
+			t.Fatalf("%s: err %v, want the planted error itself", name, err)
+		}
+		checkClean(t, name, got, ref[:i])
+		if want := ref[i-1].Offset; consumed != want {
+			t.Fatalf("%s: consumed %d, want %d, the chunks emit accepted", name, consumed, want)
+		}
+		retry(name)
+	}
+	t.Logf("%d reader failures and %d emit failures, each with a retry", len(offsets), len(ref))
+}
+
+// sum is how many bytes chunks covers.
+func sum(chunks []carver.Chunk) int64 {
+	var n int64
+	for _, c := range chunks {
+		n += int64(c.Length)
+	}
+
+	return n
 }
