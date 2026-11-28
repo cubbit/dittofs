@@ -100,7 +100,8 @@ func (p *Provider) wrap(ctx context.Context, in ...sealIn) ([][]byte, error) {
 }
 
 // unwrap opens stored, a stored wrap of the provider's custody, with
-// associated data aad.
+// associated data aad. A provider has one custody, which refuses a wrap of
+// the other kind: a store configuration never moves between the two.
 func (p *Provider) unwrap(ctx context.Context, stored, aad []byte) ([]byte, error) {
 	return p.custody.unwrap(ctx, stored, aad)
 }

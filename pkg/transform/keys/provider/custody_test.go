@@ -61,7 +61,14 @@ func runCustody(t *testing.T, newCustody func(t *testing.T) custody) {
 			t.Fatalf("wrap: %v", err)
 		}
 		s := stored[0]
-		for _, at := range []int{0, len(s) - len(key) - 1, len(s) - 1} {
+		w, err := parseStoredWrap(s)
+		if err != nil {
+			t.Fatalf("parse the stored wrap: %v", err)
+		}
+		// The kind, the master-key ID's last byte, and the wrap bytes' first,
+		// fourth, middle and last: each field of either custody's layout.
+		start := len(s) - len(w.wrap)
+		for _, at := range []int{0, start - 5, start, start + 3, start + len(w.wrap)/2, len(s) - 1} {
 			flipped := bytes.Clone(s)
 			flipped[at] ^= 0x01
 			if got, err := c.unwrap(ctx, flipped, aad); err == nil {

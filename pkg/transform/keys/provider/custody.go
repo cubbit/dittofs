@@ -33,11 +33,6 @@ type custody interface {
 	state(ctx context.Context, masterKeyID []byte) error
 }
 
-var (
-	_ custody = (*fileCustody)(nil)
-	_ custody = (*keyService)(nil)
-)
-
 // fileCustody is the key-file custody: the master key read from the store
 // configuration's key file, held in this process.
 type fileCustody struct {

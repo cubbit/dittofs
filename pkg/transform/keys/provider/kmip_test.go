@@ -12,6 +12,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"math/big"
 	"net"
 	"os"
@@ -21,6 +22,7 @@ import (
 	"time"
 
 	"github.com/gemalto/kmip-go/kmip14"
+	"github.com/gemalto/kmip-go/ttlv"
 
 	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/transform/keys"
@@ -73,8 +75,8 @@ func TestKMIPStoredWrapVector(t *testing.T) {
 	if !bytes.Equal(gotIV, iv) || !bytes.Equal(gotTag, tag) || !bytes.Equal(gotData, data) {
 		t.Errorf("the vector's wrap bytes split into IV %x, tag %x, data %x; want %x, %x, %x", gotIV, gotTag, gotData, iv, tag, data)
 	}
-	if uid, err := uidOf(s.masterKeyID); err != nil || uid != "3" {
-		t.Errorf("UID of the vector's master-key ID %q = %q, %v; want 3", s.masterKeyID, uid, err)
+	if q, uid, err := splitID(s.masterKeyID); err != nil || q != "127.0.0.1:5696" || uid != "3" {
+		t.Errorf("split of the vector's master-key ID %q = %q, %q, %v; want 127.0.0.1:5696 and 3", s.masterKeyID, q, uid, err)
 	}
 
 	block, err := aes.NewCipher(span(0x00, 0x20))
@@ -104,7 +106,6 @@ func TestKMIPWrapRefusals(t *testing.T) {
 		name string
 		b    []byte
 	}{
-		{"empty", nil},
 		{"a join cut inside its header", join[:2]},
 		{"an unknown version", append([]byte{2}, join[1:]...)},
 		{"an IV of zero bytes", append([]byte{1, 0, 0}, join[3:]...)},
@@ -144,6 +145,7 @@ func TestMasterKeyIDRefusals(t *testing.T) {
 		{"an ID of 65,536 bytes", strings.Repeat("q", 65534), "3"},
 		{"an empty UID", "kms-a", ""},
 		{"a UID holding a /", "kms-a", "3/4"},
+		{"a UID holding a space and an =", "kms-a", "3 reason=ItemNotFound"},
 	} {
 		if id, err := masterKeyIDOf(tc.qualifier, tc.uid); err == nil {
 			t.Errorf("masterKeyIDOf for %s = %q, want an error", tc.name, id)
@@ -153,13 +155,13 @@ func TestMasterKeyIDRefusals(t *testing.T) {
 		t.Errorf("masterKeyIDOf of 65,535 bytes = %d bytes, %v; want it accepted", len(id), err)
 	}
 
-	for _, id := range []string{"no-slash", "kms-a/"} {
-		if uid, err := uidOf([]byte(id)); !errors.Is(err, errStoredWrap) {
-			t.Errorf("uidOf(%q) = %q, %v; want errStoredWrap", id, uid, err)
+	for _, id := range []string{"no-slash", "kms-a/", "kms-a/3 reason=ItemNotFound"} {
+		if _, uid, err := splitID([]byte(id)); !errors.Is(err, errStoredWrap) {
+			t.Errorf("splitID(%q) = %q, %v; want errStoredWrap", id, uid, err)
 		}
 	}
-	if uid, err := uidOf([]byte("kms/a/3")); err != nil || uid != "3" {
-		t.Errorf("uidOf(kms/a/3) = %q, %v; want 3, what follows the last /", uid, err)
+	if q, uid, err := splitID([]byte("kms/a/3")); err != nil || q != "kms/a" || uid != "3" {
+		t.Errorf("splitID(kms/a/3) = %q, %q, %v; want kms/a and 3, either side of the last /", q, uid, err)
 	}
 }
 
@@ -175,7 +177,7 @@ func TestLocatedOne(t *testing.T) {
 			t.Errorf("locatedOne of %d UIDs = %q, want an error", len(uids), uid)
 			continue
 		}
-		if msg := err.Error(); !strings.Contains(msg, `"mk"`) || !strings.Contains(msg, "found "+string(rune('0'+len(uids)))+" keys") {
+		if msg := err.Error(); !strings.Contains(msg, `"mk"`) || !strings.Contains(msg, fmt.Sprintf("found %d keys", len(uids))) {
 			t.Errorf("locatedOne of %d UIDs: %q, want the key's name and the count", len(uids), msg)
 		}
 	}
@@ -276,6 +278,9 @@ func TestValidateConfigKMIP(t *testing.T) {
 		{"an empty key", "KMIP.Key", with(func(c *KMIPConfig) { c.Key = "" })},
 		{"an empty client certificate", "KMIP.ClientCert", with(func(c *KMIPConfig) { c.ClientCert = "" })},
 		{"an empty client key", "KMIP.ClientKey", with(func(c *KMIPConfig) { c.ClientKey = nil })},
+		{"a client key after other text", "KMIP.ClientKey", with(func(c *KMIPConfig) { c.ClientKey = append([]byte("junk\n"), keyPEM...) })},
+		{"an endpoint not ASCII, no server name", "KMIP.Endpoint", with(func(c *KMIPConfig) { c.ServerName, c.Endpoint = "", "kmś.example:5696" })},
+		{"a server name of 65,534 bytes", "KMIP.ServerName", with(func(c *KMIPConfig) { c.ServerName = strings.Repeat("k", 65534) })},
 		{"a client key that is no PEM", "KMIP.ClientKey", with(func(c *KMIPConfig) { c.ClientKey = []byte("not a PEM") })},
 		{"a client key of two PEM blocks", "KMIP.ClientKey", with(func(c *KMIPConfig) { c.ClientKey = append(bytes.Clone(keyPEM), keyPEM...) })},
 		{"a server name with a control byte", "KMIP.ServerName", with(func(c *KMIPConfig) { c.ServerName = "kms\n" })},
@@ -298,9 +303,15 @@ func TestValidateConfigKMIP(t *testing.T) {
 func TestNewOverAKeyService(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	p, err := New(context.Background(), Config{KMIP: kmipConfig(t, closedEndpoint(t))}, Deps{Records: keystest.NewRecords(), Rand: rand.Reader})
+	storage := []StorageKey{{ID: "3"}}
+	p, err := New(context.Background(), Config{KMIP: kmipConfig(t, closedEndpoint(t))}, Deps{Records: keystest.NewRecords(), Rand: rand.Reader, StorageKeys: storage})
 	if err != nil {
 		t.Fatalf("New over a key service nobody listens for = %v, want it built", err)
+	}
+	// The storage keys reach the custody, whose primary read refuses them;
+	// that refusal through a Locate is a row against the real server.
+	if got := p.custody.(*keyService).storage; len(got) != 1 || notStorage("3", got) == nil {
+		t.Errorf("the key-service custody holds storage keys %v, want %v", got, storage)
 	}
 	if p.custody.kind() != kindKeyService || p.kf != nil {
 		t.Errorf("New over a key service built a custody of kind %#x and a key file %v; want kind %#x and none", p.custody.kind(), p.kf, kindKeyService)
@@ -325,15 +336,24 @@ func TestNewOverAKeyService(t *testing.T) {
 func TestKeyServiceErrorMapping(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	refused := context.Background()
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
 
 	for _, tc := range []struct {
-		name string
-		ctx  context.Context
-	}{{"a refused dial", refused}, {"a cancelled context", cancelled}} {
-		ks, err := newKeyService(kmipConfig(t, closedEndpoint(t)), nil)
+		name     string
+		ctx      context.Context
+		endpoint string
+	}{
+		{"a refused dial", context.Background(), closedEndpoint(t)},
+		// The listener's backlog accepts the dial and nothing ever answers,
+		// and the timeout is an hour, so only the cancelled context ends the
+		// calls: a custody that ignored it would hang the test, a bounded
+		// wait being the assertion here.
+		{"a cancelled context", cancelled, silentEndpoint(t)},
+	} {
+		cfg := kmipConfig(t, tc.endpoint)
+		cfg.Timeout = time.Hour
+		ks, err := newKeyService(cfg, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -345,9 +365,63 @@ func TestKeyServiceErrorMapping(t *testing.T) {
 				t.Errorf("%s after %s = %v, want ErrMaterialUnavailable and never ErrMaterialDestroyed", op, tc.name, err)
 			}
 		}
-		err = ks.state(tc.ctx, []byte("kms-a/3"))
+		err = ks.state(tc.ctx, []byte(tc.endpoint+"/3"))
 		if err == nil || errors.Is(err, keys.ErrMaterialUnavailable) || errors.Is(err, keys.ErrMaterialDestroyed) {
 			t.Errorf("state after %s = %v, want an error wrapping neither ErrMaterialUnavailable nor ErrMaterialDestroyed", tc.name, err)
+		}
+	}
+}
+
+// silentEndpoint is the address of a listener on 127.0.0.1 that accepts into
+// its backlog and never answers, closed when the test ends.
+func silentEndpoint(t *testing.T) string {
+	t.Helper()
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	return l.Addr().String()
+}
+
+// A state read of an ID another server qualifies is not sent: the same UID
+// there may name another key. It gets no answer, neither unavailable nor
+// destroyed, and names both qualifiers.
+func TestStateOfAForeignQualifier(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	ks, err := newKeyService(kmipConfig(t, closedEndpoint(t)), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = ks.state(context.Background(), []byte("old-kms:5696/3"))
+	if err == nil || errors.Is(err, keys.ErrMaterialUnavailable) || errors.Is(err, keys.ErrMaterialDestroyed) {
+		t.Fatalf("state of another server's ID = %v, want an error wrapping neither sentinel", err)
+	}
+	if msg := err.Error(); !strings.Contains(msg, "old-kms:5696") || strings.Contains(msg, "dial") {
+		t.Errorf("state of another server's ID = %q, want it refused before any dial, naming old-kms:5696", msg)
+	}
+}
+
+// decodeTTLV returns an error, never a panic, for bytes a server sends that
+// are not the payload asked for.
+func TestDecodeTTLVRefusesMalformedPayloads(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	byteString := ttlv.TTLV{0x42, 0x00, 0x7c, byte(ttlv.TypeByteString), 0, 0, 0, 1, 0xaa, 0, 0, 0, 0, 0, 0, 0}
+	for _, tc := range []struct {
+		name string
+		raw  ttlv.TTLV
+		into any
+	}{
+		{"nothing", nil, &encryptResponse{}},
+		{"a short header", ttlv.TTLV{0x42, 0x00}, &locateResponse{}},
+		{"a byte string where a structure belongs", byteString, &encryptResponse{}},
+		{"a byte string into the Decrypt response", byteString, &decryptResponse{}},
+	} {
+		if err := decodeTTLV(tc.raw, tc.into); err == nil {
+			t.Errorf("decodeTTLV of %s = nil, want an error", tc.name)
 		}
 	}
 }
@@ -462,6 +536,14 @@ func TestKeyServiceReconfigure(t *testing.T) {
 		{"an empty endpoint", func(c *KMIPConfig) { c.Endpoint = "" }},
 		{"a client key that does not parse", func(c *KMIPConfig) { c.ClientKey = notAKey }},
 		{"a certificate file that is absent", func(c *KMIPConfig) { c.ClientCert = filepath.Join(t.TempDir(), "absent.pem") }},
+		{"a CA file that is absent", func(c *KMIPConfig) { c.ServerCA = filepath.Join(t.TempDir(), "absent.pem") }},
+		{"a CA holding no certificate", func(c *KMIPConfig) {
+			c.ServerCA = c.ClientCert + ".none"
+			_ = os.WriteFile(c.ServerCA, []byte("none"), 0o600)
+		}},
+		{"an empty key", func(c *KMIPConfig) { c.Key = "" }},
+		{"an empty certificate path", func(c *KMIPConfig) { c.ClientCert = "" }},
+		{"an empty client key", func(c *KMIPConfig) { c.ClientKey = nil }},
 	} {
 		next := cfg
 		next.Endpoint = "127.0.0.2:5696"

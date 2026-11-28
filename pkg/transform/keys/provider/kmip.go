@@ -56,21 +56,32 @@ func validateKMIP(cfg KMIPConfig) error {
 	if cfg.ClientCert == "" {
 		return errors.New("provider: KMIP.ClientCert is empty")
 	}
-	if len(cfg.ClientKey) == 0 {
-		return errors.New("provider: KMIP.ClientKey is empty")
-	}
-	if block, rest := pem.Decode(cfg.ClientKey); block == nil || len(bytes.TrimSpace(rest)) != 0 {
+	key := bytes.TrimSpace(cfg.ClientKey)
+	if block, rest := pem.Decode(key); block == nil || !bytes.HasPrefix(key, []byte("-----BEGIN")) || len(bytes.TrimSpace(rest)) != 0 {
 		return errors.New("provider: KMIP.ClientKey is not one PEM block")
 	}
-	for i := 0; i < len(cfg.ServerName); i++ {
-		if c := cfg.ServerName[i]; c < 0x20 || c > 0x7e {
-			return fmt.Errorf("provider: KMIP.ServerName %q is not printable ASCII", cfg.ServerName)
-		}
+	// The qualifier of every master-key ID, so it must fit one.
+	field, qualifier := "KMIP.ServerName", cfg.ServerName
+	if qualifier == "" {
+		field, qualifier = "KMIP.Endpoint", cfg.Endpoint
+	}
+	if !printable(qualifier) || len(qualifier) > 0xFFFF-2 {
+		return fmt.Errorf("provider: %s %q is not printable ASCII of at most 65,533 bytes", field, qualifier)
 	}
 	if cfg.Timeout < 0 {
 		return fmt.Errorf("provider: KMIP.Timeout %v is negative", cfg.Timeout)
 	}
 	return nil
+}
+
+// printable reports whether s is printable ASCII.
+func printable(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c < 0x20 || c > 0x7e {
+			return false
+		}
+	}
+	return true
 }
 
 // keyService is the key-service custody: a KMIP server holds the master key,
@@ -142,13 +153,10 @@ func (ks *keyService) reconfigure(cfg KMIPConfig) error {
 	if err != nil {
 		return err
 	}
-	// decision: the client is swapped whole once it is built, so a call in
-	// flight finishes on the old one and the next takes the new. A changed
-	// ServerName, or an endpoint changed with none set, changes the
-	// master-key ID the next primary read reports; the caller's rotation
-	// re-wraps the records under it, a cost and never a loss, since an
-	// unwrap reads only the UID. Withdraw it if a swap ever needs to drain
-	// the calls in flight.
+	// decision: the client is swapped whole once built, so a call in flight
+	// finishes on the old one. A changed qualifier is a rotation the caller
+	// re-wraps, never a loss, since an unwrap reads only the UID. Withdraw it
+	// if a swap must ever drain the calls in flight.
 	ks.conn.Store(conn)
 	return nil
 }
@@ -164,16 +172,22 @@ func unavailable(conn *serviceConn, what string, err error) error {
 
 // primary reads the master key's primary version as its master-key ID.
 func (ks *keyService) primary(ctx context.Context) ([]byte, error) {
-	conn := ks.conn.Load()
+	_, id, err := ks.primaryVersion(ctx, ks.conn.Load())
+	return id, err
+}
+
+// primaryVersion is the UID of the master key's primary version on conn's
+// server, which is not a storage key's, and its master-key ID.
+func (ks *keyService) primaryVersion(ctx context.Context, conn *serviceConn) (string, []byte, error) {
 	uid, err := ks.primaryUID(ctx, conn)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	id, err := masterKeyIDOf(conn.qualifier, uid)
 	if err != nil {
-		return nil, unavailable(conn, fmt.Sprintf("KMIP key %q", ks.key), err)
+		return "", nil, unavailable(conn, fmt.Sprintf("KMIP key %q", ks.key), err)
 	}
-	return id, nil
+	return uid, id, nil
 }
 
 // primaryUID is the UID of the master key's primary version, which is not a
@@ -244,8 +258,8 @@ func notStorage(uid string, storage []StorageKey) error {
 // re-wraps. Withdraw the default if KMIP servers ever report a stable server
 // identity.
 func masterKeyIDOf(qualifier, uid string) ([]byte, error) {
-	if uid == "" || strings.Contains(uid, "/") {
-		return nil, fmt.Errorf("UID %q is empty or holds a /", uid)
+	if !validUID(uid) {
+		return nil, fmt.Errorf("UID %q is empty or holds a byte outside ! to ~, or a /, = or \"", uid)
 	}
 	id := qualifier + "/" + uid
 	for i := 0; i < len(id); i++ {
@@ -259,13 +273,20 @@ func masterKeyIDOf(qualifier, uid string) ([]byte, error) {
 	return []byte(id), nil
 }
 
-// uidOf is the UID in a master-key ID, what follows its last /.
-func uidOf(masterKeyID []byte) (string, error) {
+// validUID reports whether uid is a UID a master-key ID may carry: printable
+// ASCII without a space, /, = or ", so it never forges the result codes an
+// error naming it holds.
+func validUID(uid string) bool {
+	return uid != "" && printable(uid) && !strings.ContainsAny(uid, ` /="`)
+}
+
+// splitID is a master-key ID's qualifier and UID, either side of its last /.
+func splitID(masterKeyID []byte) (qualifier, uid string, err error) {
 	i := bytes.LastIndexByte(masterKeyID, '/')
-	if i < 0 || i == len(masterKeyID)-1 {
-		return "", fmt.Errorf("%w: master-key ID %q names no UID", errStoredWrap, masterKeyID)
+	if i < 0 || !validUID(string(masterKeyID[i+1:])) {
+		return "", "", fmt.Errorf("%w: master-key ID %q names no valid UID", errStoredWrap, masterKeyID)
 	}
-	return string(masterKeyID[i+1:]), nil
+	return string(masterKeyID[:i]), string(masterKeyID[i+1:]), nil
 }
 
 // wrap wraps each key of in under the master key's primary version, read
@@ -276,7 +297,7 @@ func uidOf(masterKeyID []byte) (string, error) {
 // a profile ever has the provider send the IV.
 func (ks *keyService) wrap(ctx context.Context, in ...sealIn) ([][]byte, error) {
 	conn := ks.conn.Load()
-	uid, err := ks.primaryUID(ctx, conn)
+	uid, id, err := ks.primaryVersion(ctx, conn)
 	if err != nil {
 		return nil, err
 	}
@@ -300,9 +321,10 @@ func (ks *keyService) wrap(ctx context.Context, in ...sealIn) ([][]byte, error) 
 		if resp.UniqueIdentifier != uid {
 			return nil, unavailable(conn, what, fmt.Errorf("the Encrypt response names UID %q", resp.UniqueIdentifier))
 		}
-		id, err := masterKeyIDOf(conn.qualifier, uid)
-		if err != nil {
-			return nil, unavailable(conn, what, err)
+		// GCM's data is as long as the key: a server that appends its tag
+		// would store a record that never unwraps.
+		if len(resp.Data) != len(w.key) {
+			return nil, unavailable(conn, what, fmt.Errorf("the Encrypt response holds %d bytes of data for a %d-byte key", len(resp.Data), len(w.key)))
 		}
 		join, err := encodeKMIPWrap(resp.IVCounterNonce, resp.AuthenticatedEncryptionTag, resp.Data)
 		if err != nil {
@@ -331,7 +353,7 @@ func (ks *keyService) unwrap(ctx context.Context, stored, aad []byte) ([]byte, e
 		return nil, unavailable(conn, "unwrap", fmt.Errorf("stored wrap of provider kind %#x, not the key service's", s.kind))
 	}
 	what := fmt.Sprintf("Decrypt under master key %q", s.masterKeyID)
-	uid, err := uidOf(s.masterKeyID)
+	_, uid, err := splitID(s.masterKeyID)
 	if err != nil {
 		return nil, unavailable(conn, what, err)
 	}
@@ -359,11 +381,20 @@ func (ks *keyService) unwrap(ctx context.Context, stored, aad []byte) ([]byte, e
 }
 
 // state reads the state of the master key masterKeyID names.
+//
+// decision: an ID qualified by another server than the one the custody
+// reaches now is not read: the same UID there may name another key, whose
+// Destroyed would mark this server's records lost. Its read gets no answer,
+// so the caller keeps the state it last read. Withdraw it if KMIP servers
+// ever report a stable server identity to check.
 func (ks *keyService) state(ctx context.Context, masterKeyID []byte) error {
 	conn := ks.conn.Load()
-	uid, err := uidOf(masterKeyID)
+	qualifier, uid, err := splitID(masterKeyID)
 	if err != nil {
 		return unavailable(conn, "state read", err)
+	}
+	if qualifier != conn.qualifier {
+		return fmt.Errorf("provider: state of master key %q: no answer: the custody reaches %s, not %s", masterKeyID, conn.qualifier, qualifier)
 	}
 	st, err := conn.client.State(ctx, uid)
 	return stateAnswer(masterKeyID, conn.client.Endpoint(), st, err)
@@ -394,12 +425,12 @@ func stateAnswer(id []byte, endpoint string, st kmip14.State, err error) error {
 // object under the UID.
 //
 // decision: it reads the reason's name in the error's text, as internal/kmip
-// writes a failed status ("reason=ItemNotFound message="), since the
-// transport exports no error to tell an Item Not Found answer from no answer;
-// the transport's tests pin that text. Replace it with an error the transport
-// exports once it has one.
+// writes a failed status ("reason=ItemNotFound"), since the transport exports
+// no error to tell an Item Not Found answer from no answer; the transport's
+// tests pin that text, and validUID keeps a UID the error names from forging
+// it. Replace it with an error the transport exports once it has one.
 func itemNotFound(err error) bool {
-	return strings.Contains(err.Error(), "reason=ItemNotFound message=")
+	return strings.Contains(err.Error(), "reason=ItemNotFound")
 }
 
 // kmipWrapVersion1 is the key-service wrap bytes' one version.
@@ -460,6 +491,9 @@ func gcmParameters(randomIV bool) cryptographicParameters {
 
 // decodeTTLV is ttlv.Unmarshal with its panics returned as errors, since the
 // bytes are the server's.
+//
+// ponytail: a copy of internal/kmip's unexported unmarshal. Delete it once
+// the transport exports its own.
 func decodeTTLV(raw ttlv.TTLV, v any) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -494,7 +528,6 @@ type locateRequest struct {
 }
 
 type locateResponse struct {
-	LocatedItems     int `ttlv:",omitempty"`
 	UniqueIdentifier []string
 }
 
@@ -522,6 +555,5 @@ type decryptRequest struct {
 }
 
 type decryptResponse struct {
-	UniqueIdentifier string
-	Data             []byte
+	Data []byte
 }
