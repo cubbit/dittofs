@@ -5,6 +5,7 @@ import (
 	"math"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -14,8 +15,9 @@ import (
 )
 
 // Every feature has a name, the names are distinct, and only batch delete and
-// conditional put are recorded without refusing.
+// conditional put are recorded without refusing (RFC 4 C.1).
 func TestFeatures(t *testing.T) {
+	recorded := map[string]bool{"batch_delete": true, "conditional_put": true}
 	seen := map[string]bool{}
 	for f := range featureCount {
 		name := f.String()
@@ -24,8 +26,8 @@ func TestFeatures(t *testing.T) {
 		}
 
 		seen[name] = true
-		if want := f != featBatchDelete && f != featConditionalPut; f.refuses() != want {
-			t.Errorf("%s.refuses() = %v, want %v", f, f.refuses(), want)
+		if f.refuses() == recorded[name] {
+			t.Errorf("%s.refuses() = %v, want %v", name, f.refuses(), !recorded[name])
 		}
 	}
 
@@ -34,30 +36,27 @@ func TestFeatures(t *testing.T) {
 	}
 }
 
-func TestVerdictMissing(t *testing.T) {
+var stateNames = [...]string{stateUnverified: "unverified", statePresent: "present", stateMissing: "missing"}
+
+func TestVerdictRefusals(t *testing.T) {
 	var v verdict
-	if got := v.missing(); got != "" {
-		t.Errorf("all unverified: missing() = %q, want empty", got)
+	if got := v.refusals(); got != "" {
+		t.Errorf("all unverified: refusals() = %q, want empty", got)
 	}
 
-	// Set out of check order, so the order of the text is the check's.
+	// Judged out of check order, so the order of the text is the check's.
 	v.judge(featVersioning, false)
 	v.judge(featPutIntegrity, false)
 	v.judge(featBatchDelete, false)
 	v.judge(featConditionalPut, false)
 	v.judge(featLifecycle, true)
 	v.judge(featList, false)
-	if got, want := v.missing(), "put_integrity, list, versioning"; got != want {
-		t.Errorf("missing() = %q, want %q", got, want)
+	if got, want := v.refusals(), "put_integrity, list, versioning"; got != want {
+		t.Errorf("refusals() = %q, want %q", got, want)
 	}
 
-	if v[featLifecycle] != present || v[featReadAfterWrite] != unverified {
-		t.Errorf("lifecycle %d, read_after_write %d: want present, unverified", v[featLifecycle], v[featReadAfterWrite])
-	}
-
-	v.judge(featPutIntegrity, true)
-	if v[featPutIntegrity] != present {
-		t.Errorf("put_integrity judged again: got %d, want present", v[featPutIntegrity])
+	if v[featLifecycle] != statePresent || v[featReadAfterWrite] != stateUnverified {
+		t.Errorf("lifecycle %s, read_after_write %s: want present, unverified", stateNames[v[featLifecycle]], stateNames[v[featReadAfterWrite]])
 	}
 }
 
@@ -76,11 +75,6 @@ func TestJudgeVersioning(t *testing.T) {
 	}
 }
 
-const (
-	nsPrefix = "ns/"
-	maxBlock = 4 << 20
-)
-
 func expire(f *types.LifecycleRuleFilter) types.LifecycleRule {
 	return types.LifecycleRule{
 		Status:     types.ExpirationStatusEnabled,
@@ -90,14 +84,23 @@ func expire(f *types.LifecycleRuleFilter) types.LifecycleRule {
 }
 
 func TestJudgeLifecycle(t *testing.T) {
+	const largest = 4 << 20
 	tag := &types.Tag{Key: aws.String("k"), Value: aws.String("v")}
 	disabled := expire(nil)
 	disabled.Status = types.ExpirationStatusDisabled
+	lowercase := expire(nil)
+	lowercase.Status = "enabled"
 	abortOnly := types.LifecycleRule{
 		Status:                         types.ExpirationStatusEnabled,
 		AbortIncompleteMultipartUpload: &types.AbortIncompleteMultipartUpload{DaysAfterInitiation: aws.Int32(1)},
 		NoncurrentVersionExpiration:    &types.NoncurrentVersionExpiration{NoncurrentDays: aws.Int32(1)},
 	}
+	markersOnly := types.LifecycleRule{
+		Status:     types.ExpirationStatusEnabled,
+		Expiration: &types.LifecycleExpiration{ExpiredObjectDeleteMarker: aws.Bool(true)},
+	}
+	byDate := expire(nil)
+	byDate.Expiration = &types.LifecycleExpiration{Date: aws.Time(time.Unix(1, 0))}
 	transition := types.LifecycleRule{
 		Status:      types.ExpirationStatusEnabled,
 		Transitions: []types.Transition{{Days: aws.Int32(30), StorageClass: types.TransitionStorageClassGlacier}},
@@ -107,6 +110,9 @@ func TestJudgeLifecycle(t *testing.T) {
 	legacy.Prefix = aws.String("ns/blocks/") //nolint:staticcheck // a deprecated field a service still answers with
 	legacyOther := expire(nil)
 	legacyOther.Prefix = aws.String("other/") //nolint:staticcheck // a deprecated field a service still answers with
+	size := func(over, under *int64) []types.LifecycleRule {
+		return []types.LifecycleRule{expire(&types.LifecycleRuleFilter{And: &types.LifecycleRuleAndOperator{ObjectSizeGreaterThan: over, ObjectSizeLessThan: under}})}
+	}
 
 	for _, tc := range []struct {
 		name  string
@@ -125,28 +131,41 @@ func TestJudgeLifecycle(t *testing.T) {
 		{"deprecated prefix under the store's", []types.LifecycleRule{legacy}, false},
 		{"deprecated prefix another", []types.LifecycleRule{legacyOther}, true},
 		{"tag only", []types.LifecycleRule{expire(&types.LifecycleRuleFilter{Tag: tag})}, true},
+		{"empty tag", []types.LifecycleRule{expire(&types.LifecycleRuleFilter{Tag: &types.Tag{}})}, false},
 		{"and with a tag", []types.LifecycleRule{expire(&types.LifecycleRuleFilter{And: &types.LifecycleRuleAndOperator{Prefix: aws.String("ns/"), Tags: []types.Tag{*tag}}})}, true},
+		{"and with an empty tag", []types.LifecycleRule{expire(&types.LifecycleRuleFilter{And: &types.LifecycleRuleAndOperator{Prefix: aws.String("ns/"), Tags: []types.Tag{{Key: aws.String("")}}}})}, false},
 		{"and prefix under the store's", []types.LifecycleRule{expire(&types.LifecycleRuleFilter{And: &types.LifecycleRuleAndOperator{Prefix: aws.String("ns/blocks/"), ObjectSizeGreaterThan: aws.Int64(0)}})}, false},
 		{"and prefix another", []types.LifecycleRule{expire(&types.LifecycleRuleFilter{And: &types.LifecycleRuleAndOperator{Prefix: aws.String("other/"), ObjectSizeGreaterThan: aws.Int64(0)}})}, true},
 		{"size over 1 KiB", []types.LifecycleRule{expire(&types.LifecycleRuleFilter{ObjectSizeGreaterThan: aws.Int64(1024)})}, false},
-		{"size under 1 KiB", []types.LifecycleRule{expire(&types.LifecycleRuleFilter{ObjectSizeLessThan: aws.Int64(1024)})}, false},
-		{"size over the largest block", []types.LifecycleRule{expire(&types.LifecycleRuleFilter{ObjectSizeGreaterThan: aws.Int64(maxBlock)})}, true},
-		{"size over one less than the largest block", []types.LifecycleRule{expire(&types.LifecycleRuleFilter{ObjectSizeGreaterThan: aws.Int64(maxBlock - 1)})}, false},
-		{"size under 1 byte", []types.LifecycleRule{expire(&types.LifecycleRuleFilter{ObjectSizeLessThan: aws.Int64(1)})}, true},
-		{"size under 2 bytes", []types.LifecycleRule{expire(&types.LifecycleRuleFilter{ObjectSizeLessThan: aws.Int64(2)})}, false},
+		{"size over the largest object", []types.LifecycleRule{expire(&types.LifecycleRuleFilter{ObjectSizeGreaterThan: aws.Int64(largest + 1)})}, true},
+		{"size over exactly the largest object", []types.LifecycleRule{expire(&types.LifecycleRuleFilter{ObjectSizeGreaterThan: aws.Int64(largest)})}, false},
 		{"size over the largest int64", []types.LifecycleRule{expire(&types.LifecycleRuleFilter{ObjectSizeGreaterThan: aws.Int64(math.MaxInt64)})}, true},
+		{"size under 1 byte", []types.LifecycleRule{expire(&types.LifecycleRuleFilter{ObjectSizeLessThan: aws.Int64(0)})}, true},
+		{"size under exactly 1 byte", []types.LifecycleRule{expire(&types.LifecycleRuleFilter{ObjectSizeLessThan: aws.Int64(1)})}, false},
 		{"size under the smallest int64", []types.LifecycleRule{expire(&types.LifecycleRuleFilter{ObjectSizeLessThan: aws.Int64(math.MinInt64)})}, true},
-		{"and size range inside", []types.LifecycleRule{expire(&types.LifecycleRuleFilter{And: &types.LifecycleRuleAndOperator{ObjectSizeGreaterThan: aws.Int64(10), ObjectSizeLessThan: aws.Int64(100)}})}, false},
-		{"and size range above", []types.LifecycleRule{expire(&types.LifecycleRuleFilter{And: &types.LifecycleRuleAndOperator{ObjectSizeGreaterThan: aws.Int64(maxBlock), ObjectSizeLessThan: aws.Int64(maxBlock * 2)}})}, true},
-		{"and size range empty", []types.LifecycleRule{expire(&types.LifecycleRuleFilter{And: &types.LifecycleRuleAndOperator{ObjectSizeGreaterThan: aws.Int64(10), ObjectSizeLessThan: aws.Int64(11)}})}, true},
+		{"and size range inside", size(aws.Int64(10), aws.Int64(100)), false},
+		{"and size range at the top", size(aws.Int64(largest), aws.Int64(largest+1)), false},
+		{"and size range above", size(aws.Int64(largest+1), aws.Int64(largest*2)), true},
+		{"and size range empty", size(aws.Int64(11), aws.Int64(10)), true},
+		{"and size range from below 0", size(aws.Int64(-5), aws.Int64(1)), false},
 		{"disabled", []types.LifecycleRule{disabled}, true},
+		{"disabled then matching", []types.LifecycleRule{disabled, expire(&types.LifecycleRuleFilter{Prefix: aws.String("ns/")})}, false},
+		{"status spelled another way", []types.LifecycleRule{lowercase}, false},
 		{"abort and noncurrent only", []types.LifecycleRule{abortOnly}, true},
+		{"delete markers only", []types.LifecycleRule{markersOnly}, true},
+		{"expiry by date", []types.LifecycleRule{byDate}, false},
 		{"transition only", []types.LifecycleRule{transition}, false},
 		{"a passing rule then a matching one", []types.LifecycleRule{abortOnly, expire(&types.LifecycleRuleFilter{Prefix: aws.String("ns/blocks/")})}, false},
 	} {
-		if got := judgeLifecycle(tc.rules, nsPrefix, maxBlock); got != tc.want {
+		if got := judgeLifecycle(tc.rules, "ns/", largest); got != tc.want {
 			t.Errorf("%s: judgeLifecycle = %v, want %v", tc.name, got, tc.want)
 		}
+	}
+
+	// A largest object below 1 bounds no size, so a rule that matches every
+	// size is still seen.
+	if judgeLifecycle([]types.LifecycleRule{expire(nil)}, "ns/", 0) {
+		t.Error("largest 0: judgeLifecycle admitted a bucket-wide expiry, want refused")
 	}
 }
 
@@ -172,14 +191,19 @@ func TestJudgeTiering(t *testing.T) {
 		{"none", nil, true},
 		{"archive, no filter", []types.IntelligentTieringConfiguration{archive(on, nil, arch)}, false},
 		{"deep archive on the prefix", []types.IntelligentTieringConfiguration{archive(on, &types.IntelligentTieringFilter{Prefix: aws.String("ns/")}, deep)}, false},
+		{"a tier the SDK does not know", []types.IntelligentTieringConfiguration{archive(on, nil, "FUTURE_ACCESS")}, false},
 		{"archive under the prefix, by and", []types.IntelligentTieringConfiguration{archive(on, &types.IntelligentTieringFilter{And: &types.IntelligentTieringAndOperator{Prefix: aws.String("ns/blocks/")}}, arch)}, false},
+		{"archive off the prefix, by and", []types.IntelligentTieringConfiguration{archive(on, &types.IntelligentTieringFilter{And: &types.IntelligentTieringAndOperator{Prefix: aws.String("other/")}}, arch)}, true},
 		{"archive off the prefix", []types.IntelligentTieringConfiguration{archive(on, &types.IntelligentTieringFilter{Prefix: aws.String("other/")}, arch)}, true},
 		{"archive on a tag", []types.IntelligentTieringConfiguration{archive(on, &types.IntelligentTieringFilter{Tag: tag}, arch)}, true},
+		{"archive on an empty tag", []types.IntelligentTieringConfiguration{archive(on, &types.IntelligentTieringFilter{Tag: &types.Tag{}}, arch)}, false},
 		{"archive, and with a tag", []types.IntelligentTieringConfiguration{archive(on, &types.IntelligentTieringFilter{And: &types.IntelligentTieringAndOperator{Prefix: aws.String("ns/"), Tags: []types.Tag{*tag}}}, arch)}, true},
 		{"disabled", []types.IntelligentTieringConfiguration{archive(off, nil, deep)}, true},
-		{"no archive tier", []types.IntelligentTieringConfiguration{{Status: on}}, true},
+		{"disabled then matching", []types.IntelligentTieringConfiguration{archive(off, nil, deep), archive(on, nil, arch)}, false},
+		{"status spelled another way", []types.IntelligentTieringConfiguration{archive("enabled", nil, arch)}, false},
+		{"no tier", []types.IntelligentTieringConfiguration{{Status: on}}, true},
 	} {
-		if got := judgeTiering(tc.configs, nsPrefix); got != tc.want {
+		if got := judgeTiering(tc.configs, "ns/"); got != tc.want {
 			t.Errorf("%s: judgeTiering = %v, want %v", tc.name, got, tc.want)
 		}
 	}
@@ -246,7 +270,7 @@ func TestJudgeClass(t *testing.T) {
 	}
 }
 
-// readSetting sends the SDK's read of setting f to endpoint and returns its
+// readSetting sends the SDK's read of setting f through c and returns its
 // error.
 func readSetting(ctx context.Context, c *s3.Client, f feature) error {
 	b := aws.String("b")
@@ -267,71 +291,66 @@ func readSetting(ctx context.Context, c *s3.Client, f feature) error {
 	return err
 }
 
+var outcomeNames = [...]string{settingConfig: "config", settingNone: "none", settingRefused: "refused", settingFailed: "failed"}
+
 // settingRead over the errors the SDK's own deserializer builds from each
 // setting read's replies.
 func TestSettingRead(t *testing.T) {
 	ctx := t.Context()
-	settings := []feature{featVersioning, featLifecycle, featTiering, featEncryption}
 	xml := "application/xml"
 	notFound := func(code string) answer { return answer{http.StatusNotFound, xml, xmlError(code)} }
-
-	type row struct {
-		name   string
-		answer answer
-		want   func(f feature) read
-	}
-
-	always := func(r read) func(feature) read { return func(feature) read { return r } }
-	ownCode := func(f feature) answer {
-		if code, ok := settingNotFound[f]; ok {
-			return notFound(code)
+	check := func(f feature, name string, a answer, want settingOutcome) {
+		t.Helper()
+		c := sdkClient(serve(t, a), nil)
+		if got := settingRead(f, readSetting(ctx, c, f)); got != want {
+			t.Errorf("%s read answered %s: settingRead = %s, want %s", f, name, outcomeNames[got], outcomeNames[want])
 		}
-
-		return notFound("NoSuchConfiguration")
 	}
 
-	rows := []row{
-		{"404 NoSuchBucket", notFound("NoSuchBucket"), always(readFailed)},
-		{"404 another setting's code", notFound("NoSuchTagSet"), always(readFailed)},
-		{"404 no body", answer{http.StatusNotFound, "", ""}, always(readFailed)},
-		{"501 NotImplemented", answer{http.StatusNotImplemented, xml, xmlError("NotImplemented")}, always(readNone)},
-		{"501 no body", answer{http.StatusNotImplemented, "", ""}, always(readNone)},
-		{"403 AccessDenied", answer{http.StatusForbidden, xml, xmlError("AccessDenied")}, always(readRefused)},
-		{"403 proxy page", answer{http.StatusForbidden, "text/html", proxyHTML403}, always(readRefused)},
-		{"401", answer{http.StatusUnauthorized, xml, xmlError("Unauthorized")}, always(readFailed)},
-		{"301 PermanentRedirect", answer{http.StatusMovedPermanently, xml, xmlError("PermanentRedirect")}, always(readFailed)},
-		{"503 ServiceUnavailable", answer{http.StatusServiceUnavailable, xml, xmlError("ServiceUnavailable")}, always(readFailed)},
-		{"500 InternalError", answer{http.StatusInternalServerError, xml, xmlError("InternalError")}, always(readFailed)},
-	}
-
+	settings := []feature{featVersioning, featLifecycle, featTiering, featEncryption}
 	for _, f := range settings {
-		own := ownCode(f)
-		_, hasCode := settingNotFound[f]
-		rows := append(rows, row{"404 its own not-found code", own, func(feature) read {
-			if hasCode {
-				return readNone
-			}
-
-			return readFailed
-		}})
-
-		for _, r := range rows {
-			c := sdkClient(serve(t, r.answer), nil)
-			if got, want := settingRead(f, readSetting(ctx, c, f)), r.want(f); got != want {
-				t.Errorf("%s read answered %s: settingRead = %d, want %d", f, r.name, got, want)
-			}
+		for _, r := range []struct {
+			name   string
+			answer answer
+			want   settingOutcome
+		}{
+			{"404 NoSuchBucket", notFound("NoSuchBucket"), settingFailed},
+			{"404 another setting's code", notFound("NoSuchTagSet"), settingFailed},
+			{"404 no body", answer{http.StatusNotFound, "", ""}, settingFailed},
+			{"501 NotImplemented", answer{http.StatusNotImplemented, xml, xmlError("NotImplemented")}, settingNone},
+			{"501 no body", answer{http.StatusNotImplemented, "", ""}, settingNone},
+			{"403 AccessDenied", answer{http.StatusForbidden, xml, xmlError("AccessDenied")}, settingRefused},
+			{"403 proxy page", answer{http.StatusForbidden, "text/html", proxyHTML403}, settingRefused},
+			{"401", answer{http.StatusUnauthorized, xml, xmlError("Unauthorized")}, settingFailed},
+			{"301 PermanentRedirect", answer{http.StatusMovedPermanently, xml, xmlError("PermanentRedirect")}, settingFailed},
+			{"503 ServiceUnavailable", answer{http.StatusServiceUnavailable, xml, xmlError("ServiceUnavailable")}, settingFailed},
+			{"500 InternalError", answer{http.StatusInternalServerError, xml, xmlError("InternalError")}, settingFailed},
+		} {
+			check(f, r.name, r.answer, r.want)
 		}
 	}
 
-	if got := settingRead(featVersioning, nil); got != readConfig {
-		t.Errorf("settingRead(no error) = %d, want readConfig", got)
+	// Each setting's own not-found code is no configuration; versioning has
+	// none, so its own 404 fails.
+	for f, code := range map[feature]string{
+		featLifecycle:  "NoSuchLifecycleConfiguration",
+		featTiering:    "NoSuchConfiguration",
+		featEncryption: "ServerSideEncryptionConfigurationNotFoundError",
+	} {
+		check(f, "404 "+code, notFound(code), settingNone)
+	}
+
+	check(featVersioning, "404 NoSuchConfiguration", notFound("NoSuchConfiguration"), settingFailed)
+
+	if got := settingRead(featVersioning, nil); got != settingConfig {
+		t.Errorf("settingRead(no error) = %s, want config", outcomeNames[got])
 	}
 
 	// No reply at all: the call is cancelled before it is sent.
 	c := sdkClient(serve(t, answer{status: http.StatusOK}), nil)
 	cancelled, cancel := context.WithCancel(ctx)
 	cancel()
-	if got := settingRead(featLifecycle, readSetting(cancelled, c, featLifecycle)); got != readFailed {
-		t.Errorf("settingRead(no reply) = %d, want readFailed", got)
+	if got := settingRead(featLifecycle, readSetting(cancelled, c, featLifecycle)); got != settingFailed {
+		t.Errorf("settingRead(no reply) = %s, want failed", outcomeNames[got])
 	}
 }
