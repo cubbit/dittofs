@@ -96,6 +96,10 @@ type Provider struct {
 
 	// cfg is the Config last given to New or Reconfigure.
 	cfg atomic.Pointer[Config]
+
+	// beforeCreate, nil but in tests, runs in CreateKeys after its wraps and
+	// before its update.
+	beforeCreate func()
 }
 
 // fingerprintLabel is what a fingerprint is computed over (RFC 5 §2.5).
