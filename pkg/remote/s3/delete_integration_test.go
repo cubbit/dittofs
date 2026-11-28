@@ -15,8 +15,8 @@ import (
 	"github.com/cubbit/dittofs/pkg/remote/s3/s3fault"
 )
 
-// deleting is the CRC32C mode on a service with a batch delete.
-var deleting = choice{proved: true, sum: remote.ChecksumCRC32C, batch: true}
+// deleting is crc on a service with a batch delete.
+var deleting = choice{proved: crc.proved, sum: crc.sum, batch: true}
 
 // putAll stores a small body under each name's key through the admin client,
 // sixteen at a time.
@@ -143,8 +143,8 @@ func TestDeleteOneKeyFailedInsideABatch(t *testing.T) {
 	}
 }
 
-// A batch whose reply is lost: the service applied it, and every result is
-// ErrTransient.
+// A batch whose reply is lost: the service applied its one request, and
+// every result is ErrTransient.
 func TestDeleteABatchWhoseReplyIsLost(t *testing.T) {
 	r := newLSRig(t)
 	s, tr, _, _ := r.open(t, "", deleting)
@@ -157,15 +157,49 @@ func TestDeleteABatchWhoseReplyIsLost(t *testing.T) {
 			t.Errorf("Delete name %d, reply lost: %v, want ErrTransient", i, err)
 		}
 	}
+
+	if n := len(requestsOf(tr, "DeleteObjects")); n != 1 {
+		t.Errorf("the transport saw %d DeleteObjects, want 1", n)
+	}
+	if keys := r.keysUnder(t, s.prefix); len(keys) != 0 {
+		t.Errorf("the service still holds %v, want nothing: the request was not applied", keys)
+	}
+}
+
+// A refusal of the whole request fails every name of it with that refusal;
+// a 404 NoSuchKey to the request states nothing of any key.
+func TestDeleteAppliesABatchRefusalToEveryName(t *testing.T) {
+	r := newLSRig(t)
+
+	for _, tc := range []struct {
+		status int
+		code   string
+		want   error
+	}{
+		{403, "AccessDenied", remote.ErrDenied},
+		{503, "SlowDown", remote.ErrThrottled},
+		{404, "NoSuchKey", remote.ErrTransient},
+	} {
+		s, tr, _, _ := r.open(t, "", deleting)
+		tr.Inject(s3fault.Rule{Op: "DeleteObjects"}, s3fault.Answer(tc.status, tc.code, nil))
+
+		for i, err := range s.Delete(t.Context(), names(3)) {
+			if !errors.Is(err, tc.want) {
+				t.Errorf("Delete name %d, batch answered %d %s: %v, want %v", i, tc.status, tc.code, err, tc.want)
+			}
+		}
+	}
 }
 
 // On a service without batch delete, one DeleteObject per name, in order,
-// a never-written name among them answered nil.
+// a never-written name among them answered nil, as is one the service
+// answers 404 NoSuchKey.
 func TestDeleteOneKeyPerRequest(t *testing.T) {
 	r := newLSRig(t)
-	s, tr, _, _ := r.open(t, "", choice{proved: true, sum: remote.ChecksumCRC32C})
-	ns := names(3)
+	s, tr, _, _ := r.open(t, "", crc)
+	ns := names(4)
 	r.putAll(t, s, []remote.Name{ns[0], ns[2]})
+	tr.Inject(s3fault.Rule{Op: "DeleteObject", KeyPrefix: s.blockKey(ns[3])}, s3fault.Answer(404, "NoSuchKey", nil))
 
 	for i, err := range s.Delete(t.Context(), ns) {
 		if err != nil {
@@ -180,7 +214,7 @@ func TestDeleteOneKeyPerRequest(t *testing.T) {
 		}
 		keys = append(keys, q.Key)
 	}
-	if want := []string{s.blockKey(ns[0]), s.blockKey(ns[1]), s.blockKey(ns[2])}; !slices.Equal(keys, want) {
+	if want := []string{s.blockKey(ns[0]), s.blockKey(ns[1]), s.blockKey(ns[2]), s.blockKey(ns[3])}; !slices.Equal(keys, want) {
 		t.Errorf("the requests named %v, want %v in order", keys, want)
 	}
 	if left := r.keysUnder(t, s.prefix); len(left) != 0 {

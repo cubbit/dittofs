@@ -2,7 +2,9 @@ package s3
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -34,33 +36,27 @@ func (s *store) Delete(ctx context.Context, names []remote.Name) []error {
 		for i := range errs {
 			errs[i] = err
 		}
+	} else if s.choice.batch {
+		for lo := 0; lo < len(names); lo += batchMax {
+			hi := min(lo+batchMax, len(names))
+			s.deleteBatch(ctx, names[lo:hi], errs[lo:hi])
+		}
 	} else {
-		step := 1
-		if s.choice.batch {
-			step = batchMax
-		}
-
-		for lo := 0; lo < len(names); lo += step {
-			hi := min(lo+step, len(names))
-
-			if s.choice.batch {
-				s.deleteBatch(ctx, names[lo:hi], errs[lo:hi])
-			} else {
-				errs[lo] = s.deleteOne(ctx, names[lo])
-			}
+		for i, n := range names {
+			errs[i] = s.deleteOne(ctx, n)
 		}
 	}
 
-	// One call, one record: its result is the first failure's, ok when every
-	// name was deleted.
-	var first error
+	// One call, one record: a denial's, so its cause reaches the operator
+	// whatever else failed; otherwise the first failure's; ok when every name
+	// was deleted.
+	var shown error
 	for _, err := range errs {
-		if err != nil {
-			first = err
-			break
+		if shown == nil || errors.Is(err, remote.ErrDenied) && !errors.Is(shown, remote.ErrDenied) {
+			shown = err
 		}
 	}
-	s.record(opDelete, first, time.Since(start), 0)
+	s.record(opDelete, shown, time.Since(start), 0)
 
 	return errs
 }
@@ -99,22 +95,19 @@ func (s *store) deleteBatch(ctx context.Context, names []remote.Name, errs []err
 		Delete: &types.Delete{Objects: objs, Quiet: aws.Bool(false)},
 	}, contentMD5)
 
-	var got []error
-	switch ferr := fromSDK(ctx, opDelete, recorded{}, nil, err); {
-	case ferr != nil:
-		got = make([]error, len(keys))
+	ferr := fromSDK(ctx, opDelete, recorded{}, nil, err)
+	if err != nil && ferr == nil {
+		// classify reads a 404 NoSuchKey to a delete as the name deleted, which
+		// holds for one key; to a whole batch it states nothing of any key.
+		ferr = wrap(opDelete, http.StatusNotFound, "NoSuchKey", remote.ErrTransient)
+	}
+
+	got := make([]error, len(keys))
+	if ferr != nil {
 		for i := range got {
 			got[i] = ferr
 		}
-	case err != nil:
-		// classify reads a 404 NoSuchKey to a delete as the name deleted,
-		// which holds for one key; for a whole batch it states nothing about
-		// any key in it.
-		got = make([]error, len(keys))
-		for i := range got {
-			got[i] = wrap(opDelete, 404, "NoSuchKey", remote.ErrTransient)
-		}
-	default:
+	} else {
 		got = deleteResults(keys, out.Deleted, out.Errors)
 	}
 

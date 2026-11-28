@@ -83,9 +83,12 @@ type batchServer struct {
 	mu       sync.Mutex
 	got      []batchRequest
 	inFlight atomic.Int32
-	overlap  atomic.Bool // two requests were served at once
-	refuse   map[string]string
-	other    http.HandlerFunc
+	// overlap: two requests were served at once. A bounded check: it sees
+	// concurrent sends only when two overlap at the handler, and never
+	// reports one falsely.
+	overlap atomic.Bool
+	refuse  map[string]string
+	other   http.HandlerFunc
 }
 
 func (b *batchServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -205,14 +208,16 @@ func TestDeleteSplitsTheBatch(t *testing.T) {
 	ns := names(2500)
 	b := &batchServer{}
 	s, rec := storeOn(t, tlsServer(t, b.ServeHTTP, false, nil), batched, nil)
-	b.refuse = map[string]string{s.blockKey(ns[1500]): "AccessDenied"}
+	b.refuse = map[string]string{s.blockKey(ns[3]): "InternalError", s.blockKey(ns[1500]): "AccessDenied"}
 
 	errs := s.Delete(t.Context(), ns)
 	for i, err := range errs {
 		switch {
+		case i == 3 && !errors.Is(err, remote.ErrTransient):
+			t.Errorf("Delete name %d, failed: %v, want ErrTransient", i, err)
 		case i == 1500 && !errors.Is(err, remote.ErrDenied):
 			t.Errorf("Delete name %d, refused: %v, want ErrDenied", i, err)
-		case i != 1500 && err != nil:
+		case i != 3 && i != 1500 && err != nil:
 			t.Errorf("Delete name %d: %v, want nil", i, err)
 		}
 	}
@@ -238,7 +243,7 @@ func TestDeleteSplitsTheBatch(t *testing.T) {
 	}
 
 	if calls := rec.all(); len(calls) != 1 || calls[0] != (recordedCall{"delete", "denied", "access", 0}) {
-		t.Errorf("Delete recorded %+v, want one delete, denied of cause access", calls)
+		t.Errorf("Delete recorded %+v, want one delete, denied of cause access though a transient failure came first", calls)
 	}
 }
 
@@ -261,37 +266,8 @@ func TestDeleteSendsARepeatedNameOnce(t *testing.T) {
 	}
 }
 
-// A refusal of the whole request fails every name of it with that refusal;
-// a 404 NoSuchKey to the request states nothing of any key.
-func TestDeleteAppliesABatchRefusalToEveryName(t *testing.T) {
-	prof.Watch(t, prof.Options{})
-
-	for _, tc := range []struct {
-		status int
-		code   string
-		want   error
-	}{
-		{403, "AccessDenied", remote.ErrDenied},
-		{503, "SlowDown", remote.ErrThrottled},
-		{404, "NoSuchKey", remote.ErrTransient},
-	} {
-		srv := tlsServer(t, func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "application/xml")
-			w.WriteHeader(tc.status)
-			_, _ = io.WriteString(w, xmlError(tc.code))
-		}, false, nil)
-		s, _ := storeOn(t, srv, batched, nil)
-
-		for i, err := range s.Delete(t.Context(), names(3)) {
-			if !errors.Is(err, tc.want) {
-				t.Errorf("Delete name %d, batch answered %d %s: %v, want %v", i, tc.status, tc.code, err, tc.want)
-			}
-		}
-	}
-}
-
-// On a service without batch delete, each name is one DeleteObject, in
-// order, and an absent key answered 404 NoSuchKey is the name deleted.
+// On a service without batch delete, each name is one DeleteObject, sent one
+// after another in order.
 func TestDeleteOneNamePerRequest(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	var (
@@ -299,21 +275,13 @@ func TestDeleteOneNamePerRequest(t *testing.T) {
 		seen []string
 	)
 	ns := names(3)
-	var absent string
 	b := &batchServer{other: func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		seen = append(seen, r.Method+" "+r.URL.Path)
 		mu.Unlock()
-		if strings.HasSuffix(r.URL.Path, absent) {
-			w.Header().Set("Content-Type", "application/xml")
-			w.WriteHeader(http.StatusNotFound)
-			_, _ = io.WriteString(w, xmlError("NoSuchKey"))
-			return
-		}
 		w.WriteHeader(http.StatusNoContent)
 	}}
 	s, _ := storeOn(t, tlsServer(t, b.ServeHTTP, false, nil), choice{}, nil)
-	absent = s.blockKey(ns[1])
 
 	for i, err := range s.Delete(t.Context(), ns) {
 		if err != nil {
