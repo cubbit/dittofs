@@ -430,7 +430,7 @@ jobs:
         name: Run the suite
         run: '"$RUNNER_TEMP/dt" run "$GITHUB_JOB" --tier "$TIER" --ci --retry "$RETRY"'
 
-      # Every run of the job: integration's has three.
+      # Every run of the job: integration's has several.
       - &report
         name: Report
         if: always() && steps.build.outcome == 'success'
@@ -653,6 +653,12 @@ jobs:
       - name: Run integration/portmap
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: '"$RUNNER_TEMP/dt" run integration/portmap --tier "$TIER" --ci --retry "$RETRY"'
+
+      # The S3 store's allocation bounds, over the LocalStack started above,
+      # as a step for the same reason as portmap.
+      - name: Run integration/s3-allocs
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: '"$RUNNER_TEMP/dt" run integration/s3-allocs --tier "$TIER" --ci --retry "$RETRY"'
 
       - *report
       - *upload
