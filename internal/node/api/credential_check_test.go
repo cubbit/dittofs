@@ -3,6 +3,7 @@ package api_test
 import (
 	"encoding/base64"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -48,7 +49,12 @@ func TestRemoteCredentialCheckedBeforeItsSeal(t *testing.T) {
 	for _, rt := range routes {
 		for _, v := range values {
 			t.Run(rt.name+"/"+v.name, func(t *testing.T) {
-				s := serve(t, as(entity.RoleOperator, false), func(d *api.Deps) { d.Settings = writeTable() })
+				// Debug, so a leak in a line logged below Info is caught too.
+				debug := &lockedBuffer{}
+				s := serve(t, as(entity.RoleOperator, false), func(d *api.Deps) {
+					d.Settings = writeTable()
+					d.Logger = slog.New(slog.NewJSONHandler(debug, &slog.HandlerOptions{Level: slog.LevelDebug}))
+				})
 				st := s.remoteStore(t)
 				scope := entity.SettingScope{Kind: entity.ScopeRemote, ID: st}
 				path := strings.Replace(rt.path, "%s", st.String(), 1)
@@ -60,12 +66,14 @@ func TestRemoteCredentialCheckedBeforeItsSeal(t *testing.T) {
 				if p := r.problem(t); r.status != http.StatusBadRequest || p.Field != rt.field {
 					t.Fatalf("%s %s: answered %d %s, want 400 naming %s", rt.method, v.name, r.status, r.body, rt.field)
 				}
+				// The counters in written catch a store the POST would create
+				// under a new scope.
 				if after := s.written(t, scope); after != before {
 					t.Errorf("the refused credential wrote:\n got %s\nwant %s", after, before)
 				}
 
 				recs, _ := json.Marshal(s.audits(t))
-				for _, out := range []struct{ what, text string }{{"the answer", string(r.body)}, {"the audit records", string(recs)}, {"the log", s.log.String()}} {
+				for _, out := range []struct{ what, text string }{{"the answer", string(r.body)}, {"the audit records", string(recs)}, {"the log", debug.String()}} {
 					for _, secret := range []string{checkedKey, checkedSecret, b64} {
 						if strings.Contains(out.text, secret) {
 							t.Errorf("%s holds %q: %s", out.what, secret, out.text)

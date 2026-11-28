@@ -548,8 +548,7 @@ clamped or replaced by its default:
   `failure_domain`: `one zone` for `ONEZONE_IA` and `EXPRESS_ONEZONE`, whose objects
   live in a single availability zone and are lost with it, and
   `as the service documents` for the others.
-- `remote.block_target` outside `1MiB` to `64MiB` is refused; `512KiB` and `128MiB`
-  both are.
+- `remote.block_target` outside `1MiB` to `64MiB` is refused.
 - `remote.prefix` must end in `/`, so one namespace's keys never run into
   another's (`ns/` beside `ns2/`), and must be valid UTF-8 with no control
   characters.
@@ -588,7 +587,8 @@ must first pass the store's capability check, which the API does not run yet.
 
 A value that is not this object is refused when it is written, with `400 invalid`
 on the credential, and again when the node builds the store's client. The names are
-matched exactly, in lower case; each must appear once with a non-empty string; and
+matched exactly, in lower case; each must appear once with a non-empty string of
+valid UTF-8; and
 nothing but whitespace may follow the object. So `KEY:SECRET`, a third field such
 as a session token, `"Access_Key_Id"` or an empty secret are all refused. The
 refusal names the field that is missing, empty or repeated, and never prints the
@@ -603,7 +603,8 @@ Set it for:
 
 - a private or company CA;
 - an on-premises S3 service, such as MinIO or Ceph, behind such a CA;
-- a test endpoint with a self-signed certificate, such as LocalStack.
+- a test endpoint with a self-signed certificate, such as LocalStack when it
+  serves its own.
 
 Leave it unset, or set it to `""`, to use the system's roots, which is what
 Amazon S3 and most hosted services need.
@@ -639,8 +640,10 @@ In a request body the bundle is a JSON string, its line breaks written `\n`:
 }}}
 ```
 
-For LocalStack on your own machine, save the certificate it serves and trust that
-one certificate:
+LocalStack on your own machine serves a public certificate for
+`localhost.localstack.cloud` when it can download one, and a self-signed one when it
+cannot. In the second case, save the certificate it serves and trust that one
+certificate:
 
 ```console
 $ openssl s_client -connect localhost.localstack.cloud:4566 \

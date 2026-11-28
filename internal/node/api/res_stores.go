@@ -375,6 +375,8 @@ func prepareStorePatch(ctx context.Context, rq request[storeDoc]) (storePatch, e
 	}
 	out := storePatch{settings: spec.Settings, had: had}
 	if c := spec.Credential; c != nil {
+		// The route's seal checks the value again; checking it here first
+		// names the patch's own field in the refusal.
 		if err := credentialValue(rq.d, c); err != nil {
 			return storePatch{}, err
 		}

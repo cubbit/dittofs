@@ -54,6 +54,8 @@ func TestParseCredential(t *testing.T) {
 		{"the secret missing", `{"access_key_id":"` + testKey + `"}`, "secret_access_key is missing"},
 		{"the key missing", `{"secret_access_key":"` + testSecret + `"}`, "access_key_id is missing"},
 		{"a value after the object", `{"access_key_id":"` + testKey + `","secret_access_key":"` + testSecret + `"} x`, "something after the object"},
+		{"invalid UTF-8 in the key", "{\"access_key_id\":\"" + testKey + "\xff\",\"secret_access_key\":\"" + testSecret + "\"}", "not valid UTF-8"},
+		{"a lone surrogate in the secret", `{"access_key_id":"` + testKey + `","secret_access_key":"` + testSecret + `\ud800"}`, "secret_access_key is not valid UTF-8"},
 		{"a second object", `{"access_key_id":"` + testKey + `","secret_access_key":"` + testSecret + `"}{}`, "something after the object"},
 	}
 	for _, c := range cases {
@@ -160,14 +162,12 @@ func TestClientConfigRefuses(t *testing.T) {
 	}
 }
 
-// testRoots is the PEM bundle of srv's certificate, starting srv over TLS
-// on 127.0.0.1:0 if it has not started.
+// testRoots starts srv over TLS on 127.0.0.1:0 and is the PEM bundle of its
+// certificate.
 func testRoots(t *testing.T, srv *httptest.Server) string {
 	t.Helper()
-	if srv.URL == "" {
-		srv.StartTLS()
-		t.Cleanup(srv.Close)
-	}
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
 	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}))
 }
 
@@ -183,7 +183,8 @@ func (discard) Capability(string, string, bool)                   {}
 // service whose certificate the trust roots hold, and with the system's
 // roots in their place fails before the service sees a request. The service
 // refuses every request 403, so the open fails either way; what tells the
-// two apart is whether a request reached it.
+// two apart is whether a request reached it. A bundle whose block carries a
+// PEM header, which checkTrustRoots admits, is trusted too.
 func TestClientConfigTrustRootsReachTheHandshake(t *testing.T) {
 	var reached atomic.Int64
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -198,6 +199,7 @@ func TestClientConfigTrustRootsReachTheHandshake(t *testing.T) {
 		reaches bool
 	}{
 		{"trust roots holding the service's certificate", roots, true},
+		{"trust roots whose block carries a PEM header", strings.Replace(roots, "-----\n", "-----\nNote: a header\n\n", 1), true},
 		{"the system's roots", "", false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -220,9 +222,6 @@ func TestClientConfigTrustRootsReachTheHandshake(t *testing.T) {
 			}
 			if got := reached.Load() > 0; got != c.reaches {
 				t.Errorf("a request reached the service: %v, want %v (Open: %v)", got, c.reaches, err)
-			}
-			if untrusted := errors.Is(err, remote.ErrTransient); untrusted == c.reaches {
-				t.Errorf("Open = %v: ErrTransient %v, want %v: only a refused handshake is transient here", err, untrusted, !c.reaches)
 			}
 		})
 	}

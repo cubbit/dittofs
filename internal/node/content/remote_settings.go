@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/cubbit/dittofs/internal/bytesize"
 	"github.com/cubbit/dittofs/pkg/carver"
@@ -101,14 +104,18 @@ var credentialFields = [2]string{"access_key_id", "secret_access_key"}
 // such an object, and never holds the value, a field name outside the two or
 // the decoder's text, any of which could carry the key or the secret.
 func ParseCredential(value []byte) (accessKeyID, secretAccessKey string, err error) {
-	notObject := errors.New("remote credential: is not a JSON object of access_key_id and secret_access_key")
+	notObject := errors.New("remote credential: the value is not a JSON object of access_key_id and secret_access_key")
+	// The decoder would replace invalid UTF-8 with U+FFFD and accept a
+	// credential other than the one given.
+	if !utf8.Valid(value) {
+		return "", "", errors.New("remote credential: the value is not valid UTF-8")
+	}
 	dec := json.NewDecoder(bytes.NewReader(value))
 	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
 		return "", "", notObject
 	}
 
-	var got [2]string
-	var seen [2]bool
+	var got [2]string // a value is never empty once stored, so "" is unseen
 	for dec.More() {
 		t, err := dec.Token()
 		name, ok := t.(string)
@@ -123,7 +130,7 @@ func ParseCredential(value []byte) (accessKeyID, secretAccessKey string, err err
 		if i == len(credentialFields) {
 			return "", "", errors.New("remote credential: holds a field other than access_key_id and secret_access_key")
 		}
-		if seen[i] {
+		if got[i] != "" {
 			return "", "", fmt.Errorf("remote credential: %s is given twice", name)
 		}
 
@@ -136,8 +143,11 @@ func ParseCredential(value []byte) (accessKeyID, secretAccessKey string, err err
 			return "", "", fmt.Errorf("remote credential: %s is not a string", name)
 		case v == "":
 			return "", "", fmt.Errorf("remote credential: %s is empty", name)
+		case strings.ContainsRune(v, utf8.RuneError):
+			// A lone surrogate escape decodes to U+FFFD, as invalid UTF-8 would.
+			return "", "", fmt.Errorf("remote credential: %s is not valid UTF-8", name)
 		}
-		got[i], seen[i] = v, true
+		got[i] = v
 	}
 
 	if t, err := dec.Token(); err != nil || t != json.Delim('}') {
@@ -146,8 +156,8 @@ func ParseCredential(value []byte) (accessKeyID, secretAccessKey string, err err
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 		return "", "", errors.New("remote credential: holds something after the object")
 	}
-	for i, ok := range seen {
-		if !ok {
+	for i, v := range got {
+		if v == "" {
 			return "", "", fmt.Errorf("remote credential: %s is missing", credentialFields[i])
 		}
 	}
@@ -171,12 +181,23 @@ func clientConfig(s remoteSettings, credential []byte, limit int, maxBlock int64
 		return s3.ClientConfig{}, fmt.Errorf("%w: %w", err, remote.ErrInvalid)
 	}
 
-	// Validate has refused any block of the bundle that is not a certificate,
-	// which AppendCertsFromPEM would drop silently.
+	// Validate has refused any block that is not a certificate that parses.
+	// The pool is built from each parsed block rather than by
+	// AppendCertsFromPEM, which drops a block carrying PEM headers silently.
 	var roots *x509.CertPool
 	if s.TrustRoots != "" {
 		roots = x509.NewCertPool()
-		roots.AppendCertsFromPEM([]byte(s.TrustRoots))
+		for rest := []byte(s.TrustRoots); ; {
+			var b *pem.Block
+			if b, rest = pem.Decode(rest); b == nil {
+				break
+			}
+			c, err := x509.ParseCertificate(b.Bytes)
+			if err != nil {
+				return s3.ClientConfig{}, fmt.Errorf("remote: trust_roots: a block is not a certificate that parses: %w", remote.ErrInvalid)
+			}
+			roots.AddCert(c)
+		}
 	}
 
 	return s3.ClientConfig{

@@ -666,6 +666,7 @@ func TestWiredEveryWriteAudited(t *testing.T) {
 		const (
 			storeSecret = `{"access_key_id":"AKIDFAKE","secret_access_key":"a store's secret key"}`
 			newSecret   = `{"access_key_id":"AKIDFAKE","secret_access_key":"a new credential"}`
+			badSecret   = "AKIDFAKE:a malformed secret"
 		)
 		// A store holding no credential, for a first credential's write.
 		bare := "/api/v1/stores/" + uuid.UUID(storeD).String()
@@ -679,6 +680,11 @@ func TestWiredEveryWriteAudited(t *testing.T) {
 				status: http.StatusBadRequest, code: "unknown_key", why: "the settings table"},
 			waitingWrite{wiredWrite: wiredWrite{route: "PATCH /api/v1/stores/{id}", path: store, body: json.RawMessage(`{"spec":{"settings":{"remote.region":"eu"}}}`), hdr: match(store)},
 				status: http.StatusBadRequest, code: "unknown_key", why: "the settings table"},
+			// A credential that is not the JSON object is refused by the
+			// check the node wires, before anything is sealed.
+			waitingWrite{wiredWrite: wiredWrite{route: "PATCH /api/v1/stores/{id}", path: bare, body: map[string]any{"spec": apiv1.StoreSpec{
+				Credential: &apiv1.StoreCredential{Value: []byte(badSecret)}}}, hdr: match(bare), secrets: secretForms(badSecret)},
+				status: http.StatusBadRequest, code: "invalid", why: "the node's credential check"},
 			waitingWrite{wiredWrite: wiredWrite{route: "PUT /api/v1/stores/{id}/credential", path: bare + "/credential", body: map[string]any{"spec": apiv1.CredentialSpec{Value: []byte(newSecret)}}, hdr: []string{"If-None-Match", "*"}, secrets: secretForms(newSecret)},
 				status: http.StatusConflict, code: "unproven", why: "the store's capability check"},
 			waitingWrite{wiredWrite: wiredWrite{route: "DELETE /api/v1/stores/{id}/credential", path: cred, hdr: append([]string{"If-Match", `"1"`}, idemKey()...)}, status: http.StatusBadRequest, code: "unknown_key", why: "the settings table"},
