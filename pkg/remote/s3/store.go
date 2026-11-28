@@ -55,22 +55,20 @@ type Claim struct {
 // is empty or does not end in "/", and any mode but remote.Mutable, are
 // refused with remote.ErrInvalid before any request.
 func Open(ctx context.Context, c *Client, prefix string, mode remote.Mode) (remote.Store, Claim, error) {
-	switch err := checkPrefix(prefix); {
-	case c == nil:
-		return nil, Claim{}, fmt.Errorf("remote/s3: open without a client: %w", remote.ErrInvalid)
-	case err != nil:
-		return nil, Claim{}, fmt.Errorf("remote/s3: prefix %w: %w", err, remote.ErrInvalid)
-	case mode == remote.Immutable:
+	if mode == remote.Immutable {
 		// decision: an immutable store is refused at open until the backup
 		// location's calls land with its copier (RFC 26), since none of what
 		// such a store must check, keep or refuse is built. Withdraw the
 		// refusal with those calls.
 		return nil, Claim{}, fmt.Errorf("remote/s3: immutable mode waits for the backup location's copier (RFC 26): %w", remote.ErrInvalid)
-	case mode != remote.Mutable:
-		return nil, Claim{}, fmt.Errorf("remote/s3: open in mode %d: %w", mode, remote.ErrInvalid)
 	}
 
-	ch, claim, v, err := check(ctx, c, prefix)
+	s, err := open(c, prefix, mode, choice{})
+	if err != nil {
+		return nil, Claim{}, err
+	}
+
+	claim, v, err := check(ctx, s)
 	if err != nil {
 		return nil, Claim{}, err
 	}
@@ -84,11 +82,7 @@ func Open(ctx context.Context, c *Client, prefix string, mode remote.Mode) (remo
 		return nil, Claim{}, &refusedError{missing}
 	}
 
-	s, err := open(c, prefix, mode, ch)
-	if err != nil {
-		return nil, Claim{}, err // not a nil *store, which a caller's nil check would miss
-	}
-
+	ch := s.choice
 	c.log.Info("remote store opened", "prefix", prefix,
 		"mechanism", mechanism(ch.sum), "rejection_status", ch.rejected.status, "rejection_code", ch.rejected.code,
 		"batch_delete", ch.batch, "storage_class", c.cfg.StorageClass, "failure_domain", failureDomain(c.cfg.StorageClass))

@@ -3,8 +3,11 @@ package s3
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -27,16 +30,20 @@ func (e *refusedError) Error() string {
 
 func (e *refusedError) Unwrap() error { return remote.ErrInvalid }
 
-// check is the capability check of the namespace under prefix (RFC 4
-// Appendix C.4), steps 1 to 7 in order, in a fresh check namespace drawn from
-// the client's random source. It returns what step 1 and step 3 proved, the
-// claim step 6 read and the verdict. Steps 2 to 4 run only once step 1 proved
-// a mechanism, and their features stay unverified otherwise; steps 5 and 6
-// run whatever step 1 found, so a refusal names every missing feature it can.
-// Step 7 puts the health object only when nothing refuses the open. A call
-// that fails rather than answers fails the check with its error as the table
-// maps it. Whatever the outcome, every key the check namespace may hold is
-// deleted after, a failure logged and not returned.
+// cleanupTimeout bounds the check's cleanup, which runs on after the open's
+// own context has ended so a cancelled open still deletes what it wrote.
+const cleanupTimeout = 30 * time.Second
+
+// check is the capability check of s, the namespace's store (RFC 4 Appendix
+// C.4), steps 1 to 7 in order, in a fresh check namespace drawn from the
+// client's random source. It sets s.choice to what step 1 and step 3 proved
+// and returns the claim step 6 read and the verdict. Steps 2 to 4 run only
+// once step 1 proved a mechanism, and their features stay unverified
+// otherwise; steps 5 and 6 run whatever step 1 found, so a refusal names every
+// missing feature it can. Step 7 puts the health object only when nothing
+// refuses the open. A call that fails rather than answers fails the check with
+// its error as the table maps it. Whatever the outcome, every key the check
+// namespace may hold is deleted after, a failure logged and not returned.
 //
 // decision: a store's open calls the service directly, outside the syncer.
 // Its calls are a fixed handful per open, not per backup or per block, and a
@@ -44,39 +51,42 @@ func (e *refusedError) Unwrap() error { return remote.ErrInvalid }
 // throttle limit or health count is at stake. Route them through a flow if
 // opens become frequent enough, a periodic re-read reopening per pass say,
 // that their requests show in a service's throttling.
-func check(ctx context.Context, c *Client, prefix string) (choice, Claim, verdict, error) {
+func check(ctx context.Context, s *store) (Claim, verdict, error) {
+	c := s.c
+
 	var id [8]byte
 	if _, err := io.ReadFull(c.rand, id[:]); err != nil {
-		return choice{}, Claim{}, verdict{}, fmt.Errorf("remote/s3: drawing the check namespace: %w", err)
+		return Claim{}, verdict{}, fmt.Errorf("remote/s3: drawing the check namespace: %w", err)
 	}
 
-	ns := prefix + "check/" + hex.EncodeToString(id[:]) + "/"
+	ns := s.prefix + "check/" + hex.EncodeToString(id[:]) + "/"
 
-	var ch choice
+	defer func() {
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+		defer cancel()
 
-	defer func() { cleanup(ctx, c, prefix, ns, ch.batch) }()
+		cleanup(cctx, c, s.prefix, ns, s.choice.batch)
+	}()
 
 	ch, v, err := proveIntegrity(ctx, c, ns, c.cfg.MaxBlockSize)
 	if err != nil {
-		return choice{}, Claim{}, verdict{}, err
+		return Claim{}, verdict{}, err
 	}
 
 	if ch.proved {
 		var w verdict
-		if ch, w, err = probe(ctx, c, ns, ch); err != nil {
-			return choice{}, Claim{}, verdict{}, err
+		ch, w, err = probe(ctx, c, ns, ch)
+		s.choice = ch // a failed probe proves nothing: the cleanup deletes one key at a time
+
+		if err != nil {
+			return Claim{}, verdict{}, err
 		}
 
 		v.merge(w)
 	}
 
-	if err := judgeSettings(ctx, c, prefix, ch, &v); err != nil {
-		return choice{}, Claim{}, verdict{}, err
-	}
-
-	s, err := open(c, prefix, remote.Mutable, ch)
-	if err != nil {
-		return choice{}, Claim{}, verdict{}, err
+	if err := judgeSettings(ctx, c, s.prefix, ch, &v); err != nil {
+		return Claim{}, verdict{}, err
 	}
 
 	var claim Claim
@@ -84,11 +94,11 @@ func check(ctx context.Context, c *Client, prefix string) (choice, Claim, verdic
 
 	if v.refusals() == "" {
 		if err := s.PutControl(ctx, remote.RoleHealth, healthBody); err != nil {
-			return choice{}, Claim{}, verdict{}, err
+			return Claim{}, verdict{}, err
 		}
 	}
 
-	return ch, claim, v, nil
+	return claim, v, nil
 }
 
 // merge takes every feature w verified.
@@ -126,46 +136,54 @@ func judgeSettings(ctx context.Context, c *Client, prefix string, ch choice, v *
 	}
 
 	enc, err := c.api.GetBucketEncryption(ctx, &s3.GetBucketEncryptionInput{Bucket: b})
-	if !ch.proved {
-		if settingRead(featEncryption, err) == settingFailed {
-			return fromSDK(ctx, opSetting, recorded{}, nil, err)
-		}
 
-		return nil
+	judge := func() bool { return judgeEncryption(enc.ServerSideEncryptionConfiguration, ch.sum) }
+	if !ch.proved {
+		judge = nil // the ETag is what a default can break, and none is proved
 	}
 
-	return setting(ctx, v, featEncryption, err, func() bool {
-		return judgeEncryption(enc.ServerSideEncryptionConfiguration, ch.sum)
-	})
+	return setting(ctx, v, featEncryption, err, judge)
 }
 
 // setting judges f from its read's error, and from judge when the read
-// answered a configuration; a read that failed is returned as the table maps
-// it.
+// answered a configuration; a nil judge leaves f unverified unless the read
+// was refused. A read that failed is returned as the table maps it, a 404 the
+// table reads as an absent object read as the invalid reply it is.
 func setting(ctx context.Context, v *verdict, f feature, err error, judge func() bool) error {
-	switch settingRead(f, err) {
-	case settingConfig:
-		v.judge(f, judge())
-	case settingNone:
-		v.judge(f, true)
-	case settingRefused:
+	switch out := settingRead(f, err); {
+	case out == settingFailed:
+		if e := fromSDK(ctx, opSetting, recorded{}, nil, err); !errors.Is(e, remote.ErrNotFound) {
+			return e
+		}
+
+		return wrap(opSetting, http.StatusNotFound, "NoSuchKey", remote.ErrInvalid)
+	case out == settingRefused:
 		v.judge(f, false)
-	case settingFailed:
-		return fromSDK(ctx, opSetting, recorded{}, nil, err)
+	case judge == nil:
+	case out == settingNone:
+		v.judge(f, true)
+	default:
+		v.judge(f, judge())
 	}
 
 	return nil
 }
 
+// tieringPages bounds the pages of tiering configurations the check reads: a
+// bucket holds at most 1,000, so a service still truncating past it is
+// failing.
+const tieringPages = 100
+
 // tieringConfigs lists every tiering configuration of the bucket, page by
-// page, stopping at a page that is not truncated or names no new token.
+// page, stopping at a page that is not truncated or names no new token; past
+// tieringPages the read fails as remote.ErrTransient.
 func tieringConfigs(ctx context.Context, c *Client) ([]types.IntelligentTieringConfiguration, error) {
 	var (
 		all   []types.IntelligentTieringConfiguration
 		token *string
 	)
 
-	for {
+	for range tieringPages {
 		out, err := c.api.ListBucketIntelligentTieringConfigurations(ctx, &s3.ListBucketIntelligentTieringConfigurationsInput{
 			Bucket: &c.cfg.Bucket, ContinuationToken: token,
 		})
@@ -182,10 +200,14 @@ func tieringConfigs(ctx context.Context, c *Client) ([]types.IntelligentTieringC
 
 		token = &next
 	}
+
+	return nil, fmt.Errorf("remote/s3: %s: tiering configurations still truncated after %d pages: %w", opSetting, tieringPages, remote.ErrTransient)
 }
 
-// checkKeys are the keys steps 1 to 4 may write under ns, block keys and
-// others, which the store's Delete of names cannot reach.
+// checkKeys are the keys steps 1 to 4 may write under ns, as integrity.go
+// and probe.go name them, block keys and others, which the store's Delete of
+// names cannot reach. The open's tests list the check namespace after it, so
+// a key a step adds and this list misses shows there.
 func checkKeys(ns string) []string {
 	s := &store{prefix: ns}
 	keys := []string{

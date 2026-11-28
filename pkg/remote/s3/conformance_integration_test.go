@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"sync/atomic"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -42,7 +41,7 @@ func TestConformance(t *testing.T) {
 			// Run's rows run one after another, so the opener appends unlocked.
 			var (
 				trs   []*s3fault.Transport
-				opens atomic.Int64
+				opens int
 			)
 
 			remotetest.Run(t, func(t *testing.T) remotetest.Subject {
@@ -70,7 +69,7 @@ func TestConformance(t *testing.T) {
 
 				prefix := "ns-" + hex.EncodeToString(randomBytes(4)) + "/"
 
-				opens.Add(1)
+				opens++
 				checked, _, err := Open(t.Context(), c, prefix, remote.Mutable)
 				if err != nil {
 					t.Fatalf("Open: %v", err)
@@ -78,8 +77,8 @@ func TestConformance(t *testing.T) {
 				t.Cleanup(func() { _ = checked.Close() })
 
 				s := checked.(*store)
-				if s.choice.batch != mode.batch {
-					t.Fatalf("the check chose batch delete %v, want %v", s.choice.batch, mode.batch)
+				if s.choice.batch != mode.batch || s.choice.sum != remote.ChecksumCRC32C {
+					t.Fatalf("the check chose batch delete %v and %v, want %v and CRC32C, the one LocalStack enforces", s.choice.batch, s.choice.sum, mode.batch)
 				}
 
 				return remotetest.Subject{
@@ -96,7 +95,7 @@ func TestConformance(t *testing.T) {
 				}
 			})
 
-			checkSigned(t, trs, int(opens.Load()))
+			checkSigned(t, trs, opens)
 		})
 	}
 }

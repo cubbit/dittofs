@@ -34,9 +34,14 @@ import (
 func (s *store) Put(ctx context.Context, name remote.Name, body io.Reader, size int64, sum []byte) error {
 	start := time.Now()
 
-	var n int64
-	err := fmt.Errorf("remote/s3: put of %d bytes over the largest block %d: %w", size, s.c.cfg.MaxBlockSize, remote.ErrInvalid)
-	if size <= s.c.cfg.MaxBlockSize {
+	var (
+		n   int64
+		err error
+	)
+
+	if size > s.c.cfg.MaxBlockSize {
+		err = fmt.Errorf("remote/s3: put of %d bytes over the largest block %d: %w", size, s.c.cfg.MaxBlockSize, remote.ErrInvalid)
+	} else {
 		n, err = s.put(ctx, opPut, s.blockKey(name), body, size, sum)
 	}
 

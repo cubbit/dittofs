@@ -4,6 +4,7 @@ package s3
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -18,6 +20,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/remote"
 	"github.com/cubbit/dittofs/pkg/remote/s3/s3fault"
+	"github.com/cubbit/dittofs/pkg/sim"
 )
 
 // openBlock is the largest block of a client whose open the tests check: above
@@ -210,6 +213,29 @@ func TestOpenOnLocalStack(t *testing.T) {
 
 	r.capabilities(t)
 
+	// Steps 1 to 7 in order: the first request is step 1's, the bucket's
+	// settings are read once step 4's conditional put is sent, the claim then,
+	// the health object after it, and the cleanup's batch last of the check.
+	reqs := r.tr.Requests()
+	at := func(op, key string) int {
+		return slices.IndexFunc(reqs, func(q s3fault.Request) bool { return q.Op == op && strings.HasPrefix(q.Key, key) })
+	}
+	cleanupAt := -1
+	for i, q := range reqs {
+		if q.Op == "DeleteObjects" {
+			cleanupAt = i
+		}
+	}
+
+	order := []int{
+		at("PutObject", checkNS+"integrity/"), slices.IndexFunc(reqs, func(q s3fault.Request) bool { return q.Header.Get("If-None-Match") != "" }),
+		at("GetBucketVersioning", ""), at("GetBucketEncryption", ""),
+		at("GetObject", openNS+"control/claim"), at("PutObject", openNS+"control/health"), cleanupAt,
+	}
+	if order[0] != 0 || !slices.IsSorted(order) || slices.Contains(order, -1) {
+		t.Errorf("the check's steps reached the service at %v, want 0 first and every step after the one before", order)
+	}
+
 	info := r.lines(t, "INFO")
 	if len(info) != 1 || info[0]["mechanism"] != "crc32c" || info[0]["rejection_code"] != "BadDigest" ||
 		info[0]["storage_class"] != "STANDARD" || info[0]["batch_delete"] != true {
@@ -244,8 +270,22 @@ func expiring(prefix string) types.LifecycleRule {
 	}
 }
 
+// kms sets the bucket's default encryption to a KMS key, under which an ETag
+// is not the MD5 of the stored bytes.
+func kms(t *testing.T, b *s3fault.Bucket) {
+	if _, err := b.Admin.PutBucketEncryption(t.Context(), &s3.PutBucketEncryptionInput{
+		Bucket: &b.Name,
+		ServerSideEncryptionConfiguration: &types.ServerSideEncryptionConfiguration{Rules: []types.ServerSideEncryptionRule{{
+			ApplyServerSideEncryptionByDefault: &types.ServerSideEncryptionByDefault{SSEAlgorithm: types.ServerSideEncryptionAwsKms},
+		}}},
+	}); err != nil {
+		t.Fatalf("PutBucketEncryption: %v", err)
+	}
+}
+
 // Each bucket setting set for real refuses the open naming its feature, two at
-// once both; settings that cannot reach the prefix open.
+// once both; settings that cannot reach the prefix, and a KMS default under a
+// checksum the service checks, open.
 func TestOpenJudgesEachBucketSetting(t *testing.T) {
 	versioning := func(st types.BucketVersioningStatus) func(*testing.T, *s3fault.Bucket) {
 		return func(t *testing.T, b *s3fault.Bucket) {
@@ -301,6 +341,7 @@ func TestOpenJudgesEachBucketSetting(t *testing.T) {
 			versioning(types.BucketVersioningStatusEnabled), lifecycle(expiring(openNS)),
 		}, []feature{featVersioning, featLifecycle}},
 		{"expiring_on_another_prefix", []func(*testing.T, *s3fault.Bucket){lifecycle(expiring("other/"))}, nil},
+		{"kms_under_crc32c", []func(*testing.T, *s3fault.Bucket){kms}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newOpenRig(t, nil)
@@ -331,8 +372,9 @@ func TestOpenJudgesEachBucketSetting(t *testing.T) {
 	}
 }
 
-// For each bucket-setting read, 403 refuses naming its feature, 501 passes,
-// and a 503 fails the open ErrTransient after exactly one request of it.
+// For each bucket-setting read, 403 refuses naming its feature, 501 and a 404
+// with the setting's not-found code pass, and a 503 fails the open
+// ErrTransient after exactly one request of it.
 func TestOpenReadsEachSettingsReply(t *testing.T) {
 	for _, read := range []struct {
 		op string
@@ -346,7 +388,11 @@ func TestOpenReadsEachSettingsReply(t *testing.T) {
 		for _, tc := range []struct {
 			status int
 			code   string
-		}{{403, "AccessDenied"}, {501, "NotImplemented"}, {503, "ServiceUnavailable"}} {
+		}{{403, "AccessDenied"}, {501, "NotImplemented"}, {404, settingNotFound[read.f]}, {503, "ServiceUnavailable"}} {
+			if tc.status == 404 && tc.code == "" {
+				continue // versioning has no not-found code: S3 answers no status
+			}
+
 			t.Run(fmt.Sprintf("%s_%d", read.op, tc.status), func(t *testing.T) {
 				r := newOpenRig(t, nil)
 				r.tr.Inject(s3fault.Rule{Op: read.op}, s3fault.Answer(tc.status, tc.code, nil))
@@ -357,10 +403,12 @@ func TestOpenReadsEachSettingsReply(t *testing.T) {
 				switch tc.status {
 				case 403:
 					r.refused(t, s, err, []feature{read.f})
-				case 501:
+				case 501, 404:
 					if err != nil {
-						t.Errorf("Open: %v, want a 501 to pass", err)
+						t.Fatalf("Open: %v, want a %d %s to pass", err, tc.status, tc.code)
 					}
+
+					r.capabilities(t)
 				case 503:
 					if !errors.Is(err, remote.ErrTransient) || s != nil {
 						t.Errorf("Open = %v, %v; want nil and ErrTransient", s, err)
@@ -423,6 +471,72 @@ func TestOpenSurvivesAFailedCleanup(t *testing.T) {
 	}
 
 	r.capabilities(t, featBatchDelete)
+
+	// The keys left show the size step 1 proved its mechanism at: the
+	// client's largest block, the bound Put enforces.
+	if b, ok := r.stored(t, checkNS+"integrity/large"); !ok || len(b) != openBlock {
+		t.Errorf("the largest-block proof stored %d bytes, held %v; want %d, the client's largest block", len(b), ok, openBlock)
+	}
+}
+
+// A cleanup whose batch fails logs every key left, and the open stands.
+func TestCleanupOfAFailedBatch(t *testing.T) {
+	r := newOpenRig(t, nil)
+	r.tr.Inject(s3fault.Rule{Op: "DeleteObjects"}, s3fault.Answer(500, "InternalError", nil))
+
+	cleanup(t.Context(), r.c, openNS, checkNS, true)
+
+	if w := r.lines(t, "WARN"); len(w) != 1 || w[0]["left"] != float64(len(checkKeys(checkNS))) {
+		t.Errorf("Warn lines %v, want one with left %d", w, len(checkKeys(checkNS)))
+	}
+}
+
+// An open cancelled while step 4 waits on a lagging listing still deletes
+// everything the check wrote.
+func TestOpenCancelledCleansUp(t *testing.T) {
+	r := newOpenRig(t, nil)
+	r.tr.Inject(s3fault.Rule{}, s3fault.HoldNewKeys(relists+1))
+
+	clk := sim.NewTestClock(time.Unix(0, 0))
+	r.c.setCheckSources(clk, nil)
+	armed := clk.Armed(relistWait)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := Open(ctx, r.c, openNS, remote.Mutable)
+		done <- err
+	}()
+
+	select {
+	case <-armed:
+		cancel()
+	case err := <-done:
+		t.Fatalf("Open returned %v before step 4 waited", err)
+	case <-time.After(2 * time.Minute): // a backstop only; the wait is seen on the clock
+		t.Fatal("step 4 never waited on the clock")
+	}
+
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Open = %v, want context.Canceled", err)
+	}
+
+	r.leftUnderCheck(t)
+}
+
+// A step 1 that proves nothing leaves steps 2 to 4 unverified and unnamed,
+// while step 5 still runs: a refused encryption read is named beside it.
+func TestOpenWithNothingProved(t *testing.T) {
+	r := newOpenRig(t, nil)
+	r.tr.Inject(s3fault.Rule{Op: "PutObject"}, s3fault.Answer(400, "InvalidRequest", nil))
+	r.tr.Inject(s3fault.Rule{Op: "GetBucketEncryption"}, s3fault.Answer(403, "AccessDenied", nil))
+
+	s, _, err := r.open(t)
+	r.refused(t, s, err, []feature{featPutIntegrity, featEncryption},
+		featReadAfterWrite, featStorageClass, featRangeGet, featListBucket, featBatchDelete, featList, featConditionalPut)
+	r.leftUnderCheck(t)
 }
 
 // Under Cubbit DS3's composition the check chooses the ETag and opens, with
@@ -448,15 +562,7 @@ func TestOpenUnderCubbitDS3(t *testing.T) {
 
 	t.Run("refused_under_kms", func(t *testing.T) {
 		r := newOpenRig(t, nil)
-		if _, err := r.admin.PutBucketEncryption(t.Context(), &s3.PutBucketEncryptionInput{
-			Bucket: &r.bucket,
-			ServerSideEncryptionConfiguration: &types.ServerSideEncryptionConfiguration{Rules: []types.ServerSideEncryptionRule{{
-				ApplyServerSideEncryptionByDefault: &types.ServerSideEncryptionByDefault{SSEAlgorithm: types.ServerSideEncryptionAwsKms},
-			}}},
-		}); err != nil {
-			t.Fatalf("PutBucketEncryption: %v", err)
-		}
-
+		kms(t, &s3fault.Bucket{Name: r.bucket, Admin: r.admin})
 		cubbit(r.tr)
 
 		s, _, err := r.open(t)
@@ -464,9 +570,10 @@ func TestOpenUnderCubbitDS3(t *testing.T) {
 	})
 }
 
-// A wrong secret, which LocalStack does not check, scripted as S3 answers it:
-// the open fails ErrDenied of cause access, and neither its error nor any log
-// record holds the access key, the secret or the signature.
+// A wrong secret, which LocalStack does not check, scripted as S3 answers it
+// to every request: the open fails ErrDenied of cause access, and neither its
+// error nor any log record, the failed cleanup's among them, holds the access
+// key, the secret or the signature.
 func TestOpenRefusesAWrongSecret(t *testing.T) {
 	const key, secret, signature = "AKIDOPENCHECKKEY", "the-wrong-secret-value", "5d672d79c15b13162d9279b0855cfba6789a8edb4c82c400e06b5924a6f2b5d7"
 
@@ -476,7 +583,7 @@ func TestOpenRefusesAWrongSecret(t *testing.T) {
 		`<Error><Code>SignatureDoesNotMatch</Code><Message>The request signature we calculated does not match the signature you provided.</Message>` +
 		`<AWSAccessKeyId>` + key + `</AWSAccessKeyId><SignatureProvided>` + signature + `</SignatureProvided>` +
 		`<RequestId>s3fault</RequestId></Error>`)
-	r.tr.Inject(s3fault.Rule{Times: 1}, s3fault.Answer(403, "SignatureDoesNotMatch", body))
+	r.tr.Inject(s3fault.Rule{}, s3fault.Answer(403, "SignatureDoesNotMatch", body))
 
 	s, _, err := r.open(t)
 
@@ -488,6 +595,10 @@ func TestOpenRefusesAWrongSecret(t *testing.T) {
 	r.log.mu.Lock()
 	logged := r.log.buf.String()
 	r.log.mu.Unlock()
+
+	if logged == "" {
+		t.Fatal("the refused open logged nothing, want the cleanup's Warn line to search")
+	}
 
 	for _, leak := range []string{key, secret, signature} {
 		if strings.Contains(err.Error(), leak) || strings.Contains(logged, leak) {
