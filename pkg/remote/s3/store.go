@@ -36,18 +36,76 @@ type store struct {
 
 var _ remote.Store = (*store)(nil)
 
-// Open opens the store of one namespace, under prefix, on a client it shares.
-// It refuses a prefix that is empty or does not end in "/", and any mode but
-// remote.Mutable, with remote.ErrInvalid. Until the capability check proves an
-// integrity mechanism, Put refuses with remote.ErrInvalid and sends nothing,
-// and Delete deletes in batches.
-func Open(ctx context.Context, c *Client, prefix string, mode remote.Mode) (remote.Store, error) {
-	s, err := open(c, prefix, mode, choice{batch: true})
-	if err != nil {
-		return nil, err // not a nil *store, which a caller's nil check would miss
+// Claim is the namespace claim the open read (RFC 4 §4.11, RFC 27 §2.1).
+// Err is nil when Body holds it, remote.ErrNotFound when none is stored,
+// and any other error when it could not be read; none of them fails the open.
+type Claim struct {
+	Body []byte
+	Err  error
+}
+
+// Open opens the store of one namespace, under prefix, on a client it shares,
+// once the capability check (RFC 4 §4.11, Appendix C.4) has proved the
+// service: it returns the store, holding its health object, and the claim the
+// check read. A service the check finds lacking is refused with
+// remote.ErrInvalid naming every missing feature, logged at Error once; a
+// call of the check that fails rather than answers fails the open with its
+// own error, for the caller to retry. Every check that ran to its end, refused
+// or not, records each feature's verdict through the Recorder. A prefix that
+// is empty or does not end in "/", and any mode but remote.Mutable, are
+// refused with remote.ErrInvalid before any request.
+func Open(ctx context.Context, c *Client, prefix string, mode remote.Mode) (remote.Store, Claim, error) {
+	switch err := checkPrefix(prefix); {
+	case c == nil:
+		return nil, Claim{}, fmt.Errorf("remote/s3: open without a client: %w", remote.ErrInvalid)
+	case err != nil:
+		return nil, Claim{}, fmt.Errorf("remote/s3: prefix %w: %w", err, remote.ErrInvalid)
+	case mode == remote.Immutable:
+		// decision: an immutable store is refused at open until the backup
+		// location's calls land with its copier (RFC 26), since none of what
+		// such a store must check, keep or refuse is built. Withdraw the
+		// refusal with those calls.
+		return nil, Claim{}, fmt.Errorf("remote/s3: immutable mode waits for the backup location's copier (RFC 26): %w", remote.ErrInvalid)
+	case mode != remote.Mutable:
+		return nil, Claim{}, fmt.Errorf("remote/s3: open in mode %d: %w", mode, remote.ErrInvalid)
 	}
 
-	return s, nil
+	ch, claim, v, err := check(ctx, c, prefix)
+	if err != nil {
+		return nil, Claim{}, err
+	}
+
+	for f := range featureCount {
+		c.rec.Capability(prefix, f.String(), v[f] == statePresent)
+	}
+
+	if missing := v.refusals(); missing != "" {
+		c.log.Error("remote open refused", "prefix", prefix, "missing", missing)
+		return nil, Claim{}, &refusedError{missing}
+	}
+
+	s, err := open(c, prefix, mode, ch)
+	if err != nil {
+		return nil, Claim{}, err // not a nil *store, which a caller's nil check would miss
+	}
+
+	c.log.Info("remote store opened", "prefix", prefix,
+		"mechanism", mechanism(ch.sum), "rejection_status", ch.rejected.status, "rejection_code", ch.rejected.code,
+		"batch_delete", ch.batch, "storage_class", c.cfg.StorageClass, "failure_domain", failureDomain(c.cfg.StorageClass))
+
+	return s, claim, nil
+}
+
+// mechanism names an integrity mechanism for the open's log line.
+func mechanism(sum remote.Checksum) string {
+	switch sum {
+	case remote.ChecksumCRC32C:
+		return "crc32c"
+	case remote.ChecksumMD5:
+		return "content-md5"
+	}
+
+	return "etag"
 }
 
 // open is Open over what the capability check proved.

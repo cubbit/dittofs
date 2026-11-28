@@ -27,12 +27,19 @@ import (
 // C.3). It returns nil only once the service acknowledged the whole body and
 // any ETag matched. A put over an existing name replaces it, and no request
 // carries a condition. A sum missing or of the wrong length, a store whose
-// check proved nothing, and a stream shorter or longer than size are
+// check proved nothing, a size above the client's largest block, the size the
+// check proved its mechanism at, and a stream shorter or longer than size are
 // remote.ErrInvalid, and the service stores nothing; a reader that fails, or
 // ctx ending, comes back as itself.
 func (s *store) Put(ctx context.Context, name remote.Name, body io.Reader, size int64, sum []byte) error {
 	start := time.Now()
-	n, err := s.put(ctx, opPut, s.blockKey(name), body, size, sum)
+
+	var n int64
+	err := fmt.Errorf("remote/s3: put of %d bytes over the largest block %d: %w", size, s.c.cfg.MaxBlockSize, remote.ErrInvalid)
+	if size <= s.c.cfg.MaxBlockSize {
+		n, err = s.put(ctx, opPut, s.blockKey(name), body, size, sum)
+	}
+
 	s.record(opPut, err, time.Since(start), n)
 
 	if errors.Is(err, remote.ErrCorrupt) {

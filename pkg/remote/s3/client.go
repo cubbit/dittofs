@@ -2,6 +2,7 @@ package s3
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -34,6 +35,7 @@ type ClientConfig struct {
 	SecretAccessKey string         // the credential's secret
 	TrustRoots      *x509.CertPool // nil: the system's roots; never a way to skip verification
 	Limit           int            // the derived connection limit (RFC 4 §4.10); at least 1
+	MaxBlockSize    int64          // the largest encoded block the store is put (RFC 3 §2.2); at least 1
 }
 
 // Deps are what the root injects (RFC 25 §8.1).
@@ -56,7 +58,8 @@ type Client struct {
 	tr  *http.Transport
 	api *s3.Client
 
-	clock clock // what the capability check's re-list waits on; a test sets its own
+	clock clock     // what the capability check's re-list waits on; a test sets its own
+	rand  io.Reader // what the check namespace is drawn from; a test seeds its own
 
 	// peerClosed counts the connections the service closed: a reply carrying
 	// Connection: close, or a read that ended in EOF or a reset before the
@@ -74,9 +77,9 @@ const (
 )
 
 // NewClient builds the client of cfg. It refuses an endpoint that is not an
-// https URL with a host, an empty bucket, access key or secret, a limit below
-// 1, and a nil logger or recorder with ErrInvalid, before any connection is
-// opened.
+// https URL with a host, an empty bucket, access key or secret, a limit or a
+// largest block below 1, and a nil logger or recorder with ErrInvalid, before
+// any connection is opened.
 func NewClient(cfg ClientConfig, d Deps) (*Client, error) {
 	switch err := checkEndpoint(cfg.Endpoint); {
 	case err != nil:
@@ -89,6 +92,8 @@ func NewClient(cfg ClientConfig, d Deps) (*Client, error) {
 		return nil, fmt.Errorf("remote/s3: the access key or the secret is empty: %w", remote.ErrInvalid)
 	case cfg.Limit < 1:
 		return nil, fmt.Errorf("remote/s3: limit %d is below 1: %w", cfg.Limit, remote.ErrInvalid)
+	case cfg.MaxBlockSize < 1:
+		return nil, fmt.Errorf("remote/s3: largest block %d is below 1: %w", cfg.MaxBlockSize, remote.ErrInvalid)
 	case d.Logger == nil || d.Recorder == nil:
 		return nil, fmt.Errorf("remote/s3: a logger and a recorder are required: %w", remote.ErrInvalid)
 	}
@@ -101,7 +106,7 @@ func NewClient(cfg ClientConfig, d Deps) (*Client, error) {
 		cfg.StorageClass = "STANDARD"
 	}
 
-	c := &Client{cfg: cfg, log: d.Logger.With("component", "remote"), rec: d.Recorder, clock: realClock{}}
+	c := &Client{cfg: cfg, log: d.Logger.With("component", "remote"), rec: d.Recorder, clock: realClock{}, rand: rand.Reader}
 
 	// decision: one attempt per call holds above net/http only. Its transport
 	// resends a GET once, by itself, when the pooled connection it went out on

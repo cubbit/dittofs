@@ -25,6 +25,10 @@ import (
 	"github.com/cubbit/dittofs/pkg/remote"
 )
 
+// testMaxBlock is the largest block of a client whose store no test checks:
+// above every block a test puts, so the bound refuses none of them.
+const testMaxBlock = 16 << 20
+
 // recordedCall is one call a calls sink was told of.
 type recordedCall struct {
 	op, result, cause string
@@ -35,8 +39,21 @@ type recordedCall struct {
 type calls struct {
 	mu      sync.Mutex
 	got     []recordedCall
+	caps    []capability
 	conn    atomic.Int64
 	foreign atomic.Int64
+}
+
+// capability is one feature verdict a calls sink was told of.
+type capability struct {
+	prefix, feature string
+	present         bool
+}
+
+func (c *calls) Capability(prefix, feature string, present bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.caps = append(c.caps, capability{prefix, feature, present})
 }
 
 func (c *calls) Call(op, result, cause string, _ time.Duration, n int64) {
@@ -152,32 +169,43 @@ func TestControlKey(t *testing.T) {
 	}
 }
 
+// Open refuses a bad prefix, a missing client and every mode but Mutable
+// before any request; immutable names what it waits for.
 func TestOpenRefuses(t *testing.T) {
 	prof.Watch(t, prof.Options{})
-	c, _ := testClient(t, tlsServer(t, ok, false, nil), nil)
+	srv, n := counting(t, md5ETag)
+	c, _ := testClient(t, srv, nil)
 
 	for _, tc := range []struct {
 		why    string
 		c      *Client
 		prefix string
 		mode   remote.Mode
+		text   string
 	}{
-		{"an empty prefix", c, "", remote.Mutable},
-		{"a prefix not ending in /", c, "ns", remote.Mutable},
-		{"a prefix whose last segment runs on", c, "ns/a", remote.Mutable},
-		{"immutable", c, "ns/", remote.Immutable},
-		{"no mode", c, "ns/", 0},
-		{"no client", nil, "ns/", remote.Mutable},
+		{"an empty prefix", c, "", remote.Mutable, "prefix"},
+		{"a prefix not ending in /", c, "ns", remote.Mutable, "prefix"},
+		{"a prefix whose last segment runs on", c, "ns/a", remote.Mutable, "prefix"},
+		{"immutable", c, "ns/", remote.Immutable, "backup location's copier"},
+		{"no mode", c, "ns/", 0, "mode 0"},
+		{"an unknown mode", c, "ns/", remote.Immutable + 1, "mode 3"},
+		{"no client", nil, "ns/", remote.Mutable, "client"},
 	} {
-		s, err := Open(t.Context(), tc.c, tc.prefix, tc.mode)
-		if !errors.Is(err, remote.ErrInvalid) || s != nil {
-			t.Errorf("Open [%s] = %v, %v; want nil, ErrInvalid", tc.why, s, err)
+		s, claim, err := Open(t.Context(), tc.c, tc.prefix, tc.mode)
+		if !errors.Is(err, remote.ErrInvalid) || s != nil || claim.Body != nil || claim.Err != nil {
+			t.Errorf("Open [%s] = %v, %+v, %v; want nil, no claim, ErrInvalid", tc.why, s, claim, err)
+		} else if !strings.Contains(err.Error(), tc.text) {
+			t.Errorf("Open [%s] error %q, want it to name %q", tc.why, err, tc.text)
 		}
 	}
 
-	s, err := Open(t.Context(), c, "ns/", remote.Mutable)
+	if got := n.Load(); got != 0 {
+		t.Errorf("the refused opens sent %d requests, want none", got)
+	}
+
+	s, err := open(c, "ns/", remote.Mutable, choice{})
 	if err != nil {
-		t.Fatalf("Open of ns/: %v", err)
+		t.Fatalf("open of ns/: %v", err)
 	}
 
 	if err := s.Close(); err != nil {
@@ -223,7 +251,7 @@ func storeOn(t *testing.T, srv *httptest.Server, ch choice, l *logs) (*store, *c
 	rec := &calls{}
 
 	c, err := NewClient(ClientConfig{
-		Endpoint: srv.URL, Bucket: "b", AccessKeyID: "AKIDFAKE", SecretAccessKey: "fake-secret", TrustRoots: roots, Limit: 4,
+		Endpoint: srv.URL, Bucket: "b", AccessKeyID: "AKIDFAKE", SecretAccessKey: "fake-secret", TrustRoots: roots, Limit: 4, MaxBlockSize: testMaxBlock,
 	}, Deps{Logger: slog.New(slog.NewJSONHandler(l, &slog.HandlerOptions{Level: slog.LevelDebug})), Recorder: rec})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
@@ -498,5 +526,51 @@ func TestOutcome(t *testing.T) {
 		if r, c := outcome(tc.err); r != tc.result || c != tc.cause {
 			t.Errorf("outcome(%v) = %q, %q; want %q, %q", tc.err, r, c, tc.result, tc.cause)
 		}
+	}
+}
+
+// A Put one byte over the client's largest block, the size the check proved
+// its mechanism at, is refused with no request; one at it is sent.
+func TestPutRefusesABlockOverTheLargest(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	srv, n := counting(t, md5ETag)
+	c, _ := testClient(t, srv, func(cfg *ClientConfig) { cfg.MaxBlockSize = 8 })
+
+	s, err := open(c, "ns/", remote.Mutable, choice{proved: true, sum: remote.ChecksumNone})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	if err := s.Put(t.Context(), remote.Name{1}, strings.NewReader("012345678"), 9, nil); !errors.Is(err, remote.ErrInvalid) {
+		t.Errorf("Put of 9 bytes over 8 = %v, want ErrInvalid", err)
+	}
+
+	if got := n.Load(); got != 0 {
+		t.Errorf("the refused put sent %d requests, want none", got)
+	}
+
+	if err := s.Put(t.Context(), remote.Name{1}, strings.NewReader("01234567"), 8, nil); err != nil {
+		t.Errorf("Put of 8 bytes at 8 = %v, want nil", err)
+	}
+
+	if got := n.Load(); got != 1 {
+		t.Errorf("the put at the bound sent %d requests, want one", got)
+	}
+}
+
+// An open of a service whose certificate the client does not trust fails
+// before any request reaches it.
+func TestOpenRefusesAnUntrustedService(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	srv, n := counting(t, md5ETag)
+	c, _ := testClient(t, srv, func(cfg *ClientConfig) { cfg.TrustRoots = x509.NewCertPool() })
+
+	s, _, err := Open(t.Context(), c, "ns/", remote.Mutable)
+	if s != nil || !errors.Is(err, remote.ErrTransient) {
+		t.Errorf("Open = %v, %v; want nil and ErrTransient", s, err)
+	}
+
+	if got := n.Load(); got != 0 {
+		t.Errorf("the service received %d requests, want none", got)
 	}
 }

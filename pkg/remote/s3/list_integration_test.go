@@ -106,6 +106,7 @@ func (r *listRig) openAt(t *testing.T, prefix string, rp *replies) (*store, *s3f
 		SecretAccessKey: "test",
 		TrustRoots:      r.roots,
 		Limit:           4,
+		MaxBlockSize:    testMaxBlock,
 	}, Deps{
 		Logger:   slog.New(slog.NewJSONHandler(l, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		Recorder: rec,
