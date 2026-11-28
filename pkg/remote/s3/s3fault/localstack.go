@@ -18,7 +18,8 @@ import (
 //
 // decision: with the variable unset it skips only outside CI. When CI is set
 // it fails, so a cell that lost its LocalStack can't stay green with every
-// test that needs it skipped.
+// test that needs it skipped. A root cell's sudo passes no CI, so this holds
+// only for a suite that doesn't run as root, as integration doesn't.
 func LocalStack(tb testing.TB) (endpoint string, roots *x509.CertPool) {
 	tb.Helper()
 	endpoint = os.Getenv("LOCALSTACK_HTTPS_ENDPOINT")
@@ -33,23 +34,23 @@ func LocalStack(tb testing.TB) (endpoint string, roots *x509.CertPool) {
 	if err != nil || u.Scheme != "https" || u.Hostname() == "" {
 		tb.Fatalf("LOCALSTACK_HTTPS_ENDPOINT %q isn't an https URL", endpoint)
 	}
-	addr := u.Host
-	if u.Port() == "" {
-		addr = net.JoinHostPort(u.Hostname(), "443")
-	}
 	// decision: this one handshake records the served certificate without
 	// verifying it, since it is what every later connection verifies
-	// against. Trusting it on first use is sound for a container the harness
-	// started on loopback; LocalStack's certificate changes per container
+	// against. Trusting it on first use is sound only on loopback, so any
+	// other peer is refused; LocalStack's certificate changes per container
 	// (downloaded, or self-signed when the download fails), so nothing can
 	// pin it ahead.
-	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 10 * time.Second}, "tcp", addr,
+	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 10 * time.Second}, "tcp", u.Host,
 		&tls.Config{ServerName: u.Hostname(), InsecureSkipVerify: true})
 	if err != nil {
-		tb.Fatalf("reading LocalStack's certificate at %s: %v", addr, err)
+		tb.Fatalf("reading LocalStack's certificate at %s: %v", u.Host, err)
 	}
+	defer func() { _ = conn.Close() }()
+	if peer, ok := conn.RemoteAddr().(*net.TCPAddr); !ok || !peer.IP.IsLoopback() {
+		tb.Fatalf("LOCALSTACK_HTTPS_ENDPOINT %s reached %v, not loopback, whose certificate isn't trusted on first use", endpoint, conn.RemoteAddr())
+	}
+	// A completed handshake always carries the server's certificate.
 	leaf := conn.ConnectionState().PeerCertificates[0]
-	_ = conn.Close()
 	roots = x509.NewCertPool()
 	roots.AddCert(leaf)
 	return endpoint, roots

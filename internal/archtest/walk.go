@@ -323,10 +323,9 @@ var Support = []string{"internal/archtest", "internal/prof"}
 // builds: one whose name carries another platform's suffix, or whose build
 // constraint no target satisfies with cgo on and no build tags, such as a
 // custom tag or !cgo. go list leaves such a file out of every graph, so a test
-// that walks dir calls this too and fails on what it returns. tests is the
-// walk's own: a walk without tests reads no test file, so a test file built
-// for no target hides nothing from it, and an integration test may carry its
-// suite's tag.
+// that walks dir calls this too and fails on what it returns. tests must be
+// the walk's own flag: a walk without tests reads no _test.go file, so a
+// tagged integration test hides nothing from it.
 func Unwalked(dir string, tests bool) ([]string, error) {
 	ctxs := make([]build.Context, 0, len(targets))
 	for _, target := range targets {
