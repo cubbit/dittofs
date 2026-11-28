@@ -1456,6 +1456,28 @@ One is open:
   index's "measured value plus headroom" rule does not apply to it, and its
   default is whatever that sweep selects.
 
+  This rule is fixed before the sweep runs, so the run cannot choose its own
+  test. The candidates are Appendix C's four rows, 64 KiB, 256 KiB, 1 MiB and
+  4 MiB, each run with the block target at its 4 MiB default, never varied
+  with `Target`. A candidate's re-stored bytes on a workload are the bytes of
+  its live chunks after the workload whose chunk IDs no chunk before it held,
+  all-zero chunks aside; its whole-file twin's are the same figure cut by
+  whole-file re-chunking over the same files and operations. On the next
+  release and the 64 inserts the offload path cuts as whole-file re-chunking
+  does, so they are controls: they decide nothing, and a candidate whose
+  re-stored bytes on either differ from its twin's fails the run, since only a
+  forced cut can move them. The decision rests on the 256 random pages and the
+  sustained 4 KiB overwrites, the latter summed over its rounds: on each, a
+  candidate's real ratio is its re-stored bytes over 256 KiB's on the offload
+  path, and its baseline ratio the same over the twins. A candidate replaces
+  256 KiB only if, on both, its real ratio is below 1 and below its baseline
+  ratio, and its live chunk records stay at or under ⌈live bytes / `Min`⌉ plus
+  one per hole plus one, the ceiling of [§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it) counted as an integer with
+  the one for the file's last chunk. Of those that qualify, the larger Σ
+  (baseline ratio − real ratio) / baseline ratio over the two wins, then the
+  smaller `Target`. Bytes stored, the streaming append, blocks per pass and
+  every other figure are reported and decide nothing, and no figure is timed.
+
 Settled:
 
 1. **Which way out of Appendix A.1:** the masks are computed from `Target` ([§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)),
