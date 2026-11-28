@@ -46,7 +46,7 @@ func writeMutatedKeyFile(t *testing.T, kf localKeyFile) string {
 }
 
 // TestLocal_DecodeKeyFile_CorruptFields exercises every guard in
-// decodeKeyFile that rejects a structurally-valid-but-unsupported key
+// the key file's decoder (internal/keyfile) that rejects a structurally-valid-but-unsupported key
 // file. Each case mutates exactly one field of an otherwise-valid file.
 func TestLocal_DecodeKeyFile_CorruptFields(t *testing.T) {
 	cases := []struct {
@@ -81,7 +81,7 @@ func TestLocal_DecodeKeyFile_CorruptFields(t *testing.T) {
 }
 
 // TestLocal_UnwrapMasterKey_BadBase64 covers the base64-decode guards in
-// unwrapMasterKey for the salt, nonce, and wrapped-key fields.
+// internal/keyfile's Open for the salt, nonce, and wrapped-key fields.
 func TestLocal_UnwrapMasterKey_BadBase64(t *testing.T) {
 	cases := []struct {
 		name   string
