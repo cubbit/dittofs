@@ -15,7 +15,7 @@ import (
 // v1's carver. Besides the package it tests, a test may reach the
 // architecture tests' support and carvetest, the carver's test components,
 // which no production row admits; carvetest reaches the standard library
-// alone, and its tests BLAKE3 and internal/prof besides. A row is an upper
+// alone, and its tests BLAKE3, internal/blake3 and internal/prof besides. A row is an upper
 // bound: a package that reaches less passes.
 var table = []archtest.Row{
 	{Pkg: "pkg/carver", Reach: []string{"pkg/carver/internal/params", "pkg/metadata/entity"}, Libs: archtest.EntityLibs(), Tests: carverTests},
@@ -23,7 +23,7 @@ var table = []archtest.Row{
 	{Pkg: "pkg/carver/carve", Reach: []string{"pkg/carver", "pkg/carver/internal/params", "pkg/metadata/entity"}, Libs: archtest.EntityLibs(), Tests: carverTests},
 	{Pkg: "pkg/carver/internal/chunker", Reach: []string{"pkg/carver/internal/params"}, Tests: chunkerTests, TestLibs: archtest.EntityLibs()},
 	{Pkg: "pkg/carver/assembler", Reach: []string{"pkg/carver", "pkg/carver/internal/params", "pkg/metadata/entity"}, Libs: archtest.EntityLibs(), Tests: carverTests},
-	{Pkg: "pkg/carver/internal/carvetest", Tests: []string{"internal/prof"}, TestLibs: blake3Libs},
+	{Pkg: "pkg/carver/internal/carvetest", Tests: []string{"internal/prof", "internal/blake3"}, TestLibs: blake3Libs},
 }
 
 // carverTests is what every carver package's tests may reach besides.
@@ -34,8 +34,9 @@ var carverTests = append(slices.Clone(archtest.Support), "pkg/carver/internal/ca
 // settings the carver's constructor builds.
 var chunkerTests = append(slices.Clone(carverTests), "pkg/carver", "pkg/carver/carve", "pkg/metadata/entity")
 
-// blake3Libs is lukechampine.com/blake3 with what it imports: the entity
-// package's libraries but its UUID one.
+// blake3Libs is lukechampine.com/blake3 with what it imports, guts among
+// them, which internal/blake3 is backed by: the entity package's libraries but
+// its UUID one.
 var blake3Libs = slices.DeleteFunc(archtest.EntityLibs(), func(lib string) bool { return lib == "github.com/google/uuid" })
 
 // Every package under pkg/carver, its tests included, reaches only what its
@@ -181,8 +182,12 @@ func TestImportRuleRefuses(t *testing.T) {
 			m("pkg/carver/internal/carvetest [test]"): {m("pkg/carver")},
 		}, []string{"pkg/carver/internal/carvetest [test] reaches pkg/carver, which row pkg/carver/internal/carvetest does not allow"}},
 		{"the test components' tests importing BLAKE3", m("pkg/carver/internal/carvetest [test]"), map[string][]string{
-			m("pkg/carver/internal/carvetest [test]"): {"lukechampine.com/blake3", m("internal/prof")},
+			m("pkg/carver/internal/carvetest [test]"): {"lukechampine.com/blake3", m("internal/prof"), m("internal/blake3")},
+			m("internal/blake3"):                      {"lukechampine.com/blake3/guts"},
 		}, nil},
+		{"the test components importing the shared hasher", m("pkg/carver/internal/carvetest"), map[string][]string{
+			m("pkg/carver/internal/carvetest"): {m("internal/blake3")},
+		}, []string{"pkg/carver/internal/carvetest reaches internal/blake3, which row pkg/carver/internal/carvetest does not allow"}},
 		{"the settings value importing BLAKE3", m("pkg/carver/internal/params"), map[string][]string{
 			m("pkg/carver/internal/params"): {"lukechampine.com/blake3"},
 		}, []string{"pkg/carver/internal/params imports lukechampine.com/blake3, which row pkg/carver/internal/params does not allow"}},

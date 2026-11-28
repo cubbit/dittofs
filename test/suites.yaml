@@ -132,9 +132,9 @@ suites:
       adapter-allocs:
         cmd: go test -timeout=5m ./internal/adapter/adaptertest/testproto/ ./internal/adapter/core/ ./internal/adapter/gss/ ./internal/adapter/nfs/protocol/ ./pkg/resources/ ./internal/adapter/nfs/wire/ ./internal/adapter/smb/protocol/ ./internal/adapter/smb/wire/
       # The carver's allocation counts, which skip under -race: every test named TestAllocs under
-      # pkg/carver, so a new count joins by its name.
+      # pkg/carver and in internal/blake3, its hasher, so a new count joins by its name.
       carver-allocs:
-        cmd: go test -timeout=5m -run=^TestAllocs ./pkg/carver/...
+        cmd: go test -timeout=5m -run=^TestAllocs ./pkg/carver/... ./internal/blake3/
       # The architecture rules, the CLI reference check and the scan for environment names the
       # start refuses read the whole module, so a change anywhere can break them, and the OpenAPI
       # document check reads openapi.json, a file that is no Go package's; with no {packages},
