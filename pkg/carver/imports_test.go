@@ -13,7 +13,8 @@ import (
 // carve and the fold the root, with the settings value it brings, and the
 // entity package with the libraries it imports, BLAKE3 among them. carve also
 // reaches internal/blake3, whose guts backing is among the entity package's
-// libraries. Never another component's implementation, never v1's carver.
+// libraries, and the chunker, which Cut asks for every boundary. Never another
+// component's implementation, never v1's carver.
 // Besides the package it tests, a test may reach the architecture tests'
 // support and carvetest, the carver's test components, which no production row
 // admits; carvetest reaches the standard library alone, and its tests BLAKE3,
@@ -22,7 +23,7 @@ import (
 var table = []archtest.Row{
 	{Pkg: "pkg/carver", Reach: []string{"pkg/carver/internal/params", "pkg/metadata/entity"}, Libs: archtest.EntityLibs(), Tests: carverTests},
 	{Pkg: "pkg/carver/internal/params", Tests: carverTests},
-	{Pkg: "pkg/carver/carve", Reach: []string{"internal/blake3", "pkg/carver", "pkg/carver/internal/params", "pkg/metadata/entity"}, Libs: archtest.EntityLibs(), Tests: carverTests},
+	{Pkg: "pkg/carver/carve", Reach: []string{"internal/blake3", "pkg/carver", "pkg/carver/internal/chunker", "pkg/carver/internal/params", "pkg/metadata/entity"}, Libs: archtest.EntityLibs(), Tests: carverTests},
 	{Pkg: "pkg/carver/internal/chunker", Reach: []string{"pkg/carver/internal/params"}, Tests: chunkerTests, TestLibs: archtest.EntityLibs()},
 	{Pkg: "pkg/carver/assembler", Reach: []string{"pkg/carver", "pkg/carver/internal/params", "pkg/metadata/entity"}, Libs: archtest.EntityLibs(), Tests: carverTests},
 	{Pkg: "pkg/carver/internal/carvetest", Tests: []string{"internal/prof", "internal/blake3"}, TestLibs: blake3Libs},
