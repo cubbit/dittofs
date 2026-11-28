@@ -33,9 +33,10 @@ type recordedCall struct {
 
 // calls is a Recorder that keeps the calls it was told of.
 type calls struct {
-	mu   sync.Mutex
-	got  []recordedCall
-	conn atomic.Int64
+	mu      sync.Mutex
+	got     []recordedCall
+	conn    atomic.Int64
+	foreign atomic.Int64
 }
 
 func (c *calls) Call(op, result, cause string, _ time.Duration, n int64) {
@@ -45,7 +46,7 @@ func (c *calls) Call(op, result, cause string, _ time.Duration, n int64) {
 }
 
 func (c *calls) ConnOpened() { c.conn.Add(1) }
-func (c *calls) ForeignKey() {}
+func (c *calls) ForeignKey() { c.foreign.Add(1) }
 
 func (c *calls) all() []recordedCall {
 	c.mu.Lock()
