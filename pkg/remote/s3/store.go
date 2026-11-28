@@ -15,12 +15,14 @@ import (
 // choice is what the capability check proves about the service: whether it
 // proved an integrity mechanism at all, the checksum a put sends (CRC32C,
 // Content-MD5, or none, when the store compares the returned ETag), the status
-// and code the service rejected that checksum with. The zero choice proves
-// nothing.
+// and code the service rejected that checksum with, and whether the service
+// has a batch delete. The zero choice proves nothing, and deletes one name per
+// request.
 type choice struct {
 	proved   bool
 	sum      remote.Checksum
 	rejected recorded
+	batch    bool
 }
 
 // store is one namespace's store: a prefix over a client it shares with every
@@ -37,9 +39,10 @@ var _ remote.Store = (*store)(nil)
 // Open opens the store of one namespace, under prefix, on a client it shares.
 // It refuses a prefix that is empty or does not end in "/", and any mode but
 // remote.Mutable, with remote.ErrInvalid. Until the capability check proves an
-// integrity mechanism, Put refuses with remote.ErrInvalid and sends nothing.
+// integrity mechanism, Put refuses with remote.ErrInvalid and sends nothing,
+// and Delete deletes in batches.
 func Open(ctx context.Context, c *Client, prefix string, mode remote.Mode) (remote.Store, error) {
-	s, err := open(c, prefix, mode, choice{})
+	s, err := open(c, prefix, mode, choice{batch: true})
 	if err != nil {
 		return nil, err // not a nil *store, which a caller's nil check would miss
 	}
@@ -119,15 +122,6 @@ func (s *store) refuseClosed(op opKind) error {
 
 // The calls below are not served yet: each refuses with remote.ErrInvalid
 // and sends nothing.
-
-func (s *store) Delete(_ context.Context, names []remote.Name) []error {
-	errs := make([]error, len(names))
-	for i := range errs {
-		errs[i] = unserved(opDelete)
-	}
-
-	return errs
-}
 
 func (s *store) List(_ context.Context, after remote.Cursor, _ int) ([]remote.Info, remote.Cursor, bool, error) {
 	return nil, after, false, unserved(opList)
