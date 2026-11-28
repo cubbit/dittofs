@@ -69,21 +69,17 @@ func TestConformance(t *testing.T) {
 				}
 
 				prefix := "ns-" + hex.EncodeToString(randomBytes(4)) + "/"
-				reopen := func(ctx context.Context) (remote.Store, error) {
-					opens.Add(1)
-					s, _, err := Open(ctx, c, prefix, remote.Mutable)
 
-					return s, err
-				}
-
-				s, err := reopen(t.Context())
+				opens.Add(1)
+				checked, _, err := Open(t.Context(), c, prefix, remote.Mutable)
 				if err != nil {
 					t.Fatalf("Open: %v", err)
 				}
-				t.Cleanup(func() { _ = s.Close() })
+				t.Cleanup(func() { _ = checked.Close() })
 
-				if got := s.(*store).choice.batch; got != mode.batch {
-					t.Fatalf("the check chose batch delete %v, want %v", got, mode.batch)
+				s := checked.(*store)
+				if s.choice.batch != mode.batch {
+					t.Fatalf("the check chose batch delete %v, want %v", s.choice.batch, mode.batch)
 				}
 
 				return remotetest.Subject{
@@ -92,7 +88,10 @@ func TestConformance(t *testing.T) {
 						_, err := b.Admin.PutObject(ctx, &s3.PutObjectInput{Bucket: &b.Name, Key: new(prefix + key), Body: strings.NewReader(string(body))})
 						return err
 					},
-					Reopen: reopen,
+					// Over what the check proved, not a second check: the suite's
+					// Control row reads the health object it put back through the
+					// reopened store, which a check would have put again.
+					Reopen: func(context.Context) (remote.Store, error) { return open(c, prefix, remote.Mutable, s.choice) },
 					Raw:    func(ctx context.Context) ([]string, error) { return rawUnder(ctx, b, prefix) },
 				}
 			})
