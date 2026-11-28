@@ -16,13 +16,12 @@ import (
 // choice is what the capability check proves about the service: whether it
 // proved an integrity mechanism at all, the checksum a put sends (CRC32C,
 // Content-MD5, or none, when the store compares the returned ETag), the status
-// and code the service rejected that checksum with, and whether it has a batch
-// delete. The zero choice proves nothing.
+// and code the service rejected that checksum with. The zero choice proves
+// nothing.
 type choice struct {
 	proved   bool
 	sum      remote.Checksum
 	rejected recorded
-	batch    bool
 }
 
 // store is one namespace's store: a prefix over a client it shares with every
@@ -119,12 +118,13 @@ func (s *store) refuseClosed(op opKind) error {
 	return nil
 }
 
-// Get is not served yet: it refuses with remote.ErrInvalid and sends nothing.
+// The calls below are not served yet: each refuses with remote.ErrInvalid
+// and sends nothing.
+
 func (s *store) Get(context.Context, remote.Name, remote.Range) (io.ReadCloser, remote.StoredSum, error) {
 	return nil, remote.StoredSum{}, unserved(opGet)
 }
 
-// Delete is not served yet: every name's result wraps remote.ErrInvalid.
 func (s *store) Delete(_ context.Context, names []remote.Name) []error {
 	errs := make([]error, len(names))
 	for i := range errs {
@@ -134,25 +134,18 @@ func (s *store) Delete(_ context.Context, names []remote.Name) []error {
 	return errs
 }
 
-// List is not served yet: it refuses with remote.ErrInvalid and sends nothing.
 func (s *store) List(_ context.Context, after remote.Cursor, _ int) ([]remote.Info, remote.Cursor, bool, error) {
 	return nil, after, false, unserved(opList)
 }
 
-// Health is not served yet: it refuses with remote.ErrInvalid and sends
-// nothing.
 func (s *store) Health(context.Context, remote.Direction) error {
 	return fmt.Errorf("remote/s3: health is not served: %w", remote.ErrInvalid)
 }
 
-// PutControl is not served yet: it refuses with remote.ErrInvalid and sends
-// nothing.
 func (s *store) PutControl(context.Context, remote.Role, []byte) error {
 	return unserved(opPutControl)
 }
 
-// GetControl is not served yet: it refuses with remote.ErrInvalid and sends
-// nothing.
 func (s *store) GetControl(context.Context, remote.Role) ([]byte, remote.Version, error) {
 	return nil, "", unserved(opGetControl)
 }
@@ -181,6 +174,8 @@ func outcome(err error) (result, cause string) {
 		return "ok", ""
 	case errors.As(err, &d):
 		return "denied", d.Cause.String()
+	case errors.Is(err, remote.ErrDenied):
+		return "denied", ""
 	case errors.Is(err, remote.ErrNotFound):
 		return "not_found", ""
 	case errors.Is(err, remote.ErrInvalid):

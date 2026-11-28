@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/md5"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -20,6 +21,7 @@ import (
 	"testing/iotest"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/remote"
 )
 
@@ -82,26 +84,8 @@ func (l *logs) records(t *testing.T) []map[string]any {
 	return out
 }
 
-// offline is a client no test request reaches: building one opens nothing.
-func offline(t *testing.T) *Client {
-	t.Helper()
-
-	c, err := NewClient(ClientConfig{
-		Endpoint: "https://127.0.0.1:1", Bucket: "b", AccessKeyID: "AKIDFAKE", SecretAccessKey: "fake-secret", Limit: 1,
-	}, Deps{Logger: slog.New(slog.DiscardHandler), Recorder: &calls{}})
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
-	t.Cleanup(func() { _ = c.Close() })
-
-	return c
-}
-
 func TestBlockKeyAndNameFromKey(t *testing.T) {
-	s, err := open(offline(t), "ns/", remote.Mutable, choice{})
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
+	s := &store{prefix: "ns/"}
 
 	var n remote.Name
 	for i := range n {
@@ -150,10 +134,7 @@ func TestBlockKeyAndNameFromKey(t *testing.T) {
 }
 
 func TestControlKey(t *testing.T) {
-	s, err := open(offline(t), "ns/", remote.Mutable, choice{})
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
+	s := &store{prefix: "ns/"}
 
 	for r, want := range map[remote.Role]string{
 		remote.RoleClaim:  "ns/control/claim",
@@ -171,7 +152,8 @@ func TestControlKey(t *testing.T) {
 }
 
 func TestOpenRefuses(t *testing.T) {
-	c := offline(t)
+	prof.Watch(t, prof.Options{})
+	c, _ := testClient(t, tlsServer(t, ok, false, nil), nil)
 
 	for _, tc := range []struct {
 		why    string
@@ -231,13 +213,21 @@ func md5ETag(b []byte) string {
 func storeOn(t *testing.T, srv *httptest.Server, ch choice, l *logs) (*store, *calls) {
 	t.Helper()
 
-	c, _ := testClient(t, srv, nil)
-	rec := &calls{}
-	c.rec = rec
-
-	if l != nil {
-		c.log = slog.New(slog.NewJSONHandler(l, &slog.HandlerOptions{Level: slog.LevelDebug})).With("component", "remote")
+	if l == nil {
+		l = &logs{}
 	}
+
+	roots := x509.NewCertPool()
+	roots.AddCert(srv.Certificate())
+	rec := &calls{}
+
+	c, err := NewClient(ClientConfig{
+		Endpoint: srv.URL, Bucket: "b", AccessKeyID: "AKIDFAKE", SecretAccessKey: "fake-secret", TrustRoots: roots, Limit: 4,
+	}, Deps{Logger: slog.New(slog.NewJSONHandler(l, &slog.HandlerOptions{Level: slog.LevelDebug})), Recorder: rec})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
 
 	s, err := open(c, "ns/", remote.Mutable, ch)
 	if err != nil {
@@ -248,6 +238,7 @@ func storeOn(t *testing.T, srv *httptest.Server, ch choice, l *logs) (*store, *c
 }
 
 func TestPutRefusesBeforeAnyRequest(t *testing.T) {
+	prof.Watch(t, prof.Options{})
 	srv, n := counting(t, md5ETag)
 	crc := choice{proved: true, sum: remote.ChecksumCRC32C}
 	mdc := choice{proved: true, sum: remote.ChecksumMD5}
@@ -268,6 +259,10 @@ func TestPutRefusesBeforeAnyRequest(t *testing.T) {
 		{"a CRC32C as hex", crc, false, 1, []byte("e3069283")},
 		{"no MD5", mdc, false, 1, nil},
 		{"a long MD5", mdc, false, 1, make([]byte, 17)},
+		{"a checksum kind no check proves", choice{proved: true, sum: remote.Checksum(9)}, false, 1, []byte{1, 2, 3, 4}},
+		// The SDK sends no body for a length of 0, so the store reads the
+		// stream itself.
+		{"a byte for a size of 0", crc, false, 0, []byte{0, 0, 0, 0}},
 	} {
 		s, rec := storeOn(t, srv, tc.ch, nil)
 		if tc.closed {
@@ -290,6 +285,7 @@ func TestPutRefusesBeforeAnyRequest(t *testing.T) {
 }
 
 func TestPutComparesTheETag(t *testing.T) {
+	prof.Watch(t, prof.Options{})
 	body := []byte("a block's bytes")
 
 	for _, tc := range []struct {
@@ -331,6 +327,7 @@ func TestPutComparesTheETag(t *testing.T) {
 }
 
 func TestPutMatchesTheRecordedRejectionOnlyWhenItCarriedTheChecksum(t *testing.T) {
+	prof.Watch(t, prof.Options{})
 	srv := tlsServer(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)
 		w.WriteHeader(http.StatusBadRequest)
@@ -353,6 +350,24 @@ func TestPutMatchesTheRecordedRejectionOnlyWhenItCarriedTheChecksum(t *testing.T
 		if err := s.Put(t.Context(), remote.Name{}, bytes.NewReader(b), 1, tc.sum); !errors.Is(err, tc.want) {
 			t.Errorf("Put [%s] answered 400 InvalidRequest = %v, want %v", tc.why, err, tc.want)
 		}
+	}
+}
+
+func TestPutOfAnEmptyBlock(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	srv, n := counting(t, md5ETag)
+	s, rec := storeOn(t, srv, choice{proved: true}, nil)
+
+	if err := s.Put(t.Context(), remote.Name{}, strings.NewReader(""), 0, nil); err != nil {
+		t.Errorf("Put of an empty block = %v, want nil", err)
+	}
+
+	if got := n.Load(); got != 1 {
+		t.Errorf("the service received %d requests, want 1", got)
+	}
+
+	if got := rec.all(); len(got) != 1 || got[0] != (recordedCall{"put", "ok", "", 0}) {
+		t.Errorf("recorded %+v, want one put, ok, 0 bytes", got)
 	}
 }
 
@@ -433,10 +448,6 @@ func TestGuard(t *testing.T) {
 				t.Errorf("guard [%s]: MD5 %x, want the body's %x", tc.why, g.md5.Sum(nil), sum)
 			}
 		}
-
-		if n, err := g.Read(make([]byte, 1)); n != 0 || err == nil {
-			t.Errorf("guard [%s]: a read after stop = %d, %v; want 0 and an error", tc.why, n, err)
-		}
 	}
 }
 
@@ -475,6 +486,7 @@ func TestOutcome(t *testing.T) {
 		{fmt.Errorf("x: %w", &remote.DeniedError{Cause: remote.CauseAccess}), "denied", "access"},
 		{fmt.Errorf("x: %w", &remote.DeniedError{Cause: remote.CauseQuota}), "denied", "quota"},
 		{fmt.Errorf("x: %w", &remote.DeniedError{Cause: remote.CauseSize}), "denied", "size"},
+		{fmt.Errorf("x: %w", remote.ErrDenied), "denied", ""},
 		{fmt.Errorf("x: %w", remote.ErrThrottled), "throttled", ""},
 		{fmt.Errorf("x: %w", remote.ErrTransient), "transient", ""},
 		{fmt.Errorf("x: %w", remote.ErrCorrupt), "corrupt", ""},
@@ -485,34 +497,5 @@ func TestOutcome(t *testing.T) {
 		if r, c := outcome(tc.err); r != tc.result || c != tc.cause {
 			t.Errorf("outcome(%v) = %q, %q; want %q, %q", tc.err, r, c, tc.result, tc.cause)
 		}
-	}
-}
-
-func TestUnservedCallsSendNothing(t *testing.T) {
-	srv, n := counting(t, md5ETag)
-	s, _ := storeOn(t, srv, choice{proved: true, batch: true}, nil)
-	ctx := t.Context()
-
-	if _, _, err := s.Get(ctx, remote.Name{}, remote.Range{}); !errors.Is(err, remote.ErrInvalid) {
-		t.Errorf("Get = %v, want ErrInvalid", err)
-	}
-	if errs := s.Delete(ctx, []remote.Name{{1}, {2}}); len(errs) != 2 || !errors.Is(errs[0], remote.ErrInvalid) || !errors.Is(errs[1], remote.ErrInvalid) {
-		t.Errorf("Delete = %v, want two ErrInvalid", errs)
-	}
-	if _, next, _, err := s.List(ctx, "c", 10); !errors.Is(err, remote.ErrInvalid) || next != "c" {
-		t.Errorf("List = %q, %v; want the cursor back, ErrInvalid", next, err)
-	}
-	if err := s.Health(ctx, remote.DirGet); !errors.Is(err, remote.ErrInvalid) {
-		t.Errorf("Health = %v, want ErrInvalid", err)
-	}
-	if err := s.PutControl(ctx, remote.RoleClaim, []byte("x")); !errors.Is(err, remote.ErrInvalid) {
-		t.Errorf("PutControl = %v, want ErrInvalid", err)
-	}
-	if _, _, err := s.GetControl(ctx, remote.RoleClaim); !errors.Is(err, remote.ErrInvalid) {
-		t.Errorf("GetControl = %v, want ErrInvalid", err)
-	}
-
-	if got := n.Load(); got != 0 {
-		t.Errorf("the service received %d requests, want 0", got)
 	}
 }

@@ -26,16 +26,13 @@ import (
 // while streaming and compared with the returned ETag (RFC 4 §4.3, Appendix
 // C.3). It returns nil only once the service acknowledged the whole body and
 // any ETag matched. A put over an existing name replaces it, and no request
-// carries a condition.
-//
-// Before any request it refuses with remote.ErrInvalid: a closed store, a store
-// whose check proved no mechanism, a negative size, and, when Checksum is not
-// None, a sum missing or of the wrong length; with None, sum is not read. A
-// stream shorter or longer than size is remote.ErrInvalid and the service
-// stores nothing; a reader that fails, or ctx ending, comes back as itself.
+// carries a condition. A sum missing or of the wrong length, a store whose
+// check proved nothing, and a stream shorter or longer than size are
+// remote.ErrInvalid, and the service stores nothing; a reader that fails, or
+// ctx ending, comes back as itself.
 func (s *store) Put(ctx context.Context, name remote.Name, body io.Reader, size int64, sum []byte) error {
 	start := time.Now()
-	n, err := s.put(ctx, name, body, size, sum)
+	n, err := s.put(ctx, opPut, s.blockKey(name), body, size, sum)
 	s.record(opPut, err, time.Since(start), n)
 
 	if errors.Is(err, remote.ErrCorrupt) {
@@ -45,9 +42,9 @@ func (s *store) Put(ctx context.Context, name remote.Name, body io.Reader, size 
 	return err
 }
 
-// put is Put, returning the body bytes the request read.
-func (s *store) put(ctx context.Context, name remote.Name, body io.Reader, size int64, sum []byte) (int64, error) {
-	if err := s.refuseClosed(opPut); err != nil {
+// put is a put of op under key, returning the body bytes the request read.
+func (s *store) put(ctx context.Context, op opKind, key string, body io.Reader, size int64, sum []byte) (int64, error) {
+	if err := s.refuseClosed(op); err != nil {
 		return 0, err
 	}
 
@@ -56,10 +53,9 @@ func (s *store) put(ctx context.Context, name remote.Name, body io.Reader, size 
 	}
 
 	if size < 0 {
-		return 0, fmt.Errorf("remote/s3: put of %d bytes: %w", size, remote.ErrInvalid)
+		return 0, fmt.Errorf("remote/s3: %s of %d bytes: %w", op, size, remote.ErrInvalid)
 	}
 
-	key := s.blockKey(name)
 	in := &s3.PutObjectInput{
 		Bucket:        &s.c.cfg.Bucket,
 		Key:           &key,
@@ -69,9 +65,9 @@ func (s *store) put(ctx context.Context, name remote.Name, body io.Reader, size 
 
 	g := &guard{src: body, left: size}
 
-	// rec is the check's recorded rejection, matched only on a put that
-	// carried the checksum it was recorded for.
-	var rec recorded
+	// The check's recorded rejection, matched only on a put that carried the
+	// checksum it was recorded for.
+	rec := s.choice.rejected
 
 	switch s.choice.sum {
 	case remote.ChecksumCRC32C:
@@ -80,16 +76,27 @@ func (s *store) put(ctx context.Context, name remote.Name, body io.Reader, size 
 		}
 
 		in.ChecksumCRC32C = new(base64.StdEncoding.EncodeToString(sum))
-		rec = s.choice.rejected
 	case remote.ChecksumMD5:
 		if len(sum) != md5.Size {
 			return 0, fmt.Errorf("remote/s3: put with a %d-byte MD5: %w", len(sum), remote.ErrInvalid)
 		}
 
 		in.ContentMD5 = new(base64.StdEncoding.EncodeToString(sum))
-		rec = s.choice.rejected
-	default:
+	case remote.ChecksumNone:
 		g.md5 = md5.New()
+		rec = recorded{}
+	default:
+		return 0, fmt.Errorf("remote/s3: %s with checksum %d: %w", op, s.choice.sum, remote.ErrInvalid)
+	}
+
+	if size == 0 {
+		// The SDK sends no body for a length of 0, so the guard would never
+		// see a stream that is longer: read it once here, which must find the
+		// end.
+		if _, err := g.Read(make([]byte, 1)); err != io.EOF {
+			_, local := g.stop()
+			return 0, local
+		}
 	}
 
 	in.Body = g
@@ -97,7 +104,7 @@ func (s *store) put(ctx context.Context, name remote.Name, body io.Reader, size 
 	out, err := s.c.api.PutObject(ctx, in)
 	read, local := g.stop()
 
-	if err := fromSDK(ctx, opPut, rec, local, err); err != nil {
+	if err := fromSDK(ctx, op, rec, local, err); err != nil {
 		return read, err
 	}
 
@@ -111,7 +118,7 @@ func (s *store) put(ctx context.Context, name remote.Name, body io.Reader, size 
 		// committed block. Withdraw this exemption, by refusing services that
 		// verify only the digest, if one is ever seen applying a stale put.
 		if !etagIsMD5(out.ETag, g.md5.Sum(nil)) {
-			return read, fmt.Errorf("remote/s3: put: the ETag is not the MD5 of the body sent: %w", remote.ErrCorrupt)
+			return read, fmt.Errorf("remote/s3: %s: the ETag is not the MD5 of the body sent: %w", op, remote.ErrCorrupt)
 		}
 	}
 
@@ -145,8 +152,12 @@ type guard struct {
 	src io.Reader
 	md5 hash.Hash // the body's MD5 when the store compares the ETag; nil otherwise
 
-	// mu is held across each read of src, so stop waits out a read net/http's
-	// writer still has in flight: src is never read once Put has returned.
+	// decision: mu is held across each read of src, so stop waits out a read
+	// net/http's writer still has in flight and src is never read once Put has
+	// returned, which a caller that reuses or closes its reader relies on. The
+	// price: a read of src that blocks holds Put past ctx's end, as net/http's
+	// writer would anyway. Revisit if a caller's source can block, a pipe
+	// from an encoder goroutine for one, rather than read a local journal.
 	mu      sync.Mutex
 	left    int64 // bytes still to deliver
 	read    int64 // bytes delivered
@@ -181,11 +192,7 @@ func (g *guard) Read(p []byte) (int, error) {
 			g.err = err
 		}
 
-		if g.err != nil {
-			return n, g.err
-		}
-
-		return n, nil
+		return n, g.err
 	}
 
 	// The last byte, if any, and one read past it, which must find the end.
@@ -197,10 +204,7 @@ func (g *guard) Read(p []byte) (int, error) {
 		g.err = fmt.Errorf("remote/s3: put body is longer than its size: %w", remote.ErrInvalid)
 	case m == want-1 && (err == io.EOF || err == io.ErrUnexpectedEOF):
 		g.ended = true
-		if m == 1 {
-			p[0] = g.tail[0]
-			g.deliver(p[:1])
-		}
+		g.deliver(p[:copy(p, g.tail[:m])])
 
 		return m, io.EOF
 	case err == io.EOF || err == io.ErrUnexpectedEOF:

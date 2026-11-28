@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -17,6 +18,7 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -151,22 +153,20 @@ func (r *lsRig) stored(t *testing.T, key string) (body []byte, ok bool) {
 	return b, true
 }
 
+// crc is the CRC32C mode, the one LocalStack enforces.
+var crc = choice{proved: true, sum: remote.ChecksumCRC32C}
+
 // modes are the three integrity mechanisms a check can prove, each with the
-// sum a put of b carries.
-func modes() []struct {
-	name string
-	ch   choice
-	sum  func(b []byte) []byte
-} {
-	return []struct {
-		name string
-		ch   choice
-		sum  func(b []byte) []byte
-	}{
-		{"crc32c", choice{proved: true, sum: remote.ChecksumCRC32C}, crc32cOf},
-		{"content-md5", choice{proved: true, sum: remote.ChecksumMD5}, func(b []byte) []byte { s := md5.Sum(b); return s[:] }},
-		{"etag", choice{proved: true, sum: remote.ChecksumNone}, func([]byte) []byte { return nil }},
-	}
+// sum a put of b carries and the one header that carries it ("" for none).
+var modes = []struct {
+	name   string
+	ch     choice
+	sum    func(b []byte) []byte
+	header string
+}{
+	{"crc32c", crc, crc32cOf, "X-Amz-Checksum-Crc32c"},
+	{"content-md5", choice{proved: true, sum: remote.ChecksumMD5}, func(b []byte) []byte { s := md5.Sum(b); return s[:] }, "Content-Md5"},
+	{"etag", choice{proved: true, sum: remote.ChecksumNone}, func([]byte) []byte { return nil }, ""},
 }
 
 func crc32cOf(b []byte) []byte {
@@ -195,7 +195,7 @@ func integrityHeaders(h http.Header) []string {
 func TestPutStoresTheBlockInEachMode(t *testing.T) {
 	r := newLSRig(t)
 
-	for _, m := range modes() {
+	for _, m := range modes {
 		t.Run(m.name, func(t *testing.T) {
 			s, tr, rec, l := r.open(t, "", m.ch)
 			name := remote.Name{1, 2, 3}
@@ -217,18 +217,21 @@ func TestPutStoresTheBlockInEachMode(t *testing.T) {
 				t.Fatalf("%d requests reached the transport, want 2 PutObject", len(reqs))
 			}
 
-			want := 1
-			if m.ch.sum == remote.ChecksumNone {
-				want = 0
-			}
-
+			bodies := [][]byte{first, second}
 			for i, q := range reqs {
 				if q.Op != "PutObject" || q.Key != s.blockKey(name) {
 					t.Errorf("request %d: %s of %q, want PutObject of %q", i, q.Op, q.Key, s.blockKey(name))
 				}
 
-				if got := integrityHeaders(q.Header); len(got) != want {
-					t.Errorf("request %d carried integrity headers %v, want %d", i, got, want)
+				got, want := integrityHeaders(q.Header), []string{m.header}
+				if m.header == "" {
+					want = nil
+				}
+				if !slices.Equal(got, want) {
+					t.Errorf("request %d carried integrity headers %v, want %v", i, got, want)
+				}
+				if m.header != "" && q.Header.Get(m.header) != base64.StdEncoding.EncodeToString(m.sum(bodies[i])) {
+					t.Errorf("request %d: %s %q, want the base64 of the body's raw digest", i, m.header, q.Header.Get(m.header))
 				}
 
 				for k := range q.Header {
@@ -272,7 +275,7 @@ func TestPutWithNothingProvedSendsNothing(t *testing.T) {
 
 func TestPutWritesTheConfiguredStorageClass(t *testing.T) {
 	r := newLSRig(t)
-	s, _, _, _ := r.open(t, "STANDARD_IA", modes()[0].ch)
+	s, _, _, _ := r.open(t, "STANDARD_IA", crc)
 	b := []byte("a block")
 
 	if err := s.Put(t.Context(), remote.Name{1}, bytes.NewReader(b), int64(len(b)), crc32cOf(b)); err != nil {
@@ -297,7 +300,7 @@ func TestPutOfAWrongSumIsCorrupt(t *testing.T) {
 	r := newLSRig(t)
 	b := []byte("a block whose sum is wrong")
 
-	for _, m := range modes()[:2] {
+	for _, m := range modes[:2] {
 		t.Run(m.name, func(t *testing.T) {
 			s, _, rec, l := r.open(t, "", m.ch)
 			name := remote.Name{9}
@@ -327,7 +330,7 @@ func TestPutOfAWrongSumIsCorrupt(t *testing.T) {
 
 func TestPutOfAWrongLengthStreamStoresNothing(t *testing.T) {
 	r := newLSRig(t)
-	s, _, rec, _ := r.open(t, "", modes()[0].ch)
+	s, _, rec, _ := r.open(t, "", crc)
 	b := randomBytes(100 << 10)
 
 	for _, tc := range []struct {
@@ -351,24 +354,27 @@ func TestPutOfAWrongLengthStreamStoresNothing(t *testing.T) {
 		}
 	}
 
-	for i, c := range rec.all() {
-		if c.result != "invalid" {
-			t.Errorf("call %d recorded %+v, want invalid", i, c)
-		}
+	if got := rec.all(); len(got) != 2 || got[0].result != "invalid" || got[1].result != "invalid" {
+		t.Errorf("recorded %+v, want two puts, invalid", got)
 	}
 }
 
 func TestPutReturnsTheReadersOwnError(t *testing.T) {
 	r := newLSRig(t)
-	s, _, rec, _ := r.open(t, "", modes()[0].ch)
+	s, _, rec, _ := r.open(t, "", crc)
 	b := randomBytes(64 << 10)
 	errBody := errors.New("the journal's reader failed")
 	name := remote.Name{5}
 
 	body := io.MultiReader(bytes.NewReader(b[:1000]), iotest.ErrReader(errBody))
 	err := s.Put(t.Context(), name, body, int64(len(b)), crc32cOf(b))
-	if !errors.Is(err, errBody) || errors.Is(err, remote.ErrTransient) {
-		t.Errorf("Put = %v, want the reader's own error, no sentinel", err)
+	if !errors.Is(err, errBody) {
+		t.Errorf("Put = %v, want the reader's own error", err)
+	}
+	for _, sentinel := range []error{remote.ErrNotFound, remote.ErrInvalid, remote.ErrDenied, remote.ErrTransient, remote.ErrCorrupt} {
+		if errors.Is(err, sentinel) {
+			t.Errorf("Put = %v, which wraps %v; want the reader's error alone", err, sentinel)
+		}
 	}
 
 	if _, ok := r.stored(t, s.blockKey(name)); ok {
@@ -382,7 +388,7 @@ func TestPutReturnsTheReadersOwnError(t *testing.T) {
 
 func TestPutRecordsADenialsCause(t *testing.T) {
 	r := newLSRig(t)
-	s, tr, rec, _ := r.open(t, "", modes()[0].ch)
+	s, tr, rec, _ := r.open(t, "", crc)
 	tr.Inject(s3fault.Rule{Op: "PutObject"}, s3fault.Answer(http.StatusForbidden, "AccessDenied", nil))
 	b := []byte("x")
 
@@ -421,7 +427,7 @@ func TestPutAllocatesFlat(t *testing.T) {
 	}
 
 	r := newLSRig(t)
-	s, _, _, _ := r.open(t, "", modes()[0].ch)
+	s, _, _, _ := r.open(t, "", crc)
 
 	perPut := func(size int64) uint64 {
 		b, _ := io.ReadAll(&pattern{size})
@@ -451,6 +457,9 @@ func TestPutAllocatesFlat(t *testing.T) {
 	small, large := perPut(1<<20), perPut(8<<20)
 
 	const slack = 256 << 10
+	if small > slack {
+		t.Errorf("a put of 1 MiB allocates %d bytes, more than %d: the block is buffered", small, slack)
+	}
 	if large > small+slack {
 		t.Errorf("a put allocates %d bytes at 8 MiB and %d at 1 MiB, more than %d apart: the block is buffered", large, small, slack)
 	}
