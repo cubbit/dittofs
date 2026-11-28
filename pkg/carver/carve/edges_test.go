@@ -10,6 +10,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/carver"
 	"github.com/cubbit/dittofs/pkg/carver/carve"
 	"github.com/cubbit/dittofs/pkg/carver/internal/carvetest"
+	"github.com/cubbit/dittofs/pkg/carver/internal/params"
 )
 
 // edgeProfile is one settings value with the gear table the reference cuts
@@ -112,54 +113,41 @@ func TestCutStretchShapes(t *testing.T) {
 }
 
 // The buffer edges of RFC 2 §10.2, through a buffer of Max and of Max + 1
-// bytes, each cut as the reference cuts it: a boundary exactly where the
-// buffer is first refilled, one byte before and one byte after; Max zeros
-// with a real end; and a real end whose tail, the last NextBoundary call with
-// final set, is shorter than Min. The boundary cases are cut from one long
-// seeded input, no byte planted: for each reference end b, the stretch starts
-// len(buf) + d bytes before b, and is used once its own reference cut ends a
-// chunk there, since a cut from a new start need not meet the old ends at
-// once. The input is 4 × Max, not more: every case finds an end in it at the
-// smallest and the largest Target under both tables, and a case that finds
-// none fails, naming itself, rather than falling back to a plain match.
+// bytes, each cut as the reference cuts it. With a buffer that small Cut
+// refills after every chunk, so a chunk starting after a refill sees exactly
+// the buffer's length of bytes: the refill point is that many bytes past the
+// chunk's start. A boundary is put one byte before it, at it and one byte after
+// it by refillStretch; past Max the chunk is cut at Max whatever lies beyond,
+// so at Max + 1 bytes only "one byte before" has a content boundary in view.
+// Max zeros with a real end, and a real end whose tail, the last NextBoundary
+// call with final set, is shorter than Min, follow.
 func TestCutBufferEdges(t *testing.T) {
 	for _, e := range edgeProfiles(t) {
 		t.Run(e.name, func(t *testing.T) {
 			s := e.s
 			long := carvetest.Bytes(carvetest.Random, uint64(s.Target())+1, 4*s.Max())
-			ends := carvetest.Boundaries(e.gear, s.Target(), long)
 
 			for _, n := range []int{s.Max(), s.Max() + 1} {
-				for _, d := range []int{-1, 0, 1} {
-					refill := n + d // the stretch offset of the boundary
-					found := false
-					for _, b := range ends {
-						start := b - refill
-						if start < 0 || start+2*s.Max() > len(long) {
-							continue
+				if !e.keyed {
+					for _, d := range []int{-1, 0, 1} {
+						stretch, end := refillStretch(t, s, long, n+d)
+						ref := referenceCut(e.gear, s, 0, stretch)
+						if len(ref) < 2 || int(ref[0].Length) != s.Max() || ref[1].Offset+int64(ref[1].Length) != int64(end) {
+							t.Fatalf("buffer %d, refill point %+d: the reference cuts %v, want Max zeros then a chunk ending at %d", n, d, ref[:min(2, len(ref))], end)
 						}
-
-						stretch := long[start : start+2*s.Max()]
-						if !slices.Contains(carvetest.Boundaries(e.gear, s.Target(), stretch), refill) {
-							continue
-						}
-
-						name := fmt.Sprintf("buffer %d: a boundary at %d, the refill point %+d", n, refill, d)
-						checkClean(t, name, mustCut(t, bytes.NewReader(stretch), 0, s, n), referenceCut(e.gear, s, 0, stretch))
-						found = true
-
-						break
-					}
-					if !found {
-						t.Fatalf("buffer %d: no end of %d bytes of Random cuts a stretch at the refill point %+d", n, len(long), d)
+						checkClean(t, fmt.Sprintf("buffer %d: a boundary at the refill point %+d", n, d), mustCut(t, bytes.NewReader(stretch), 0, s, n), ref)
 					}
 				}
 
+				// A chunk exactly the buffer's length is the Max-byte chunk
+				// zeros give under the unkeyed table, in the Max-byte buffer;
+				// in the Max + 1 one no chunk is that long.
 				zeros := carvetest.Bytes(carvetest.Zeros, 1, s.Max())
 				checkClean(t, fmt.Sprintf("buffer %d: Max zeros", n), mustCut(t, bytes.NewReader(zeros), 0, s, n), referenceCut(e.gear, s, 0, zeros))
 
 				// The first end past the buffer, so the short tail comes after
 				// a refill; the last end is the input's, with no room after it.
+				ends := carvetest.Boundaries(e.gear, s.Target(), long)
 				i := slices.IndexFunc(ends, func(b int) bool { return b > n })
 				if i < 0 || i == len(ends)-1 {
 					t.Fatalf("buffer %d: no end of %d bytes of Random past the buffer leaves room for a tail", n, len(long))
@@ -173,4 +161,36 @@ func TestCutBufferEdges(t *testing.T) {
 			}
 		})
 	}
+}
+
+// refillStretch is a stretch under the unkeyed table whose second chunk
+// starts after a refill and would end, by content, l bytes in: Max zeros, the
+// first chunk; then zeros up to 64 bytes of long, so the fingerprint, which
+// forgets a byte 64 bytes on, passes the boundary test first at the window's
+// last byte; then Max bytes of long. It returns the stretch and where its
+// second chunk ends: at Max + l, or Max + Max once l passes Max. Only the
+// unkeyed table promises zeros no boundary (RFC 2 §3.8), so a chunk runs out
+// to Max with no byte planted. The window is the first of long that passes
+// the test at its last byte alone, read with the bit count from Target on.
+func refillStretch(t *testing.T, s carver.Settings, long []byte, l int) ([]byte, int) {
+	t.Helper()
+
+	g := params.Gear(s)
+	_, m := params.Bits(s)
+	zeros := make([]byte, s.Max()+l-64)
+	for w := 64; w <= len(long)-s.Max(); w++ {
+		var fp uint64
+		pass := 0
+		for _, b := range append(zeros[:64:64], long[w-64:w]...) {
+			if fp = fp<<1 + g[b]; fp>>(64-m) == 0 {
+				pass++
+			}
+		}
+		if pass == 1 && fp>>(64-m) == 0 {
+			return slices.Concat(zeros, long[w-64:w], long[w:w+s.Max()]), s.Max() + min(l, s.Max())
+		}
+	}
+	t.Fatalf("no 64 bytes of %d bytes of Random pass the boundary test at their last byte alone", len(long))
+
+	return nil, 0
 }
