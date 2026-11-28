@@ -151,8 +151,9 @@ func (r *registry) assemble(ctx context.Context, cfg []transform.Config, m keys.
 		}
 		steps[i], kinds[i] = t, k
 	}
-	// Resolved last, so a refused list makes no series.
-	ser, name, err := r.resolveSeries(deps.Recorder, set, steps)
+	// Resolved last, so a list refused for its shape or a factory makes no
+	// series.
+	ser, name, err := r.resolveSeries(deps.Recorder, set)
 	if err != nil {
 		return nil, name, err
 	}

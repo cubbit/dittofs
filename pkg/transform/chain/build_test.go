@@ -30,7 +30,7 @@ func newChain(t *testing.T, r chain.Registry, cfg []transform.Config, require ..
 	var buf bytes.Buffer
 	c, err := r.NewChain(context.Background(), cfg, keystest.NewMemory(), chain.Deps{
 		Logger:   slog.New(slog.NewJSONHandler(&buf, nil)),
-		Recorder: newSink(),
+		Recorder: &sink{},
 		Require:  require,
 		Encrypts: func(entity.NamespaceID) bool { return false },
 	})

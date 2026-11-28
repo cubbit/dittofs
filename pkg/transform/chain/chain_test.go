@@ -57,8 +57,6 @@ type sink struct {
 	got []string
 }
 
-func newSink() *sink { return &sink{} }
-
 func (s *sink) add(line string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -98,7 +96,7 @@ func (n named) DecodeFailed(r chain.FailureReason) {
 // the member, and records nothing. The cases pass a nil provider: NewChain
 // checks Deps first, and no provider implementation exists here to pass.
 func TestNewChainRefusesMissingDeps(t *testing.T) {
-	rec := newSink()
+	rec := &sink{}
 	full := func() chain.Deps {
 		return chain.Deps{
 			Logger:   slog.New(slog.DiscardHandler),

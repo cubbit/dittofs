@@ -18,20 +18,21 @@ import (
 )
 
 // seriesRegistry registers an identity compressor, a compressor declining
-// every chunk, the census tests' sealer, a redundancy step adding half, and a
-// compressor no chain configures.
+// every chunk, the census tests' sealer, a redundancy step adding half, one
+// failing every encode, and a compressor no chain configures.
 func seriesRegistry() chain.Registry {
 	r := chain.NewRegistry()
 	r.Register(idA, "plain", pad{id: idA, stage: transform.StageCompress}.factory())
 	r.Register(idD, "skip", decline{id: idD, stage: transform.StageCompress}.factory())
 	r.Register(idB, "seal", sealer.factory())
 	r.Register(idC, "parity", pad{id: idC, stage: transform.StageRedundancy, half: true}.factory())
+	r.Register(idC+1, "broken", fault{Transform: pad{id: idC + 1, stage: transform.StageRedundancy}, onEncodeErr: errors.New("the disk is gone")}.factory())
 	r.Register(idD+1, "spare", pad{id: idD + 1, stage: transform.StageCompress}.factory())
 	return r
 }
 
-// buildInto builds cfg over r and p recording into rec.
-func buildInto(t *testing.T, r chain.Registry, p keys.Provider, rec chain.Recorder, cfg ...string) transform.Chain {
+// buildInto builds cfg over r and p recording into rec, requiring require.
+func buildInto(t *testing.T, r chain.Registry, p keys.Provider, rec chain.Recorder, require []string, cfg ...string) transform.Chain {
 	t.Helper()
 	list := names(cfg...)
 	for i := range list {
@@ -40,6 +41,7 @@ func buildInto(t *testing.T, r chain.Registry, p keys.Provider, rec chain.Record
 	c, err := r.NewChain(context.Background(), list, p, chain.Deps{
 		Logger:   slog.New(slog.DiscardHandler),
 		Recorder: rec,
+		Require:  require,
 		Encrypts: func(entity.NamespaceID) bool { return false },
 	})
 	if err != nil {
@@ -48,32 +50,15 @@ func buildInto(t *testing.T, r chain.Registry, p keys.Provider, rec chain.Record
 	return c
 }
 
-// tally counts a sink's lines with their byte counts dropped, so a line
-// names the transform, the call and its label alone.
-func tally(lines []string) map[string]int {
-	out := make(map[string]int)
-	for _, l := range lines {
-		f := strings.Fields(l)
-		switch {
-		case len(f) > 2 && f[1] == "encoded":
-			f = f[:3]
-		case len(f) > 1 && f[1] == "decoded":
-			f = f[:2]
-		}
-		out[strings.Join(f, " ")]++
-	}
-	return out
-}
-
 // TestSeriesCountEveryCall holds RFC 5 §6's four series, recorded by the
 // chain around each transform's call and labelled by its registered name:
-// after a scripted run of encodes, declines, decodes and each decode failure,
-// every transform and label holds exactly its count. A failure the envelope
-// refuses lands under envelope, so an alert on malformed sees a planted
-// envelope; unknown material lands under material_unknown, not
-// material_unavailable; and a transform no chain configures is resolved too,
-// since a body may still name it. Every series is resolved when the chain is
-// built, none on a call.
+// after a scripted run of encodes, declines, a failed put, decodes and each
+// decode failure, every transform and label holds exactly its count and its
+// bytes. A refusal no transform owns lands under envelope, so an alert on
+// malformed sees a planted envelope; unknown material lands under
+// material_unknown, not material_unavailable; and a body naming transforms
+// the decoding chain does not configure is recorded under them. Every series
+// is resolved when the chain is built, none on a call.
 func TestSeriesCountEveryCall(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	ctx := context.Background()
@@ -83,40 +68,46 @@ func TestSeriesCountEveryCall(t *testing.T) {
 	destroyed := keystest.NewMemory()
 	destroyed.Destroy(destroyed.Give(ns, keys.KindDataKey, "d1", span(0, 32)))
 
-	rec := newSink()
-	full := buildInto(t, r, writer, rec, "plain", "seal", "parity")
-	declining := buildInto(t, r, writer, rec, "skip", "seal")
-	unknown := buildInto(t, r, keystest.NewMemory(), rec, "plain", "seal", "parity")
-	gone := buildInto(t, r, destroyed, rec, "plain", "seal", "parity")
-	down := buildInto(t, r, failingGet{writer, errors.New("the key service hung up")}, rec, "plain", "seal", "parity")
+	rec := &sink{}
+	full := buildInto(t, r, writer, rec, nil, "plain", "seal", "parity")
+	declining := buildInto(t, r, writer, rec, nil, "skip", "seal")
+	failing := buildInto(t, r, writer, rec, nil, "plain", "seal", "broken")
+	strict := buildInto(t, r, writer, rec, []string{"parity"}, "skip", "seal")
+	unknown := buildInto(t, r, keystest.NewMemory(), rec, nil, "plain", "seal", "parity")
+	gone := buildInto(t, r, destroyed, rec, nil, "plain", "seal", "parity")
+	down := buildInto(t, r, failingGet{writer, errors.New("the key service hung up")}, rec, nil, "plain", "seal", "parity")
 	resolved := len(rec.lines())
 
-	encode := func(c transform.Chain) ([]byte, []transform.Encoded) {
+	encode := func(c transform.Chain, want error) ([]byte, []transform.Encoded) {
 		t.Helper()
 		a, err := c.Pin(ctx, ns)
 		if err != nil {
 			t.Fatalf("Pin: %v", err)
 		}
 		body, encs, err := a.Encode(ctx, nil, hash, []byte("chunk"))
-		if err != nil {
-			t.Fatalf("Encode: %v", err)
+		if (err == nil) != (want == nil) {
+			t.Fatalf("Encode = %v, want %v", err, want)
 		}
 		return body, encs
 	}
 	decode := func(c transform.Chain, body []byte, limit int, encs []transform.Encoded, want error) {
 		t.Helper()
-		if _, err := c.Decode(ctx, ns, nil, hash, body, limit, encs); !errors.Is(err, want) || (want == nil) != (err == nil) {
+		if _, err := c.Decode(ctx, ns, nil, hash, body, limit, encs); !errors.Is(err, want) {
 			t.Fatalf("Decode = %v, want %v", err, want)
 		}
 	}
 
-	body, encs := encode(full)
-	encode(full)
-	declined, declinedEncs := encode(declining)
+	body, encs := encode(full, nil)
+	encode(full, nil)
+	declined, declinedEncs := encode(declining, nil)
+	encode(failing, errors.New("any"))
 
 	decode(full, body, chunkMax, encs, nil)
 	decode(declining, declined, chunkMax, declinedEncs, nil)
+	decode(declining, body, chunkMax, encs, nil) // plain and parity, which it does not configure
 	decode(full, []byte{2, 0, 'x'}, chunkMax, nil, transform.ErrMalformed)
+	decode(full, []byte{1, 1, 0xee, 0xee}, chunkMax, nil, transform.ErrMalformed)
+	decode(strict, declined, chunkMax, declinedEncs, transform.ErrMalformed)
 	decode(full, append(chain.AppendEnvelope(nil, nil), make([]byte, chunkMax+1)...), chunkMax, nil, transform.ErrTooLarge)
 	decode(full, body, chunkMax, nil, transform.ErrMalformed)
 	decode(unknown, body, chunkMax, encs, keys.ErrUnknownMaterial)
@@ -130,20 +121,21 @@ func TestSeriesCountEveryCall(t *testing.T) {
 			t.Errorf("a call on a built chain resolved a series: %q", l)
 		}
 	}
-	// Five chains, each resolving every registered transform and envelope.
+	// Each line names the transform, the call, its label and its bytes in and
+	// out: "chunk" is 5 bytes, seal adds 3 and parity half.
 	want := map[string]int{
-		"for plain": 5, "for skip": 5, "for seal": 5, "for parity": 5, "for spare": 5, "for envelope": 5,
+		"plain encoded true 5 5":   3, // the full chain's two puts, then the failed one's
+		"seal encoded true 5 8":    4,
+		"parity encoded true 8 12": 2,
+		"skip encoded false 5 5":   1,
 
-		"plain encoded true":  2,
-		"seal encoded true":   3,
-		"parity encoded true": 2,
-		"skip encoded false":  1,
+		// The full chain's read and the declining chain's read of it, then
+		// each of the five reads that fail beneath it.
+		"parity decoded 12 8": 7,
+		"seal decoded 8 5":    3,
+		"plain decoded 5 5":   2,
 
-		"parity decoded": 6, // the full chain's read, then each of the four reads that fail beneath it
-		"seal decoded":   2,
-		"plain decoded":  1,
-
-		"envelope decode failed malformed":        1,
+		"envelope decode failed malformed":        3,
 		"envelope decode failed too_large":        1,
 		"seal decode failed malformed":            1,
 		"seal decode failed material_unknown":     1,
@@ -151,7 +143,10 @@ func TestSeriesCountEveryCall(t *testing.T) {
 		"seal decode failed material_unavailable": 1,
 		"seal decode failed too_large":            1, // its 5 bytes past a limit of 1
 	}
-	g := tally(got)
+	g := make(map[string]int)
+	for _, l := range got[resolved:] {
+		g[l]++
+	}
 	for _, k := range slices.Sorted(maps.Keys(g)) {
 		if _, ok := want[k]; !ok {
 			t.Errorf("series %q holds %d, want none", k, g[k])
@@ -160,12 +155,6 @@ func TestSeriesCountEveryCall(t *testing.T) {
 	for _, k := range slices.Sorted(maps.Keys(want)) {
 		if g[k] != want[k] {
 			t.Errorf("series %q holds %d, want %d", k, g[k], want[k])
-		}
-	}
-	// A declined chunk passes on unchanged, so its bytes out are its bytes in.
-	for _, line := range []string{"plain encoded true 5 5", "skip encoded false 5 5", "plain decoded 5 5"} {
-		if !slices.Contains(got, line) {
-			t.Errorf("no %q among %q", line, got)
 		}
 	}
 }
@@ -178,7 +167,7 @@ func TestNewChainRefusesARecorderGivingNone(t *testing.T) {
 	for _, name := range []string{"spare", "envelope"} {
 		_, err := seriesRegistry().NewChain(context.Background(), names("plain"), keystest.NewMemory(), chain.Deps{
 			Logger:   slog.New(slog.DiscardHandler),
-			Recorder: noneFor{newSink(), name},
+			Recorder: noneFor{&sink{}, name},
 			Encrypts: func(entity.NamespaceID) bool { return false },
 		})
 		if err == nil || !strings.Contains(err.Error(), name) {

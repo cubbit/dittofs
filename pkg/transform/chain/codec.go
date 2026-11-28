@@ -32,8 +32,9 @@ import (
 // own, writes past its MaxEncodedLen, or makes a body of another length than
 // a LengthOf that answered. dst must not overlap plain; the body is dst
 // resliced when dst holds MaxEncodedLen(len(plain)) bytes, a new slice
-// otherwise. Each step's call that the put keeps is recorded under its name
-// (RFC 5 §6); a failed put records nothing for the step that failed it.
+// otherwise. Each step's call that succeeds is recorded under its name (RFC 5
+// §6), even when a later check fails the put; a step that fails records
+// nothing.
 func (a *attempt) Encode(ctx context.Context, dst []byte, hash [32]byte, plain []byte) ([]byte, []transform.Encoded, error) {
 	steps := a.c.steps
 	need := a.MaxEncodedLen(len(plain))
@@ -63,7 +64,7 @@ func (a *attempt) Encode(ctx context.Context, dst []byte, hash [32]byte, plain [
 		if !enc.Applied {
 			// A declined chunk passes on unchanged, so its bytes out are
 			// its bytes in.
-			a.c.series.steps[i].Encoded(false, len(in), len(in), took)
+			a.c.series.byID[t.ID()].Encoded(false, len(in), len(in), took)
 			continue
 		}
 		if enc.Version != t.Version() {
@@ -76,7 +77,7 @@ func (a *attempt) Encode(ctx context.Context, dst []byte, hash [32]byte, plain [
 		if len(m) > 0 {
 			enc.Material = slices.Clone(m)
 		}
-		a.c.series.steps[i].Encoded(true, len(in), len(enc.Body), took)
+		a.c.series.byID[t.ID()].Encoded(true, len(in), len(enc.Body), took)
 		ids[len(encs)] = t.ID()
 		encs = append(encs, enc)
 		in = enc.Body
