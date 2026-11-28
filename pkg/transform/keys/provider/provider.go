@@ -82,6 +82,8 @@ type Provider struct {
 	log     *slog.Logger
 	now     func() time.Time
 	cache   cache
+	calls   atomic.Uint64 // Current and Get calls, failing ones included
+	status  status
 
 	// masterKeyID names the key-file master key; aead holds the key itself,
 	// which never leaves this process.

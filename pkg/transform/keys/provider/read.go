@@ -81,6 +81,8 @@ func (p *Provider) Open(ctx context.Context, ns entity.NamespaceID) error {
 // Both are answered from the cache: a kind is given only through the
 // provider's own update, which refreshes it.
 func (p *Provider) Current(ctx context.Context, ns entity.NamespaceID, kind string) (keys.MaterialID, error) {
+	p.calls.Add(1)
+
 	set, err := p.set(ctx, ns)
 	if err != nil {
 		return keys.MaterialID{}, err
@@ -122,6 +124,7 @@ func (p *Provider) Current(ctx context.Context, ns entity.NamespaceID, kind stri
 // An ID the cached records lack reloads the namespace once before it is
 // ErrUnknownMaterial, so a record another writer added is found.
 func (p *Provider) Get(ctx context.Context, id keys.MaterialID) ([]byte, error) {
+	p.calls.Add(1)
 	s := slot{id.Kind, id.ID}
 
 	p.cache.mu.RLock()
@@ -134,9 +137,11 @@ func (p *Provider) Get(ctx context.Context, id keys.MaterialID) ([]byte, error) 
 		// reload of one whose cached rows lack the ID.
 		var err error
 		if set, err = p.load(ctx, id.Namespace); err != nil {
+			p.status.refuse(matKey{id.Namespace, s}, false)
 			return nil, err
 		}
 		if e = set[s]; e == nil {
+			p.status.refuse(matKey{id.Namespace, s}, true)
 			return nil, fmt.Errorf("provider: %s %x of namespace %s: %w", id.Kind, id.ID, id.Namespace, keys.ErrUnknownMaterial)
 		}
 	}
@@ -238,6 +243,7 @@ func (p *Provider) update(ctx context.Context, ns entity.NamespaceID, fn func(ro
 // checked, caching the key.
 func (p *Provider) serve(ns entity.NamespaceID, set map[slot]*entry, e *entry) ([]byte, [32]byte, error) {
 	if e.row.State == stateDestroyed {
+		p.status.settled(matKey{ns, slot{e.row.Kind, e.row.ID}})
 		return nil, [32]byte{}, fmt.Errorf("provider: %s %x of namespace %s: %w", e.row.Kind, e.row.ID, ns, keys.ErrMaterialDestroyed)
 	}
 
@@ -245,6 +251,7 @@ func (p *Provider) serve(ns entity.NamespaceID, set map[slot]*entry, e *entry) (
 	key, fp := e.key, e.fp
 	p.cache.mu.RUnlock()
 	if key != nil {
+		p.status.settled(matKey{ns, slot{e.row.Kind, e.row.ID}})
 		return key, fp, nil
 	}
 
@@ -261,6 +268,7 @@ func (p *Provider) serve(ns entity.NamespaceID, set map[slot]*entry, e *entry) (
 		first := !e.failing
 		e.failing = true
 		p.cache.mu.Unlock()
+		p.status.refuse(matKey{ns, slot{e.row.Kind, e.row.ID}}, false)
 		if first {
 			p.log.Error("key record cannot be served", "namespace", ns.String(), "kind", e.row.Kind, "id", fmt.Sprintf("%x", e.row.ID), "err", err)
 		}
@@ -270,6 +278,7 @@ func (p *Provider) serve(ns entity.NamespaceID, set map[slot]*entry, e *entry) (
 	p.cache.mu.Lock()
 	e.key, e.fp, e.failing = key, fp, false
 	p.cache.mu.Unlock()
+	p.status.settled(matKey{ns, slot{e.row.Kind, e.row.ID}})
 	return key, fp, nil
 }
 
