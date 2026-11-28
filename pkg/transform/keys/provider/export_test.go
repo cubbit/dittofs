@@ -24,3 +24,7 @@ func (p *Provider) reload(ctx context.Context) {
 		_ = p.Open(ctx, ns)
 	}
 }
+
+// pauseBeforeCreate makes p's CreateKeys call fn after its wraps and before
+// its update.
+func (p *Provider) pauseBeforeCreate(fn func()) { p.beforeCreate = fn }
