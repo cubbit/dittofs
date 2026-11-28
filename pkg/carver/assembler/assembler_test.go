@@ -359,3 +359,97 @@ func countHash(cs []carver.ChunkInfo, h entity.ChunkHash) int {
 	}
 	return n
 }
+
+// budget is a pass's limits at a 1 MiB target and N 1,024, which no stream of
+// the key-budget check fills, so only the key budget closes its plans.
+func budget(k, blockKeys, fileKeys int) carver.AssemblerConfig {
+	return carver.AssemblerConfig{BlockTarget: 1 << 20, MaxChunks: 1024, KeyBudget: k, BlockKeys: blockKeys, FileKeys: fileKeys, MaxAge: time.Minute}
+}
+
+// keyed sets the Keys of s's chunks from i on, in order, and returns s.
+func keyed(s []carver.ChunkInfo, i int, keys ...int) []carver.ChunkInfo {
+	for j, k := range keys {
+		s[i+j].Keys = k
+	}
+	return s
+}
+
+// The P2 key-budget check: a plan closes at the last ref within K, zero refs
+// counted, and the next starts with the ref that did not fit; zero refs that
+// fit no block's commit commit alone, each within K; the per-block keys are
+// charged only to a plan that carries a chunk, the per-file keys once per file
+// in each plan; a chunk alone over K sits alone.
+func TestFoldKeepsEveryPlanWithinTheKeyBudget(t *testing.T) {
+	chunk := int32(64 << 10)
+	for _, tc := range []struct {
+		name string
+		cfg  carver.AssemblerConfig
+		s    func() []carver.ChunkInfo
+		refs []int // refs in each plan
+		keys []int // each plan's keys
+	}{
+		{"carried chunks reach K before the target", budget(100, 5, 1), func() []carver.ChunkInfo {
+			return keyed(stream(0, lengths(10, chunk)), 0, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30)
+		}, []int{3, 3, 3, 1}, []int{96, 96, 96, 36}},
+		{"zero runs of 10^4 replacing refs", budget(5000, 3, 1), func() []carver.ChunkInfo {
+			s := stream(0, lengths(20009, chunk))
+			for _, from := range []int{3, 10006} {
+				zero(s, from, from+10_000)
+				for i := from; i < from+10_000; i++ {
+					s[i].Keys = 2
+				}
+			}
+			return s
+		}, []int{2499, 2499, 2499, 2499, 2499, 2499, 2499, 2499, 17}, []int{4999, 4999, 4999, 4999, 4999, 4999, 4999, 4999, 35}},
+		{"zero refs that fit no block commit alone", budget(100, 1, 1), func() []carver.ChunkInfo {
+			s := stream(0, lengths(22, chunk))
+			zero(s, 1, 21)
+			s[0].Keys, s[21].Keys = 90, 90
+			return s
+		}, []int{9, 12, 1}, []int{100, 13, 92}},
+		{"zero refs within K need no block keys", budget(20, 5, 1), func() []carver.ChunkInfo {
+			s := stream(0, lengths(18, chunk))
+			zero(s, 0, 18)
+			return s
+		}, []int{18}, []int{19}},
+		{"a zero run past K", budget(20, 5, 1), func() []carver.ChunkInfo {
+			s := stream(0, lengths(45, chunk))
+			zero(s, 0, 45)
+			return s
+		}, []int{19, 19, 7}, []int{20, 20, 8}},
+		{"a chunk at exactly K", budget(20, 5, 1), func() []carver.ChunkInfo {
+			return keyed(stream(0, lengths(4, chunk)), 0, 14, 1, 13, 1)
+		}, []int{1, 2, 1}, []int{20, 20, 7}},
+		{"zero refs beside carried chunks at a small K", budget(10, 2, 1), func() []carver.ChunkInfo {
+			s := stream(0, lengths(13, chunk), lengths(12, chunk), lengths(5, chunk))
+			zero(s, 0, 5)
+			zero(s, 8, 25)
+			zero(s, 26, 30)
+			return s
+		}, []int{7, 6, 9, 6, 2}, []int{10, 9, 10, 10, 3}},
+		{"files of three chunks", budget(10, 0, 1), func() []carver.ChunkInfo {
+			var files [][]int32
+			for range 6 {
+				files = append(files, lengths(3, chunk))
+			}
+			return stream(0, files...)
+		}, []int{7, 7, 4}, []int{10, 10, 6}},
+		{"a chunk alone over K", budget(20, 5, 1), func() []carver.ChunkInfo {
+			return keyed(stream(0, lengths(3, chunk)), 1, 30)
+		}, []int{1, 1, 1}, []int{7, 36, 7}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := tc.s()
+			r := fold(t, tc.cfg, s, t0)
+			checkPlans(t, tc.cfg, s, r.plans, t0, r.held)
+			if len(r.plans) != len(tc.refs) {
+				t.Fatalf("got %d plans, want %d", len(r.plans), len(tc.refs))
+			}
+			for i, p := range r.plans {
+				if k := planKeys(tc.cfg, p.Refs); len(p.Refs) != tc.refs[i] || k != tc.keys[i] {
+					t.Errorf("plan %d: got %d refs, %d keys; want %d refs, %d keys", i, len(p.Refs), k, tc.refs[i], tc.keys[i])
+				}
+			}
+		})
+	}
+}
