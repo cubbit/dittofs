@@ -2094,6 +2094,11 @@ result. Scaleway Object Storage (`fr-par`) and Cubbit DS3 (`s3.cubbit.eu`) were
 each tested in a disposable bucket, deleted afterwards; LocalStack ran in
 Docker. MinIO could not be pulled in this environment and was not measured.
 
+LocalStack 4.13.1's range rows, its signature row and its `DeleteObjects` row
+were measured on 2026-11-28 with service/s3 v1.116.0, by `s3fault`'s
+integration tests, against the container's default settings, under which it
+validates no signature.
+
 **Service semantics**
 
 | Behaviour | Scaleway | Cubbit DS3 | LocalStack 4.13.1 | LocalStack 3.0 | AWS S3 | MinIO |
@@ -2103,11 +2108,13 @@ Docker. MinIO could not be pulled in this environment and was not measured.
 | Put with a wrong `x-amz-checksum-crc32c` | `400 InvalidRequest`, nothing stored | **`200`, stored** | `400 BadDigest`, nothing stored | **`200`, stored** | not measured | not measured |
 | Put with a wrong `Content-MD5` | **`200`, stored** | **`200`, stored** | `400 BadDigest`, nothing stored | `400 InvalidDigest`, nothing stored | not measured | not measured |
 | Put with a wrong signed payload hash | **`200`, stored** | **`200`, stored** | — | — | not measured | not measured |
+| A signed header removed after SigV4 signing, on a put and on a ranged get | not measured | not measured | **accepted: no signature is checked** | — | not measured | not measured |
+| `DeleteObjects` with neither `Content-MD5` nor a checksum header | not measured | not measured | **`200`, keys deleted** | — | not measured | not measured |
 | ETag of a single-part put | MD5 of the stored bytes | MD5 of the stored bytes, also when a wrong `Content-MD5` was sent | — | — | not measured | not measured |
-| Range `bytes=2-5` of a 10-byte object | `206`, 4 bytes | `206`, 4 bytes | — | `206`, 4 bytes | not measured | not measured |
-| Range starting past the end | `416 InvalidRange` | `416 InvalidRange` | — | `416 InvalidRange` | not measured | not measured |
-| Range `bytes=8-15` of a 10-byte object | **`206`, 2 bytes (clamped)** | **`206`, 2 bytes (clamped)** | — | `206`, 2 bytes | not measured | not measured |
-| Range on an absent key | `404 NoSuchKey` | `404 NoSuchKey` | — | `404 NoSuchKey` | not measured | not measured |
+| Range `bytes=2-5` of a 10-byte object | `206`, 4 bytes | `206`, 4 bytes | `206`, 4 bytes | `206`, 4 bytes | not measured | not measured |
+| Range starting past the end | `416 InvalidRange` | `416 InvalidRange` | `416 InvalidRange` | `416 InvalidRange` | not measured | not measured |
+| Range `bytes=8-15` of a 10-byte object | **`206`, 2 bytes (clamped)** | **`206`, 2 bytes (clamped)** | **`206`, 2 bytes (clamped)** | `206`, 2 bytes | not measured | not measured |
+| Range on an absent key | `404 NoSuchKey` | `404 NoSuchKey` | `404 NoSuchKey` | `404 NoSuchKey` | not measured | not measured |
 | Delete of an absent key | `204` | success | — | `204` | not measured | not measured |
 | `DeleteObjects` of 3 keys plus one never written | all 4 reported deleted, the 3 keys gone | same | — | — | not measured | not measured |
 | 2,500 keys, pages of 1,000, resumed with `start-after` | each key once, ascending, `LastModified` present | same | — | same | not measured | not measured |
