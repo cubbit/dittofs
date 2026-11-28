@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -83,6 +84,12 @@ type Provider struct {
 	// which never leaves this process.
 	masterKeyID [16]byte
 	aead        cipher.AEAD
+	// masterKeyFP is the master key's fingerprint, which an escrow pass
+	// must name.
+	masterKeyFP [32]byte
+
+	// cfg is the Config last given to New or Reconfigure.
+	cfg atomic.Pointer[Config]
 }
 
 // fingerprintLabel is what a fingerprint is computed over (RFC 5 §2.5).
@@ -169,7 +176,13 @@ func New(ctx context.Context, cfg Config, deps Deps) (*Provider, error) {
 		}
 	}
 
-	return build(masterKeyID, key, deps)
+	p, err := build(masterKeyID, key, deps)
+	if err != nil {
+		return nil, err
+	}
+	p.masterKeyFP = fp
+	p.setConfig(cfg)
+	return p, nil
 }
 
 // build is the provider of the master key key, named masterKeyID, over deps.

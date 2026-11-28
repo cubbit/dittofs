@@ -31,9 +31,8 @@ type MaterialID struct {
 // once no census entry and no open pin holds it (RFC 5 §5.3), lands with its
 // first caller, garbage collection retiring material or an operator destroying
 // it, together with the count of open pins it waits on and ErrMaterialInUse,
-// and is added then to every implementation. ErrNotEscrowed lands with the
-// provider that first returns it. Declaring them now would oblige every
-// implementation to answer a call no caller makes.
+// and is added then to every implementation. Declaring them now would oblige
+// every implementation to answer a call no caller makes.
 type Provider interface {
 	// Current is the material new bodies of kind use in namespace ns. A kind
 	// the provider holds no material of for ns is ErrUnknownMaterial; current
@@ -113,4 +112,8 @@ var (
 	// wraps RFC 5 Appendix B.1 allows one key; only a master-key rotation
 	// lets wrapping resume.
 	ErrWrapLimit = errors.New("keys: master key wrap limit reached")
+	// ErrNotEscrowed is a key-file master key whose off-host escrow has not
+	// been verified, where RFC 5 Appendix B.2 requires it: creating an
+	// encrypting namespace on it is refused until its escrow check passes.
+	ErrNotEscrowed = errors.New("keys: master key escrow not verified")
 )
