@@ -9,13 +9,16 @@ import (
 	"hash"
 	"io"
 	"math"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awsmiddleware "github.com/aws/aws-sdk-go-v2/aws/middleware"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	smithyhttp "github.com/aws/smithy-go/transport/http"
 
 	"github.com/cubbit/dittofs/pkg/remote"
 )
@@ -30,8 +33,9 @@ import (
 // A whole-block get asks for the service's checksum and checks it once the
 // last byte is read, as it checks the ETag when the store compares ETags; a
 // mismatch is remote.ErrTransient at the reader's end, and voids every byte
-// it yielded. stored is the checksum the service holds for the whole block,
-// with its kind, or kind None; a ranged get reports none.
+// it yielded; the reader's Close returns that failure too, for a caller that
+// read exactly the length it knew. stored is the checksum the service holds
+// for the whole block, with its kind, or kind None; a ranged get reports none.
 func (s *store) Get(ctx context.Context, name remote.Name, r remote.Range) (io.ReadCloser, remote.StoredSum, error) {
 	return s.get(ctx, opGet, s.blockKey(name), r)
 }
@@ -41,7 +45,7 @@ func (s *store) Get(ctx context.Context, name remote.Name, r remote.Range) (io.R
 func (s *store) get(ctx context.Context, op opKind, key string, r remote.Range) (io.ReadCloser, remote.StoredSum, error) {
 	start := time.Now()
 
-	body, sum, err := s.request(ctx, op, key, r)
+	body, sum, err := s.getRequest(ctx, op, key, r)
 	if err != nil {
 		s.record(op, err, time.Since(start), 0)
 		return nil, remote.StoredSum{}, err
@@ -52,8 +56,8 @@ func (s *store) get(ctx context.Context, op opKind, key string, r remote.Range) 
 	return body, sum, nil
 }
 
-// request sends the GetObject and judges its reply's headers.
-func (s *store) request(ctx context.Context, op opKind, key string, r remote.Range) (*getBody, remote.StoredSum, error) {
+// getRequest sends the GetObject and judges its reply's headers.
+func (s *store) getRequest(ctx context.Context, op opKind, key string, r remote.Range) (*getBody, remote.StoredSum, error) {
 	if err := s.refuseClosed(op); err != nil {
 		return nil, remote.StoredSum{}, err
 	}
@@ -79,9 +83,11 @@ func (s *store) request(ctx context.Context, op opKind, key string, r remote.Ran
 
 	if !whole {
 		off, n, _, ok := parseContentRange(aws.ToString(out.ContentRange))
-		if !ok || off != r.Off || n != r.Len {
-			// No Content-Range is the whole object, a service ignoring Range;
-			// any other is a range past the end the service clamped.
+		raw, _ := awsmiddleware.GetRawResponse(out.ResultMetadata).(*smithyhttp.Response)
+		if !ok || off != r.Off || n != r.Len || raw == nil || raw.StatusCode != http.StatusPartialContent {
+			// A 200, or no Content-Range, is the whole object, a service
+			// ignoring Range; any other range is one past the end the service
+			// clamped.
 			_ = out.Body.Close()
 			return nil, remote.StoredSum{}, fmt.Errorf("remote/s3: %s of %d bytes at %d answered with another range, or the whole object: %w", op, r.Len, r.Off, remote.ErrInvalid)
 		}
@@ -91,8 +97,12 @@ func (s *store) request(ctx context.Context, op opKind, key string, r remote.Ran
 		return b, remote.StoredSum{}, nil
 	}
 
-	if out.ContentLength == nil || *out.ContentLength < 0 {
-		// A whole block's reply that declares no length cannot be counted.
+	if out.ContentLength == nil {
+		// decision: a whole block's reply that declares no length, sent
+		// chunked, cannot be counted, and is ErrTransient, as a reply that
+		// failed in transit; the services of the profile send one. Make it
+		// ErrInvalid, which no retry clears, if a service or a proxy before it
+		// is ever seen answering every get without one.
 		_ = out.Body.Close()
 		return nil, remote.StoredSum{}, fmt.Errorf("remote/s3: %s: the reply declares no length: %w", op, remote.ErrTransient)
 	}
@@ -108,6 +118,13 @@ func (s *store) request(ctx context.Context, op opKind, key string, r remote.Ran
 	if s.choice.proved && s.choice.sum == remote.ChecksumNone {
 		// The check proved the ETag the MD5 of the stored bytes; the store
 		// checks it itself.
+		//
+		// decision: an ETag that is no MD5 (weak, multipart, absent) skips the
+		// check and reports no stored sum, as RFC 4 leaves a get without a
+		// returned checksum unchecked in transit; the codec's hash check still
+		// decides every read it decodes. A block is put in one request, so such
+		// an ETag means the service changed how it computes them: refuse it as
+		// ErrTransient if one is ever seen on a store the check proved.
 		if etag, ok := etagMD5(out.ETag); ok {
 			b.md5, b.etag = md5.New(), etag
 			if sum.Kind == remote.ChecksumNone {
@@ -134,7 +151,10 @@ func etagMD5(etag *string) ([]byte, bool) {
 // them, reads on to the reply's end so the SDK's checksum check runs, and
 // checks the ETag's MD5 when it has one. Its first error, or io.EOF, is
 // returned by every later read. It records the call once, at its end or at
-// Close, whichever comes first.
+// Close, whichever comes first. It keeps the call's ctx, which lives exactly as
+// long as the request, to tell the context ending from a failed read. Like
+// the reply body it reads, it is for one goroutine: Read and Close are not
+// called at once.
 type getBody struct {
 	s     *store
 	op    opKind
@@ -157,33 +177,38 @@ func (b *getBody) Read(p []byte) (int, error) {
 		return 0, b.err
 	case len(p) == 0:
 		return 0, nil
-	case b.left == 0:
-		// Every byte was yielded: one more read must find the reply's end,
-		// where the SDK reports its checksum's mismatch.
-		var one [1]byte
-		n, err := b.rc.Read(one[:])
-
-		switch {
-		case n > 0:
-			b.end(fmt.Errorf("remote/s3: %s: the body is longer than its declared length: %w", b.op, remote.ErrTransient))
-		case err == io.EOF:
-			b.end(b.verify())
-		case err != nil:
-			b.end(b.failed())
-		}
-
-		return 0, b.err
 	}
 
-	n, err := b.rc.Read(p[:min(int64(len(p)), b.left)])
-	b.left -= int64(n)
-	b.read += int64(n)
+	var (
+		n      int
+		err    error
+		longer bool
+	)
 
-	if b.md5 != nil {
-		b.md5.Write(p[:n])
+	if b.left > 0 {
+		n, err = b.rc.Read(p[:min(int64(len(p)), b.left)])
+		b.left -= int64(n)
+		b.read += int64(n)
+
+		if b.md5 != nil {
+			b.md5.Write(p[:n])
+		}
+	}
+
+	if err == nil && b.left == 0 {
+		// Every byte was yielded: in this same read, so that a caller reading
+		// exactly the length it knows still gets the checks, one more read of
+		// the reply must find its end, where the SDK reports its checksum's
+		// mismatch.
+		var one [1]byte
+		var m int
+		m, err = b.rc.Read(one[:])
+		longer = m > 0
 	}
 
 	switch {
+	case longer:
+		b.end(fmt.Errorf("remote/s3: %s: the body is longer than its declared length: %w", b.op, remote.ErrTransient))
 	case err == io.EOF && b.left > 0:
 		b.end(fmt.Errorf("remote/s3: %s: the body ended %d bytes short: %w", b.op, b.left, remote.ErrTransient))
 	case err == io.EOF:
@@ -237,20 +262,36 @@ func (b *getBody) record() {
 	b.s.record(b.op, err, time.Since(b.start), b.read)
 }
 
-// Close closes the reply's body. A reader closed before its end records the
-// call with the bytes it yielded.
+// Close closes the reply's body and returns the failure the reader ended
+// with, if any, so that a caller which read exactly the length it knew, and
+// so never saw an error its last read returned with its last bytes (as
+// io.ReadFull drops one), still learns that the response is void.
+//
+// decision: a reader closed before its end records the call ok, with the
+// bytes it yielded, since the caller chose to stop and the service failed
+// nothing; the checksum of a whole block read so is never checked, which the
+// caller that stopped did not need. Record such a call apart if a caller is
+// ever seen stopping early to hide a failure.
 func (b *getBody) Close() error {
 	b.record()
+
+	end := b.err
 	if b.err == nil {
 		b.err = fmt.Errorf("remote/s3: %s: read after Close: %w", b.op, remote.ErrInvalid)
 	}
 
-	return b.rc.Close()
+	if err := b.rc.Close(); end == nil || end == io.EOF {
+		return err
+	}
+
+	return end
 }
 
 // parseContentRange reads a Content-Range of the form "bytes first-last/total",
 // as RFC 9110 §14.4 writes a satisfied range: off is first, n the range's
-// length, total the object's. ok is false for anything else: an unsatisfied
+// length, total the object's; S3 always sends the total, so a range of an
+// unknown one ("bytes 0-9/*") is refused like any other form. ok is false for
+// anything else: an unsatisfied
 // range ("bytes */total"), an unknown total, last before first or not before
 // total, a sign, a space or a leading zero in a number, and a value past int64.
 func parseContentRange(h string) (off, n, total int64, ok bool) {

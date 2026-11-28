@@ -1,6 +1,7 @@
 package s3
 
 import (
+	"bytes"
 	"crypto/md5"
 	"errors"
 	"io"
@@ -90,8 +91,14 @@ func TestGetRefusesAnEmptyRangeBeforeAnyRequest(t *testing.T) {
 		t.Errorf("%d requests reached the server, want none", n)
 	}
 
-	if got := rec.all(); len(got) != 4 || got[0] != (recordedCall{"get", "invalid", "", 0}) {
-		t.Errorf("recorded %+v, want four gets, invalid", got)
+	got := rec.all()
+	if len(got) != 4 {
+		t.Fatalf("recorded %+v, want four gets, invalid", got)
+	}
+	for i, c := range got {
+		if c != (recordedCall{"get", "invalid", "", 0}) {
+			t.Errorf("recorded call %d %+v, want a get, invalid, of 0 bytes", i, c)
+		}
 	}
 
 	_ = s.Close()
@@ -100,32 +107,61 @@ func TestGetRefusesAnEmptyRangeBeforeAnyRequest(t *testing.T) {
 	}
 }
 
-// A reply whose body runs past the Content-Range it declares yields the range
-// and then fails, never the bytes after it.
-func TestGetOfABodyLongerThanItsRangeFails(t *testing.T) {
+// A reply whose body runs past the Content-Range it declares yields the
+// range and then fails, never the bytes after it; a ranged get answered 200
+// with a matching Content-Range, whose bytes are the object's first, and a
+// whole get answered with no length, fail before any byte.
+func TestGetOfAReplyOtherThanDeclared(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	body := []byte("0123456789abcdefghij")
-	srv := tlsServer(t, func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Range", "bytes 0-9/100")
-		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
-		w.WriteHeader(http.StatusPartialContent)
-		_, _ = w.Write(body)
-	}, false, nil)
-	s, rec := storeOn(t, srv, choice{}, nil)
 
-	rc, _, err := s.Get(t.Context(), remote.Name{1}, remote.Range{Off: 0, Len: 10})
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	defer func() { _ = rc.Close() }()
+	for _, tc := range []struct {
+		name   string
+		status int
+		header map[string]string
+		r      remote.Range
+		open   error // Get's own error
+		read   string
+		end    error
+	}{
+		{"ranged, longer", http.StatusPartialContent, map[string]string{"Content-Range": "bytes 0-9/100"}, remote.Range{Off: 0, Len: 10}, nil, "0123456789", remote.ErrTransient},
+		{"ranged, answered 200", http.StatusOK, map[string]string{"Content-Range": "bytes 5-9/100"}, remote.Range{Off: 5, Len: 5}, remote.ErrInvalid, "", nil},
+		{"whole, chunked", http.StatusOK, nil, remote.Range{}, remote.ErrTransient, "", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := tlsServer(t, func(w http.ResponseWriter, _ *http.Request) {
+				for k, v := range tc.header {
+					w.Header().Set(k, v)
+				}
+				switch tc.name {
+				case "whole, chunked":
+					w.WriteHeader(tc.status)
+					w.(http.Flusher).Flush() // no Content-Length: the body goes chunked
+				default:
+					w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+					w.WriteHeader(tc.status)
+				}
+				_, _ = w.Write(body)
+			}, false, nil)
+			s, _ := storeOn(t, srv, choice{}, nil)
 
-	got, err := io.ReadAll(rc)
-	if string(got) != "0123456789" || !errors.Is(err, remote.ErrTransient) {
-		t.Errorf("read %q, %v; want the range's 10 bytes then ErrTransient", got, err)
-	}
+			rc, _, err := s.Get(t.Context(), remote.Name{1}, tc.r)
+			if tc.open != nil {
+				if !errors.Is(err, tc.open) || rc != nil {
+					t.Fatalf("Get = %v, %v; want %v and no reader", rc, err, tc.open)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			defer func() { _ = rc.Close() }()
 
-	if calls := rec.all(); len(calls) != 1 || calls[0] != (recordedCall{"get", "transient", "", 10}) {
-		t.Errorf("recorded %+v, want one get, transient, of 10 bytes", calls)
+			got, err := io.ReadAll(rc)
+			if string(got) != tc.read || !errors.Is(err, tc.end) {
+				t.Errorf("read %q, %v; want %q then %v", got, err, tc.read, tc.end)
+			}
+		})
 	}
 }
 
@@ -140,14 +176,18 @@ func TestGetChecksTheETagOfAWholeBlock(t *testing.T) {
 		_, _ = w.Write(sent)
 	}, false, nil)
 
+	stored5 := md5.Sum(stored)
+	etagSum := remote.StoredSum{Kind: remote.ChecksumMD5, Sum: stored5[:]}
+
 	for _, tc := range []struct {
 		name string
 		ch   choice
 		want error
+		sum  remote.StoredSum
 	}{
-		{"etag", choice{proved: true, sum: remote.ChecksumNone}, remote.ErrTransient},
-		{"crc32c", choice{proved: true, sum: remote.ChecksumCRC32C}, nil},
-		{"unproved", choice{}, nil},
+		{"etag", choice{proved: true, sum: remote.ChecksumNone}, remote.ErrTransient, etagSum},
+		{"crc32c", choice{proved: true, sum: remote.ChecksumCRC32C}, nil, remote.StoredSum{}},
+		{"unproved", choice{}, nil, remote.StoredSum{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, _ := storeOn(t, srv, tc.ch, nil)
@@ -159,18 +199,71 @@ func TestGetChecksTheETagOfAWholeBlock(t *testing.T) {
 			defer func() { _ = rc.Close() }()
 
 			got, err := io.ReadAll(rc)
-			if string(got) != string(sent) || !errors.Is(err, tc.want) || tc.want == nil && err != nil {
+			if string(got) != string(sent) || !errors.Is(err, tc.want) {
 				t.Errorf("read %q, %v; want every byte sent, then %v", got, err, tc.want)
 			}
 
-			wantSum := remote.StoredSum{}
-			if tc.name == "etag" {
-				m := md5.Sum(stored)
-				wantSum = remote.StoredSum{Kind: remote.ChecksumMD5, Sum: m[:]}
-			}
-			if sum.Kind != wantSum.Kind || string(sum.Sum) != string(wantSum.Sum) {
-				t.Errorf("stored sum %v %x, want %v %x", sum.Kind, sum.Sum, wantSum.Kind, wantSum.Sum)
+			if sum.Kind != tc.sum.Kind || string(sum.Sum) != string(tc.sum.Sum) {
+				t.Errorf("stored sum %v %x, want %v %x", sum.Kind, sum.Sum, tc.sum.Kind, tc.sum.Sum)
 			}
 		})
+	}
+}
+
+// eofApart returns its last bytes with a nil error and its end only on the
+// next read, as an io.Reader may.
+type eofApart struct{ r io.Reader }
+
+func (e eofApart) Read(p []byte) (int, error) {
+	n, err := e.r.Read(p)
+	if n > 0 && err == io.EOF {
+		err = nil
+	}
+
+	return n, err
+}
+
+func (eofApart) Close() error { return nil }
+
+// A caller reading exactly the length it knows still gets the end's checks,
+// from a body that holds its end back past the last byte.
+func TestGetChecksTheEndOfAnExactRead(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	srv, _ := counting(t, md5ETag)
+	s, rec := storeOn(t, srv, choice{}, nil)
+	stored, sent := []byte("the stored block"), []byte("the stoned block")
+	sum := md5.Sum(stored)
+
+	b := &getBody{s: s, op: opGet, ctx: t.Context(), rc: eofApart{bytes.NewReader(sent)}, left: int64(len(sent)), md5: md5.New(), etag: sum[:]}
+
+	got := make([]byte, len(sent))
+	if n, err := b.Read(got); n != len(sent) || !errors.Is(err, remote.ErrTransient) {
+		t.Errorf("reading exactly %d bytes = %d, %v; want them all with ErrTransient: the ETag's MD5 differs", len(sent), n, err)
+	}
+
+	if err := b.Close(); !errors.Is(err, remote.ErrTransient) {
+		t.Errorf("Close after the exact read = %v, want ErrTransient", err)
+	}
+
+	if c := rec.all(); len(c) != 1 || c[0] != (recordedCall{"get", "transient", "", int64(len(sent))}) {
+		t.Errorf("recorded %+v, want one get, transient, of %d bytes", c, len(sent))
+	}
+}
+
+// On a store comparing ETags, a reply whose ETag is no MD5 is read unchecked
+// and reports no stored sum.
+func TestGetOfANonMD5ETagChecksNothing(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	srv, _ := counting(t, func([]byte) string { return `"d41d8cd98f00b204e9800998ecf8427e-2"` })
+	s, _ := storeOn(t, srv, choice{proved: true, sum: remote.ChecksumNone}, nil)
+
+	rc, sum, err := s.Get(t.Context(), remote.Name{1}, remote.Range{})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	defer func() { _ = rc.Close() }()
+
+	if _, err := io.ReadAll(rc); err != nil || sum.Kind != remote.ChecksumNone {
+		t.Errorf("read ended %v with the stored sum %v, want nil and none", err, sum.Kind)
 	}
 }

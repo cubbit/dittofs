@@ -4,7 +4,6 @@ package s3
 
 import (
 	"bytes"
-	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
@@ -41,9 +40,11 @@ func newGetRig(t *testing.T) *lsRig {
 }
 
 // openFaulted is lsRig.open in the default class with f scheduling each
-// request's fault.
-func (r *lsRig) openFaulted(t *testing.T, ch choice, f s3fault.Fault) *store {
+// request's fault; it returns the store and the transport.
+func (r *lsRig) openFaulted(t *testing.T, ch choice, f s3fault.Fault) (*store, *s3fault.Transport) {
 	t.Helper()
+
+	var tr *s3fault.Transport
 
 	c, err := NewClient(ClientConfig{
 		Endpoint:        r.endpoint,
@@ -55,7 +56,7 @@ func (r *lsRig) openFaulted(t *testing.T, ch choice, f s3fault.Fault) *store {
 	}, Deps{
 		Logger:    slog.New(slog.DiscardHandler),
 		Recorder:  &calls{},
-		Transport: func(rt http.RoundTripper) http.RoundTripper { return s3fault.New(rt, f) },
+		Transport: func(rt http.RoundTripper) http.RoundTripper { tr = s3fault.New(rt, f); return tr },
 	})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
@@ -70,7 +71,7 @@ func (r *lsRig) openFaulted(t *testing.T, ch choice, f s3fault.Fault) *store {
 		t.Fatalf("open: %v", err)
 	}
 
-	return s
+	return s, tr
 }
 
 // tearPuts cuts every PutObject's body after its first after bytes.
@@ -231,6 +232,17 @@ func TestGetOfAClampedRangeIsInvalid(t *testing.T) {
 	name := remote.Name{1}
 	put(t, s, name, randomBytes(100), crc32cOf)
 
+	// The premise: LocalStack answers such a range with the bytes it has.
+	key := s.blockKey(name)
+	out, err := r.admin.GetObject(t.Context(), &s3.GetObjectInput{Bucket: &r.bucket, Key: &key, Range: aws.String("bytes=90-109")})
+	if err != nil {
+		t.Fatalf("GetObject of bytes 90-109: %v", err)
+	}
+	_ = out.Body.Close()
+	if got := aws.ToString(out.ContentRange); got != "bytes 90-99/100" {
+		t.Fatalf("LocalStack answered bytes 90-109 of 100 with the range %q, want bytes 90-99/100, a clamp", got)
+	}
+
 	for _, rg := range []remote.Range{{Off: 90, Len: 20}, {Off: 0, Len: 101}} {
 		rc, _, err := s.Get(t.Context(), name, rg)
 		if !errors.Is(err, remote.ErrInvalid) || rc != nil {
@@ -261,6 +273,9 @@ func TestGetOfATruncatedBodyIsTransient(t *testing.T) {
 	b := randomBytes(1000)
 	put(t, s, name, b, crc32cOf)
 	tr.Inject(s3fault.Rule{Op: "GetObject"}, s3fault.TruncateReply(40))
+	// With no checksum asked for, only the store's count of the body can see
+	// a whole block short.
+	tr.Inject(s3fault.Rule{Op: "GetObject"}, s3fault.StripHeaders("X-Amz-Checksum-Mode"))
 
 	for _, tc := range []struct {
 		why  string
@@ -316,6 +331,10 @@ func TestGetOfAFlippedWholeBlock(t *testing.T) {
 			b := randomBytes(64 << 10)
 			put(t, s, name, b, mode.sum)
 			tr.Inject(s3fault.Rule{Op: "GetObject"}, s3fault.FlipByte(7))
+			if mode.ch.sum == remote.ChecksumNone {
+				// No checksum comes back, so only the ETag's MD5 can catch it.
+				tr.Inject(s3fault.Rule{Op: "GetObject"}, s3fault.StripHeaders("X-Amz-Checksum-Mode"))
+			}
 
 			got, sum, err := read(t, s, name, remote.Range{})
 			if !errors.Is(err, remote.ErrTransient) {
@@ -374,9 +393,14 @@ func TestGetAfterAPutCutOffFindsNothing(t *testing.T) {
 	b := randomBytes(64 << 10)
 	name := remote.Name{1}
 
-	s := r.openFaulted(t, crc, tearPuts{after: 1000})
-	if err := s.Put(t.Context(), name, bytes.NewReader(b), int64(len(b)), crc32cOf(b)); err == nil {
-		t.Fatal("a put cut off part-way returned nil")
+	s, tr := r.openFaulted(t, crc, tearPuts{after: 1000})
+	err := s.Put(t.Context(), name, bytes.NewReader(b), int64(len(b)), crc32cOf(b))
+	if !errors.Is(err, remote.ErrTransient) || errors.Is(err, errTorn) {
+		t.Fatalf("a put cut off part-way = %v, want ErrTransient, the cut not reachable", err)
+	}
+
+	if reqs := tr.Requests(); len(reqs) != 1 || reqs[0].Op != "PutObject" {
+		t.Fatalf("requests %+v, want the one PutObject that was cut", reqs)
 	}
 
 	if _, _, err := read(t, s, name, remote.Range{}); !errors.Is(err, remote.ErrNotFound) {
@@ -459,7 +483,7 @@ func TestGetAllocatesFlat(t *testing.T) {
 
 		// One get first, so the connection and the pool are in place.
 		get := func() {
-			rc, _, err := s.Get(context.Background(), name, remote.Range{})
+			rc, _, err := s.Get(t.Context(), name, remote.Range{})
 			if err != nil {
 				t.Fatalf("Get of %d bytes: %v", size, err)
 			}
