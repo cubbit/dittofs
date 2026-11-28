@@ -24,6 +24,7 @@ type Fold struct {
 	cfg      carver.AssemblerConfig
 	open     *carver.BlockPlan             // the pending plan, nil until a chunk opens one
 	carried  int64                         // the open plan's carried bytes
+	keys     int                           // the keys the open plan's commit writes
 	hashes   map[entity.ChunkHash]struct{} // the hashes the open plan carries
 	finished bool
 }
@@ -69,7 +70,8 @@ func New(c carver.AssemblerConfig) (*Fold, error) {
 // committed. An all-zero chunk is a ZeroRef: it joins the open plan's Refs,
 // opening a plan if none is open, and is carried by none. A chunk the open plan
 // already carries is referenced again and carried once (RFC 2 P6). Neither adds
-// carried bytes or a slot of MaxChunks.
+// carried bytes or a slot of MaxChunks. A chunk that would take the open
+// plan's commit past KeyBudget closes it first, short or not.
 //
 // decision: Add takes no dedup lookup and returns no error, and Carried and
 // ZeroRef are the only dispositions (RFC 2 §5.1): with no lookup nothing can
@@ -91,14 +93,23 @@ func (f *Fold) Add(c carver.ChunkInfo) ([]carver.BlockPlan, carver.Disposition) 
 	// even when it repeats one of the plan's chunks, so a repeat past the
 	// block's end is carried again. The choice moves only which commit a zero
 	// ref rides in, never a block's bytes, so it can change with no migration.
-	if !c.Zero && f.open != nil && f.full() {
+	//
+	// decision: at the key-budget close, a chunk whose keys alone pass
+	// KeyBudget is planned alone, the one plan over it. RFC 2 P2 has the caller
+	// end its stretch before any chunk could, so such a chunk is a caller
+	// fault, and Add has no error to report it with. Its ceiling: the commit
+	// cannot apply that plan, so the chunk is carved, planned and refused on
+	// every pass until the caller is fixed. Withdraw it when Add gains its
+	// error with the dedup lookup.
+	if f.open != nil && ((!c.Zero && f.full()) || f.keys+f.cost(c) > f.cfg.KeyBudget) {
 		closed = []carver.BlockPlan{*f.open}
-		f.open, f.carried = nil, 0
+		f.open, f.carried, f.keys = nil, 0, 0
 		clear(f.hashes)
 	}
 	if f.open == nil {
 		f.open = &carver.BlockPlan{}
 	}
+	f.keys += f.cost(c)
 	f.open.Refs = append(f.open.Refs, c)
 	if c.Zero {
 		return closed, carver.ZeroRef
@@ -131,6 +142,30 @@ func (f *Fold) Finish(now time.Time) (last *carver.BlockPlan, held bool) {
 		return f.open, false
 	}
 	return f.open, now.Sub(oldest(f.open.Refs)) < f.cfg.MaxAge
+}
+
+// cost is the keys c adds to the open plan's commit; f.open must be non-nil.
+func (f *Fold) cost(c carver.ChunkInfo) int {
+	k := c.Keys
+	// decision: the per-file keys are charged at a plan's first ref and
+	// whenever a ref's file differs from the previous ref's, so no set of
+	// files is kept. That is exact for the order RFC 2 §5.1 requires, file
+	// after file; on any other order a file that returns is charged again,
+	// which overcounts and never lets a commit pass KeyBudget.
+	if n := len(f.open.Refs); n == 0 || f.open.Refs[n-1].File != c.File {
+		k += f.cfg.FileKeys
+	}
+	// decision: the per-block keys are charged when a plan gains its first
+	// carried chunk, never when it opens: a plan with no carried chunk is the
+	// zero-ref commit (RFC 6 §4.1), which writes no block keys, and charging
+	// them at open would split a pass of zeros that fits one commit. Zero refs
+	// that would take any plan past KeyBudget close it, so a zero run longer
+	// than one commit folds to several zero-ref commits, in the middle of a
+	// pass as at its end.
+	if !c.Zero && len(f.open.Carried) == 0 {
+		k += f.cfg.BlockKeys
+	}
+	return k
 }
 
 // full reports whether the open plan has reached the block target in carried
