@@ -19,6 +19,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
+	"time"
 
 	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/remote"
@@ -52,6 +54,36 @@ type Subject struct {
 	// called after Store is closed. A row that needs it skips on a subject
 	// without it.
 	ReadOnly func(ctx context.Context, on bool) error
+
+	// Load returns the store's record of its load: every call that reached
+	// its namespace, through Store or a store Reopen returned, as the
+	// in-memory store records it. A row that needs it skips on a subject
+	// without it.
+	Load func() Load
+}
+
+// Load is a store's record of its load, the output RFC 3 §1.4's checks
+// assert on: the in-memory store's record, but for the count of keys a
+// listing skipped, which each store reports its own way.
+type Load struct {
+	// InFlight is the calls between their entry and their return, a get's
+	// until its reader is closed; Peak is the most InFlight has been.
+	InFlight, Peak int
+
+	// Calls lists every call in the order it reached the store.
+	Calls []CallRecord
+
+	// Puts counts every put that reached the store, per name, failed ones too.
+	Puts map[remote.Name]int
+
+	// Bytes is the size of the blocks held, control objects excluded.
+	Bytes int64
+}
+
+// CallRecord is one call as it reached the store.
+type CallRecord struct {
+	Op   string      // RFC 4 §4.12's op: put, get, delete, list, health, put_control, get_control
+	Name remote.Name // the block's, for put and get; zero otherwise
 }
 
 // Run runs every row against a fresh subject from open, one row at a time.
@@ -88,6 +120,7 @@ func Run(t *testing.T, open func(t *testing.T) Subject) {
 		{"ListCancel", testListCancel},
 		{"Control", testControl},
 		{"ReadOnly", testReadOnly},
+		{"Load", testLoad},
 	} {
 		t.Run(r.name, func(t *testing.T) {
 			prof.Watch(t, prof.Options{})
@@ -1041,4 +1074,305 @@ func firstDiff(a, b []byte) int {
 	}
 
 	return min(len(a), len(b))
+}
+
+// heldPuts is how many puts the load row holds in their bodies at once.
+const heldPuts = 64
+
+// backstop bounds each wait of the load row for a put to reach its body.
+// Nothing here takes a clock, so the bound is the assertion: a store that
+// holds a put back fails on the count of puts that reached their bodies.
+const backstop = 10 * time.Second
+
+// errHeld is the error a held body fails with when the row releases it so.
+var errHeld = errors.New("remotetest: the body failed")
+
+// heldBody is a put's body that signals started at its first Read and blocks
+// there until release is closed, then fails with fail, or serves body.
+type heldBody struct {
+	started chan<- struct{}
+	release <-chan struct{}
+	body    io.Reader
+	fail    error
+	held    bool
+}
+
+func (b *heldBody) Read(p []byte) (int, error) {
+	if !b.held {
+		b.held = true
+		b.started <- struct{}{}
+		<-b.release
+	}
+
+	if b.fail != nil {
+		return 0, b.fail
+	}
+
+	return b.body.Read(p)
+}
+
+// awaitStarted waits for n signals on started, at most backstop in all, and
+// returns how many came.
+func awaitStarted(started <-chan struct{}, n int) int {
+	timer := time.NewTimer(backstop)
+	defer timer.Stop()
+
+	for got := range n {
+		select {
+		case <-started:
+		case <-timer.C:
+			return got
+		}
+	}
+
+	return n
+}
+
+// The store's record of its load counts the calls in flight and their peak,
+// lists the calls in the order they reached it, counts the puts per name and
+// the bytes of the blocks it holds, and shows the store makes one attempt per
+// call and holds no call back.
+func testLoad(t *testing.T, sub Subject) {
+	if sub.Load == nil {
+		t.Skip("the subject has no Load hook")
+	}
+
+	// First, so the peak is the held puts' alone.
+	t.Run("HeldPuts", func(t *testing.T) { testLoadHeldPuts(t, sub) })
+	t.Run("GetUntilClosed", func(t *testing.T) { testLoadGetUntilClosed(t, sub) })
+	t.Run("FailedBody", func(t *testing.T) { testLoadFailedBody(t, sub) })
+	t.Run("Order", func(t *testing.T) { testLoadOrder(t, sub) })
+	t.Run("Bytes", func(t *testing.T) { testLoadBytes(t, sub) })
+}
+
+// Puts held in their bodies are all in flight at once, so the store holds
+// none back before its first read, as a limit or a queue would; released, half
+// failing in their bodies and half stored, none is in flight, the peak stays,
+// and each name counts one put.
+func testLoadHeldPuts(t *testing.T, sub Subject) {
+	s := sub.Store
+	started, release := make(chan struct{}, heldPuts), make(chan struct{})
+
+	var (
+		wg    sync.WaitGroup
+		names = make([]remote.Name, heldPuts)
+		errs  = make([]error, heldPuts)
+	)
+
+	for i := range heldPuts {
+		names[i] = name(fmt.Sprintf("load-held-%d", i))
+		body := block(fmt.Sprintf("load-held-%d", i), 16)
+		b := &heldBody{started: started, release: release, body: bytes.NewReader(body)}
+
+		if i%2 == 0 {
+			b.fail = errHeld
+		}
+
+		sum := sum(t, s.Checksum(), body)
+
+		wg.Go(func() { errs[i] = s.Put(t.Context(), names[i], b, int64(len(body)), sum) })
+	}
+
+	got := awaitStarted(started, heldPuts)
+	held := sub.Load()
+
+	close(release)
+	wg.Wait()
+
+	if got != heldPuts {
+		t.Errorf("%d of %d puts reached their body's first Read within %v, want all of them: the store holds puts back", got, heldPuts, backstop)
+	}
+
+	if held.InFlight != heldPuts || held.Peak != heldPuts {
+		t.Errorf("with %d puts held in their bodies: InFlight %d and Peak %d, want %d and %d", heldPuts, held.InFlight, held.Peak, heldPuts, heldPuts)
+	}
+
+	for i, err := range errs {
+		if i%2 == 0 && (!errors.Is(err, errHeld) || !only(err, nil)) {
+			t.Errorf("Put %d, its body failing: error %v, want the body's error, no sentinel", i, err)
+		}
+
+		if i%2 == 1 && err != nil {
+			t.Errorf("Put %d, its body served: %v, want nil", i, err)
+		}
+	}
+
+	l := sub.Load()
+	if l.InFlight != 0 || l.Peak != heldPuts {
+		t.Errorf("once the held puts returned: InFlight %d and Peak %d, want 0 and %d", l.InFlight, l.Peak, heldPuts)
+	}
+
+	for i, n := range names {
+		if l.Puts[n] != 1 {
+			t.Errorf("Puts of held put %d's name: %d, want 1, whether its body failed or not", i, l.Puts[n])
+			break
+		}
+	}
+}
+
+// A get is in flight until its reader is closed, its bytes read whole or not.
+func testLoadGetUntilClosed(t *testing.T, sub Subject) {
+	s, n := sub.Store, name("load-get")
+	put(t, s, n, block("load-get", 16))
+
+	base := sub.Load().InFlight
+
+	body, _, err := s.Get(t.Context(), n, remote.Range{})
+	if err != nil {
+		t.Fatalf("Get after a Put: %v", err)
+	}
+
+	if got := sub.Load().InFlight; got != base+1 {
+		t.Errorf("InFlight with a get's reader open: %d, want %d", got, base+1)
+	}
+
+	if _, err := io.ReadAll(body); err != nil {
+		t.Errorf("reading the get's body: %v", err)
+	}
+
+	if got := sub.Load().InFlight; got != base+1 {
+		t.Errorf("InFlight with a get's reader read whole but open: %d, want %d", got, base+1)
+	}
+
+	if err := body.Close(); err != nil {
+		t.Errorf("closing the get's reader: %v", err)
+	}
+
+	if got := sub.Load().InFlight; got != base {
+		t.Errorf("InFlight once the get's reader is closed: %d, want %d", got, base)
+	}
+}
+
+// A put whose body fails is one put that reached the store, and returns the
+// body's error: the store does not try it again.
+func testLoadFailedBody(t *testing.T, sub Subject) {
+	s, n, body := sub.Store, name("load-failed-body"), block("load-failed-body", 16)
+	before := sub.Load()
+
+	err := s.Put(t.Context(), n, iotest.ErrReader(errHeld), int64(len(body)), sum(t, s.Checksum(), body))
+	if !errors.Is(err, errHeld) || !only(err, nil) {
+		t.Errorf("Put whose body fails: error %v, want the body's error, no sentinel", err)
+	}
+
+	l := sub.Load()
+	if calls, want := l.Calls[len(before.Calls):], []CallRecord{{"put", n}}; !slices.Equal(calls, want) {
+		t.Errorf("calls for one put whose body fails: %s, want %s", fmtCalls(calls), fmtCalls(want))
+	}
+
+	if l.Puts[n] != 1 {
+		t.Errorf("Puts of the name whose put's body failed: %d, want 1", l.Puts[n])
+	}
+}
+
+// Calls are listed in the order they reached the store, each call once; a put
+// held in its body is listed before a get that reached the store after it and
+// returned first.
+func testLoadOrder(t *testing.T, sub Subject) {
+	s, n := sub.Store, name("load-order")
+	before := len(sub.Load().Calls)
+
+	put(t, s, n, block("load-order", 16))
+
+	if _, err := get(t, s, n, remote.Range{}); err != nil {
+		t.Errorf("Get after a Put: %v", err)
+	}
+
+	if errs := s.Delete(t.Context(), []remote.Name{n}); len(errs) != 1 || errs[0] != nil {
+		t.Errorf("Delete of one name: %v, want one nil", errs)
+	}
+
+	if _, _, _, err := s.List(t.Context(), "", 10); err != nil {
+		t.Errorf("List: %v", err)
+	}
+
+	if err := s.PutControl(t.Context(), remote.RoleClaim, []byte("load-order")); err != nil {
+		t.Errorf("PutControl: %v", err)
+	}
+
+	if _, _, err := s.GetControl(t.Context(), remote.RoleClaim); err != nil {
+		t.Errorf("GetControl: %v", err)
+	}
+
+	want := []CallRecord{{"put", n}, {"get", n}, {"delete", remote.Name{}}, {"list", remote.Name{}}, {"put_control", remote.Name{}}, {"get_control", remote.Name{}}}
+	if calls := sub.Load().Calls[before:]; !slices.Equal(calls, want) {
+		t.Errorf("calls made one after another: %s, want %s", fmtCalls(calls), fmtCalls(want))
+	}
+
+	p, q := name("load-order-held"), name("load-order-get")
+	put(t, s, q, block("load-order-get", 16))
+
+	before = len(sub.Load().Calls)
+	body := block("load-order-held", 16)
+	started, release := make(chan struct{}, 1), make(chan struct{})
+	held := &heldBody{started: started, release: release, body: bytes.NewReader(body)}
+	sum := sum(t, s.Checksum(), body)
+
+	var (
+		wg     sync.WaitGroup
+		putErr error
+	)
+
+	wg.Go(func() { putErr = s.Put(t.Context(), p, held, int64(len(body)), sum) })
+
+	got := awaitStarted(started, 1)
+	if got == 1 {
+		if _, err := get(t, s, q, remote.Range{}); err != nil {
+			t.Errorf("Get beside a held put: %v", err)
+		}
+	}
+
+	close(release)
+	wg.Wait()
+
+	if got != 1 {
+		t.Fatalf("the put did not reach its body's first Read within %v", backstop)
+	}
+
+	if putErr != nil {
+		t.Errorf("the held put, released: %v, want nil", putErr)
+	}
+
+	if calls, want := sub.Load().Calls[before:], []CallRecord{{"put", p}, {"get", q}}; !slices.Equal(calls, want) {
+		t.Errorf("calls of a put held in its body and a get beside it that returned first: %s, want %s, each listed as it reached the store", fmtCalls(calls), fmtCalls(want))
+	}
+}
+
+// Bytes is the size of the blocks held: a block replaced counts its last
+// size, a block deleted counts nothing, and a name put three times counts
+// three puts.
+func testLoadBytes(t *testing.T, sub Subject) {
+	s, a, b := sub.Store, name("load-bytes-a"), name("load-bytes-b")
+	base := sub.Load().Bytes
+
+	put(t, s, a, block("load-bytes-a1", 100))
+	put(t, s, a, block("load-bytes-a2", 60))
+	put(t, s, a, block("load-bytes-a3", 40))
+	put(t, s, b, block("load-bytes-b", 200))
+
+	if errs := s.Delete(t.Context(), []remote.Name{b}); len(errs) != 1 || errs[0] != nil {
+		t.Fatalf("Delete of one name: %v, want one nil", errs)
+	}
+
+	l := sub.Load()
+	if got := l.Bytes - base; got != 40 {
+		t.Errorf("Bytes after a block put at 100, 60 then 40 bytes and one of 200 deleted: %d more, want 40", got)
+	}
+
+	if l.Puts[a] != 3 {
+		t.Errorf("Puts of a name put three times: %d, want 3", l.Puts[a])
+	}
+}
+
+// fmtCalls spells calls as op:name, a name by its first bytes, so a message
+// shows which call differs.
+func fmtCalls(calls []CallRecord) string {
+	out := make([]string, len(calls))
+	for i, c := range calls {
+		out[i] = c.Op
+		if c.Name != (remote.Name{}) {
+			out[i] += ":" + hex.EncodeToString(c.Name[:4])
+		}
+	}
+
+	return "[" + strings.Join(out, " ") + "]"
 }

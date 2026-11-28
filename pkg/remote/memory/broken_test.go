@@ -493,6 +493,178 @@ var readOnlyBroken = map[string]struct {
 	}, "AfterClose", "Put after Close, read-only: error remote: denied"},
 }
 
+// holdsPutsBack is a fault around the wrapper: at most 8 puts reach the store
+// at once, as behind a concurrency limit.
+type holdsPutsBack struct {
+	*memory.Wrapper
+
+	slots chan struct{}
+}
+
+func (s holdsPutsBack) Put(ctx context.Context, n remote.Name, body io.Reader, size int64, sum []byte) error {
+	s.slots <- struct{}{}
+	defer func() { <-s.slots }()
+
+	return s.Wrapper.Put(ctx, n, body, size, sum)
+}
+
+// retriesPut is a fault around the wrapper: a put that fails with an error of
+// no sentinel, a body that failed, is made once more.
+type retriesPut struct{ *memory.Wrapper }
+
+func (s retriesPut) Put(ctx context.Context, n remote.Name, body io.Reader, size int64, sum []byte) error {
+	err := s.Wrapper.Put(ctx, n, body, size, sum)
+	if err != nil && !slices.ContainsFunc(sentinels, func(e error) bool { return errors.Is(err, e) }) {
+		err = s.Wrapper.Put(ctx, n, body, size, sum)
+	}
+
+	return err
+}
+
+// readsBodyFirst is a fault around the wrapper: a put reads its body whole
+// before it reaches the store, so the store sees it only once the body ends.
+type readsBodyFirst struct{ *memory.Wrapper }
+
+func (s readsBodyFirst) Put(ctx context.Context, n remote.Name, body io.Reader, size int64, sum []byte) error {
+	b, err := io.ReadAll(body)
+	if err != nil {
+		return err
+	}
+
+	return s.Wrapper.Put(ctx, n, bytes.NewReader(b), size, sum)
+}
+
+// getReturnsCopy is a fault around the wrapper: a get reads the store's reader
+// whole and closes it before it returns, serving a copy.
+type getReturnsCopy struct{ *memory.Wrapper }
+
+func (s getReturnsCopy) Get(ctx context.Context, n remote.Name, r remote.Range) (io.ReadCloser, remote.StoredSum, error) {
+	body, stored, err := s.Wrapper.Get(ctx, n, r)
+	if err != nil {
+		return nil, stored, err
+	}
+
+	b, err := io.ReadAll(body)
+	_ = body.Close()
+
+	return io.NopCloser(bytes.NewReader(b)), stored, err
+}
+
+// getNeverCloses is a fault around the wrapper: closing a get's reader leaves
+// the store's reader open.
+type getNeverCloses struct{ *memory.Wrapper }
+
+func (s getNeverCloses) Get(ctx context.Context, n remote.Name, r remote.Range) (io.ReadCloser, remote.StoredSum, error) {
+	body, stored, err := s.Wrapper.Get(ctx, n, r)
+	if err != nil {
+		return nil, stored, err
+	}
+
+	return io.NopCloser(body), stored, nil
+}
+
+// controlBeneath is a fault around the wrapper: a control put is stored
+// beneath the store, so it never reaches the store's record, and refused once
+// the fault is closed, as the store refuses it.
+type controlBeneath struct {
+	*memory.Wrapper
+
+	s      *memory.Store
+	closed atomic.Bool
+}
+
+func (s *controlBeneath) PutControl(_ context.Context, r remote.Role, body []byte) error {
+	if s.closed.Load() {
+		return fmt.Errorf("closed: %w", remote.ErrInvalid)
+	}
+
+	memory.PutRaw(s.s, "control/"+r.String(), body)
+
+	return nil
+}
+
+func (s *controlBeneath) Close() error {
+	s.closed.Store(true)
+	return s.Wrapper.Close()
+}
+
+// bytesPerPut is a fault around the wrapper and its subject's record: the
+// record's Bytes counts every byte a put stored, replaced and deleted blocks
+// too.
+type bytesPerPut struct {
+	*memory.Wrapper
+
+	put atomic.Int64
+}
+
+func (s *bytesPerPut) Put(ctx context.Context, n remote.Name, body io.Reader, size int64, sum []byte) error {
+	err := s.Wrapper.Put(ctx, n, body, size, sum)
+	if err == nil {
+		s.put.Add(size)
+	}
+
+	return err
+}
+
+// loadBroken names each fault of the load record as readOnlyBroken does.
+var loadBroken = map[string]struct {
+	sub func(*memory.Store) remotetest.Subject
+	row string
+	msg string
+}{
+	"holds-puts-back": {func(s *memory.Store) remotetest.Subject {
+		sub := subject(s)
+		sub.Store = holdsPutsBack{sub.Store.(*memory.Wrapper), make(chan struct{}, 8)}
+
+		return sub
+	}, "Load", "8 of 64 puts reached their body's first Read"},
+	"retries-put": {func(s *memory.Store) remotetest.Subject {
+		sub := subject(s)
+		sub.Store = retriesPut{sub.Store.(*memory.Wrapper)}
+
+		return sub
+	}, "Load", "calls for one put whose body fails: [put:"},
+	"reads-body-first": {func(s *memory.Store) remotetest.Subject {
+		sub := subject(s)
+		sub.Store = readsBodyFirst{sub.Store.(*memory.Wrapper)}
+
+		return sub
+	}, "Load", "calls of a put held in its body and a get beside it that returned first"},
+	"get-returns-copy": {func(s *memory.Store) remotetest.Subject {
+		sub := subject(s)
+		sub.Store = getReturnsCopy{sub.Store.(*memory.Wrapper)}
+
+		return sub
+	}, "Load", "InFlight with a get's reader open: 0, want 1"},
+	"get-never-closes": {func(s *memory.Store) remotetest.Subject {
+		sub := subject(s)
+		sub.Store = getNeverCloses{sub.Store.(*memory.Wrapper)}
+
+		return sub
+	}, "Load", "InFlight once the get's reader is closed: 1, want 0"},
+	"control-beneath": {func(s *memory.Store) remotetest.Subject {
+		sub := subject(s)
+		sub.Store = &controlBeneath{Wrapper: sub.Store.(*memory.Wrapper), s: s}
+
+		return sub
+	}, "Load", "calls made one after another"},
+	"bytes-per-put": {func(s *memory.Store) remotetest.Subject {
+		sub := subject(s)
+		f := &bytesPerPut{Wrapper: sub.Store.(*memory.Wrapper)}
+		sub.Store = f
+
+		load := sub.Load
+		sub.Load = func() remotetest.Load {
+			l := load()
+			l.Bytes = f.put.Load()
+
+			return l
+		}
+
+		return sub
+	}, "Load", "Bytes after a block put at 100, 60 then 40 bytes and one of 200 deleted: 400 more, want 40"},
+}
+
 // withoutHealth opens the in-memory store without its health object, as a
 // store whose open skipped it.
 func withoutHealth(s *memory.Store) remote.Store {
@@ -511,6 +683,9 @@ func TestBrokenStore(t *testing.T) {
 
 	b, ok := broken[fault]
 	ro, rok := readOnlyBroken[fault]
+	if !rok {
+		ro, rok = loadBroken[fault]
+	}
 
 	if !ok && !rok {
 		t.Skip("runs only as the child of TestTheSuiteFailsABrokenStoreOnItsRow")
@@ -524,11 +699,14 @@ func TestBrokenStore(t *testing.T) {
 		}
 
 		// The fault sits around the store itself, so no wrapper is in front
-		// of it to turn the namespace read-only.
+		// of it to turn the namespace read-only, and it may make calls of its
+		// own beneath its caller's, so the store's record is not the faulted
+		// store's.
 		sub := subject(inner)
 		sub.Store = b.wrap(inner)
 		sub.Reopen = func(context.Context) (remote.Store, error) { return b.wrap(memory.Reopen(inner)), nil }
 		sub.ReadOnly = nil
+		sub.Load = nil
 
 		if p, ok := sub.Store.(interface{ plant(string) }); ok {
 			putRaw := sub.PutRaw
@@ -550,12 +728,16 @@ var failedRow = regexp.MustCompile(`(?m)^\s*--- FAIL: TestBrokenStore/(\S+)`)
 func TestTheSuiteFailsABrokenStoreOnItsRow(t *testing.T) {
 	type want struct{ row, msg string }
 
-	faults := make(map[string]want, len(broken)+len(readOnlyBroken))
+	faults := make(map[string]want, len(broken)+len(readOnlyBroken)+len(loadBroken))
 	for f, b := range broken {
 		faults[f] = want{b.row, b.msg}
 	}
 
 	for f, b := range readOnlyBroken {
+		faults[f] = want{b.row, b.msg}
+	}
+
+	for f, b := range loadBroken {
 		faults[f] = want{b.row, b.msg}
 	}
 

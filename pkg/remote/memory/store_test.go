@@ -599,3 +599,86 @@ func TestAReadOnlyWrapperRefusesEveryWriteBeforeTheStore(t *testing.T) {
 		t.Errorf("Get of the block put once write access returned: %d bytes and error %v, want the bytes put", len(got), err)
 	}
 }
+
+// A listing that skips a key under blocks/ that is not a name counts it in the
+// load record, once per listing that skips it.
+func TestAListingCountsTheForeignKeyItSkips(t *testing.T) {
+	s := newStore(remote.ChecksumNone)
+	mustPut(t, s, blockA, first)
+	memory.PutRaw(s, "blocks/7f", first)
+
+	if got := s.Load().Foreign; got != 0 {
+		t.Fatalf("Foreign before any listing: %d, want 0", got)
+	}
+
+	page, _, _, err := s.List(t.Context(), "", 10)
+	if err != nil || len(page) != 1 {
+		t.Fatalf("List over one block and a foreign key: %d blocks and error %v, want the one block", len(page), err)
+	}
+
+	if l := s.Load(); l.Foreign != 1 || l.Bytes != int64(len(first)) {
+		t.Errorf("after one listing over a foreign key: Foreign %d and Bytes %d, want 1 and %d, the foreign key's body not a block's", l.Foreign, l.Bytes, len(first))
+	}
+}
+
+// The record starts empty, the health object New puts left out, and a get's
+// reader closed twice ends its call once.
+func TestTheLoadRecordStartsEmptyAndEndsAGetOnce(t *testing.T) {
+	s := newStore(remote.ChecksumNone)
+
+	if l := s.Load(); l.InFlight != 0 || l.Peak != 0 || len(l.Calls) != 0 || len(l.Puts) != 0 || l.Bytes != 0 || l.Foreign != 0 {
+		t.Fatalf("the record of a new store: %+v, want it empty", l)
+	}
+
+	mustPut(t, s, blockA, first)
+
+	body, _, err := s.Get(t.Context(), blockA, remote.Range{})
+	if err != nil {
+		t.Fatalf("Get after a Put: %v", err)
+	}
+
+	for i := range 2 {
+		if err := body.Close(); err != nil {
+			t.Errorf("Close %d of the get's reader: %v", i+1, err)
+		}
+	}
+
+	if l := s.Load(); l.InFlight != 0 || l.Peak != 1 {
+		t.Errorf("after a get's reader closed twice: InFlight %d and Peak %d, want 0 and 1", l.InFlight, l.Peak)
+	}
+}
+
+// The record is the namespace's: a call through a store opened again over it
+// is in the first store's record, as a service records every client's load.
+func TestTheLoadRecordCountsAStoreOpenedAgain(t *testing.T) {
+	s := newStore(remote.ChecksumNone)
+	again := memory.Reopen(s)
+	mustPut(t, again, blockA, first)
+
+	l := s.Load()
+	if want := []memory.CallRecord{{Op: "put", Name: blockA}}; !slices.Equal(l.Calls, want) || l.Puts[blockA] != 1 || l.Bytes != int64(len(first)) {
+		t.Errorf("the first store's record after a put through a store opened again: calls %v, Puts %d, Bytes %d, want %v, 1 and %d", l.Calls, l.Puts[blockA], l.Bytes, want, len(first))
+	}
+}
+
+// A call the read-only wrapper refuses never reaches the store, so the store's
+// record holds none of them; a read it passes through is recorded.
+func TestACallTheReadOnlyWrapperRefusesIsNotRecorded(t *testing.T) {
+	s := newStore(remote.ChecksumNone)
+	w := memory.Wrap(s)
+	w.SetReadOnly(true)
+
+	_ = w.Put(t.Context(), blockA, bytes.NewReader(first), int64(len(first)), nil)
+	_ = w.PutControl(t.Context(), remote.RoleClaim, first)
+	_ = w.Delete(t.Context(), []remote.Name{blockA})
+	_ = w.Health(t.Context(), remote.DirPut)
+
+	if err := w.Health(t.Context(), remote.DirGet); err != nil {
+		t.Fatalf("Health(DirGet) while read-only: %v", err)
+	}
+
+	l := s.Load()
+	if want := []memory.CallRecord{{Op: "health"}}; !slices.Equal(l.Calls, want) || len(l.Puts) != 0 || l.Peak != 1 {
+		t.Errorf("the record after refused writes and one get probe: calls %v, Puts %v, Peak %d, want %v, none and 1", l.Calls, l.Puts, l.Peak, want)
+	}
+}
