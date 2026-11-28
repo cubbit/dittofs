@@ -97,7 +97,7 @@ func carriedBytes(chunks []carver.ChunkInfo) int64 {
 // full reports whether a plan reached the target in carried bytes or holds
 // the count cap's chunks.
 func full(cfg carver.AssemblerConfig, p carver.BlockPlan) bool {
-	return carriedBytes(p.Carried) >= cfg.BlockTarget || len(p.Carried) == cfg.MaxChunks
+	return carriedBytes(p.Carried) >= cfg.BlockTarget || len(p.Carried) >= cfg.MaxChunks
 }
 
 // checkPlans asserts what every fold of s must give, a pure check of its
@@ -173,11 +173,8 @@ func isRef(p carver.BlockPlan, c carver.ChunkInfo) bool {
 func checkContiguous(t *testing.T, plan int, carried []carver.ChunkInfo) {
 	t.Helper()
 	left := map[entity.FileID]bool{}
-	for j, c := range carried {
-		if j == 0 {
-			continue
-		}
-		prev := carried[j-1]
+	for j := 1; j < len(carried); j++ {
+		c, prev := carried[j], carried[j-1]
 		switch {
 		case c.File != prev.File:
 			left[prev.File] = true
@@ -193,7 +190,7 @@ func checkContiguous(t *testing.T, plan int, carried []carver.ChunkInfo) {
 // oldestRef is the earliest Oldest among p's refs.
 func oldestRef(p carver.BlockPlan) time.Time {
 	o := p.Refs[0].Oldest
-	for _, r := range p.Refs {
+	for _, r := range p.Refs[1:] {
 		if r.Oldest.Before(o) {
 			o = r.Oldest
 		}

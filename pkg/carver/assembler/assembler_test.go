@@ -158,9 +158,11 @@ func TestFoldPacksAcrossFiles(t *testing.T) {
 // A short last plan is held while its oldest chunk is younger than MaxAge and
 // put from MaxAge on; a full one is never held.
 func TestFinishHoldsAShortLastPlanUntilMaxAge(t *testing.T) {
-	short := stream(0, lengths(3, 64<<10))
-	short[1].Oldest = t0.Add(-time.Hour) // the oldest ref is not the first
 	oldest := t0.Add(-time.Hour)
+	short := stream(0, lengths(3, 64<<10))
+	short[1].Oldest = oldest // the oldest ref is not the first
+	unset := stream(0, lengths(3, 64<<10))
+	unset[2].Oldest = time.Time{}
 	for _, tc := range []struct {
 		name string
 		cfg  carver.AssemblerConfig
@@ -171,6 +173,7 @@ func TestFinishHoldsAShortLastPlanUntilMaxAge(t *testing.T) {
 		{"short, 1ns under MaxAge", cfg(1<<20, 1024), short, oldest.Add(time.Minute - 1), true},
 		{"short, at MaxAge", cfg(1<<20, 1024), short, oldest.Add(time.Minute), false},
 		{"short, past MaxAge", cfg(1<<20, 1024), short, oldest.Add(time.Hour), false},
+		{"short, an Oldest unset", cfg(1<<20, 1024), unset, t0, false},
 		{"full at the target, young", cfg(1<<20, 1024), stream(0, lengths(16, 64<<10)), t0, false},
 		{"full at the cap, young", cfg(1<<20, 3), short, oldest, false},
 	} {
@@ -190,7 +193,7 @@ func TestFoldPanicsAfterFinish(t *testing.T) {
 		name string
 		use  func(*assembler.Fold)
 	}{
-		{"Add", func(f *assembler.Fold) { f.Add(stream(0, lengths(1, 1))[0]) }},
+		{"Add", func(f *assembler.Fold) { f.Add(carver.ChunkInfo{}) }},
 		{"Finish", func(f *assembler.Fold) { f.Finish(t0) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -198,7 +201,9 @@ func TestFoldPanicsAfterFinish(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			f.Finish(t0)
+			if last, held := f.Finish(t0); last != nil || held {
+				t.Fatalf("Finish on an empty fold: got (%v, %v), want (nil, false)", last, held)
+			}
 			defer func() {
 				if recover() == nil {
 					t.Errorf("%s after Finish: no panic, want one", tc.name)

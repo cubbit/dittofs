@@ -71,13 +71,15 @@ func New(c carver.AssemblerConfig) (*Fold, error) {
 // fail and nothing is adopted. The lookup, the error and an adopted
 // disposition arrive together with the dedup oracle, which changes this
 // signature.
+//
+// Add panics after Finish: a fold serves one pass.
 func (f *Fold) Add(c carver.ChunkInfo) ([]carver.BlockPlan, carver.Disposition) {
 	if f.finished {
 		panic("assembler: Add after Finish: a fold serves one pass")
 	}
 	var closed []carver.BlockPlan
-	// A full plan stays open until the next carried chunk arrives, which
-	// closes it and starts the next: a block never closes at a file's end.
+	// A full plan is closed only when the next carried chunk arrives, never
+	// when it fills, so the refs that follow it can still join its commit.
 	if f.open != nil && f.full() {
 		closed = []carver.BlockPlan{*f.open}
 		f.open, f.carried = nil, 0
@@ -95,7 +97,8 @@ func (f *Fold) Add(c carver.ChunkInfo) ([]carver.BlockPlan, carver.Disposition) 
 // last plan, nil if none is open. held is true when that plan is short and held
 // back: the caller puts none of it, reports none of its extents and leaves them
 // dirty for the next pass. A short plan is put once its oldest ref is at least
-// MaxAge old at now. After Finish, Add and Finish panic.
+// MaxAge old at now; an Oldest after now reads as young. After Finish, Add and
+// Finish panic.
 func (f *Fold) Finish(now time.Time) (last *carver.BlockPlan, held bool) {
 	if f.finished {
 		panic("assembler: Finish after Finish: a fold serves one pass")
