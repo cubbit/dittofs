@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"maps"
 	"slices"
 	"sync"
@@ -229,11 +230,20 @@ func TestCreateKeysIsIdempotent(t *testing.T) {
 		t.Fatalf("the second CreateKeys: %v", err)
 	}
 	if after := loadRows(t, records, ns); !sameRows(before, after) {
-		t.Errorf("rows after the second CreateKeys = %v, want them unchanged from %v", after, before)
+		t.Errorf("rows after the second CreateKeys = %s, want them unchanged from %s", rowNames(after), rowNames(before))
 	}
 	if got := currentIDs(t, p, ns, encryptingKinds); !maps.Equal(got, ids) {
 		t.Errorf("IDs after the second CreateKeys = %x, want %x", got, ids)
 	}
+}
+
+// rowNames names rows by kind, ID in hex and state, for a failure message.
+func rowNames(rows []Row) []string {
+	names := make([]string, 0, len(rows))
+	for _, r := range rows {
+		names = append(names, fmt.Sprintf("%s %x %s", r.Kind, r.ID, r.State))
+	}
+	return names
 }
 
 func sameRows(a, b []Row) bool {
