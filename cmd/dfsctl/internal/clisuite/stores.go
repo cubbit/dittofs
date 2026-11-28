@@ -35,7 +35,7 @@ func storeRows() []row {
 			refused(t, run, "unknown_key", "remote.credential", "store", "create", "--setting", "remote.endpoint=https://s3.example.com", "--credential-file", secretFile(t, "a password\n"))
 		}},
 		{name: "namespace create prints the refusal until the settings table declares the namespace", harnessOnly: true, run: func(t *testing.T, run Runner, s Server, _ *client.Client) {
-			refused(t, run, "unknown_key", "namespace.prefix", "namespace", "create", "--store", s.putStore(t), "--setting", "namespace.prefix=builds/")
+			refused(t, run, "unknown_key", "remote.prefix", "namespace", "create", "--store", s.putStore(t), "--setting", "remote.prefix=builds/")
 		}},
 		{name: "setting get reads a record at the installation's scope and at a node's", harnessOnly: true, run: func(t *testing.T, run Runner, s Server, _ *client.Client) {
 			key := "clisuite.k" + uuid.NewString()[:8]

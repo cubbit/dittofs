@@ -366,12 +366,34 @@ func tableStore(t *testing.T) *kvstore.Store {
 // probeNode is the node the check reads a table for.
 var probeNode = entity.NodeID{0xa9, 15: 1}
 
+// probeRemote and probeNamespace are the instances the remote tier's sections
+// are seeded at.
+var (
+	probeRemote    = entity.SettingScope{Kind: entity.ScopeRemote, ID: [16]byte{0xa9, 15: 2}}
+	probeNamespace = entity.SettingScope{Kind: entity.ScopeNamespace, ID: [16]byte{0xa9, 15: 3}}
+)
+
+// seedCredential is the remote credential secret the seeded
+// remote.credential row names, so a probe of any other key is judged beside a
+// reference that holds.
+var seedCredential = entity.Secret{
+	ID: entity.SecretRef{0xc9, 15: 1}, Kind: entity.SecretRemoteCredential, Version: 1, KeyID: "probe",
+	Owner: entity.SecretOwner{Scope: probeRemote, Key: "remote.credential"}, Value: []byte("sealed"),
+}
+
 // sectionSeeds is the smallest set of rows under which Read accepts every
-// section of the node's table whose defaults alone it refuses: one with a
-// required key, which has no default.
+// section, of the node's table and the remote tier's, whose defaults alone it
+// refuses (one with a required key), and holds one instance of each section
+// with one value per instance: its required keys, or its one key. A table
+// declaring no section of a row's key skips the row.
 var sectionSeeds = []entity.Setting{
 	{Scope: entity.SettingScope{Kind: entity.ScopeInstallation},
 		Key: "identity.directory.address", Value: []byte(`"ldaps://dc.example.test"`)},
+	{Scope: probeRemote, Key: "remote.endpoint", Value: []byte(`"https://s3.example.test"`)},
+	{Scope: probeRemote, Key: "remote.bucket", Value: []byte(`"probe"`)},
+	{Scope: probeRemote, Key: "remote.credential", Value: []byte(`[201,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1]`)},
+	{Scope: probeNamespace, Key: "remote.prefix", Value: []byte(`"probe/"`)},
+	{Scope: probeNamespace, Key: "remote.block_format_version", Value: []byte(`1`)},
 }
 
 // putBeneathCheck writes row straight to the store at the current schema,
@@ -409,14 +431,21 @@ type tableKey struct {
 // kinds, refused with ErrWrongScope or not, and an operator's delete at its
 // base scope, refused with ErrForbidden or not. Diff lists no key of a
 // section whose base names no instance (one per share, namespace or remote
-// store, or per thing) or whose value Read refuses, so the check fails when
-// Read refuses a section, naming it for a seed, and when it reaches fewer
-// sections than the table holds, rather than skip one; an At and a PerThing
-// at one scope accept the same kind, so the probe cannot tell them apart.
-// Add a Table.Keys() export, or seed a row per instance, when a section
-// the probe cannot reach is declared.
+// store, or per thing) until a row names one, so sectionSeeds names one
+// instance of each such section, and none of a section whose value Read
+// refuses, so the check fails when Read refuses a section, naming it for a
+// seed, and when it reaches fewer sections than the table holds, rather than
+// skip one; an At and a PerThing at one scope accept the same kind, so the
+// probe cannot tell them apart. Withdraw the probe for a Table.Keys() export
+// if a section is declared that no seed row can stand up.
 func tableKeys(t *testing.T, st *kvstore.Store, tb settings.Table) []tableKey {
 	t.Helper()
+	err := st.ControlPlane().Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+		return tx.PutSecret(seedCredential, 0)
+	})
+	if err != nil {
+		t.Fatalf("put the seeded credential's secret: %v", err)
+	}
 	for _, row := range sectionSeeds {
 		putBeneathCheck(t, st, row)
 	}

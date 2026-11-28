@@ -35,7 +35,7 @@ prefix and chunking, which are fixed from then on.
 
 Examples:
   # Create a namespace on a store
-  dfsctl namespace create --store 0b5c1a7e-2f4d-4c8e-9a1b-3c5d7e9f1a2b --setting namespace.prefix=builds/
+  dfsctl namespace create --store 0b5c1a7e-2f4d-4c8e-9a1b-3c5d7e9f1a2b --setting remote.prefix=builds/
 
   # List the namespaces
   dfsctl namespace list`,

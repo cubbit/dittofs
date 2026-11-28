@@ -71,7 +71,7 @@ func TestStoreListPagesTheStoresAlone(t *testing.T) {
 	s.putSetting(t, last, "remote.region", `"eu"`)
 	s.putSetting(t, storeAt(uuid.New()), "remote.region", `"us"`)
 	s.putSetting(t, installation, "gc.schedule", `"daily"`)
-	s.putSetting(t, entity.SettingScope{Kind: entity.ScopeNamespace, ID: uuid.New()}, "namespace.prefix", `"p/"`)
+	s.putSetting(t, entity.SettingScope{Kind: entity.ScopeNamespace, ID: uuid.New()}, "remote.prefix", `"p/"`)
 	s.putSetting(t, entity.SettingScope{Kind: entity.ScopeShare, ID: uuid.New()}, "share.x", `"y"`)
 
 	first := page[apiv1.Store](t, s, "/api/v1/stores?limit=2")
