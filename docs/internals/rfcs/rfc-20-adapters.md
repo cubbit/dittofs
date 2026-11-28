@@ -4726,7 +4726,7 @@ end-to-end benchmark.
 | A8 | Decoders allocate nothing a length field claims before checking it against the bytes remaining and the protocol's cap. |
 | A9 | The adapter does not copy `READ` or `WRITE` payloads, apart from encryption and signing. |
 | A10 | No worker waits on a client; a slow client blocks only its own connection, and a connection at its flow-control bound is not read. |
-| A11 | A drained or cancelled request is never answered with a final error the service may contradict, and a request cancelled by its client on a live connection is always answered. |
+| A11 | A drained or cancelled request is never answered with a final error the service may contradict, and a request cancelled by its client on a live connection is always answered. The one exception is an NFSv4.1 compound whose `SEQUENCE` marked its slot: the slot must hold a reply and no answer is safe, so the cancelled member's status is stored as [RFC 21 §3.1](rfc-21-nfs.md#3.1.%20Sessions%20and%20slot%20tables) has it, `NFS4ERR_SERVERFAULT` where nothing was. |
 | A12 | The adapter maps no identity, applies no squash and grants no privilege; it hands the service what the handshake proved. |
 | A13 | Every wire divergence from the reference server that survives normalisation is a red run or a recorded entry citing a protocol RFC rule. |
 | A14 | Nagle's algorithm is off on every connection, and the socket buffers are left to the kernel. |

@@ -272,7 +272,7 @@ cited by number and title, and how it applies here or why it does not.
 | --- | --- | --- | --- | --- |
 | R32 | While draining, what a request does to state decides whether it runs: `RoleContext`, `RoleFlush` and `RoleRelease` are served, `RoleNone` gets the drain's error, `ErrMoved` or `ErrDraining`, decided per request (which of the two: E4, D23) | MUST | §3.1, §4.7 | T5.1a |
 | R33 | A request already handed to the service when the drain begins runs to its answer, and its reply is sent | MUST | §3.1 | T5.4 |
-| R34 | A request whose context was cancelled by a closed connection or the drain's deadline is never answered: its reply is dropped, and no error is encoded for it | MUST NOT | §3.1, §6.5 | T5.8 |
+| R34 | A request whose context was cancelled by a closed connection or the drain's deadline is never answered: its reply is dropped, and no error is encoded for it. The one exception is an NFSv4.1 compound whose `SEQUENCE` marked its slot, which RFC 21 epic 8's `core` change handles: the slot must hold a reply, so the cancelled member's status is stored with no member past it run | MUST NOT | §3.1, §6.5; RFC 21 §3.1 (epic 8's slot rule, its R73) | T5.8 |
 
 **The compound runner**
 
