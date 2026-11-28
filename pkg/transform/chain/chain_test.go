@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -47,21 +49,48 @@ func TestFailureReasonLabels(t *testing.T) {
 	}
 }
 
-// sink is a Recorder that keeps what the chain delivers to it, as text.
-type sink struct{ got *[]string }
+// sink is a Recorder that keeps what the chain delivers to it, as text, one
+// line per call naming the transform For resolved. It is safe for concurrent
+// use, as a chain's recorder must be.
+type sink struct {
+	mu  sync.Mutex
+	got []string
+}
 
-func (s sink) For(name string) chain.TransformRecorder {
-	*s.got = append(*s.got, "for "+name)
-	return s
+func newSink() *sink { return &sink{} }
+
+func (s *sink) add(line string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.got = append(s.got, line)
 }
-func (s sink) Encoded(applied bool, in, out int, _ time.Duration) {
-	*s.got = append(*s.got, fmt.Sprint("encoded ", applied, in, out))
+
+// lines is a copy of what the sink holds.
+func (s *sink) lines() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.got)
 }
-func (s sink) Decoded(in, out int, _ time.Duration) {
-	*s.got = append(*s.got, fmt.Sprint("decoded ", in, out))
+
+func (s *sink) For(name string) chain.TransformRecorder {
+	s.add("for " + name)
+	return named{s, name}
 }
-func (s sink) DecodeFailed(r chain.FailureReason) {
-	*s.got = append(*s.got, "decode failed "+r.String())
+
+// named is the recorder sink.For resolved for one transform.
+type named struct {
+	s    *sink
+	name string
+}
+
+func (n named) Encoded(applied bool, in, out int, _ time.Duration) {
+	n.s.add(fmt.Sprint(n.name, " encoded ", applied, " ", in, " ", out))
+}
+func (n named) Decoded(in, out int, _ time.Duration) {
+	n.s.add(fmt.Sprint(n.name, " decoded ", in, " ", out))
+}
+func (n named) DecodeFailed(r chain.FailureReason) {
+	n.s.add(n.name + " decode failed " + r.String())
 }
 
 // A chain built without a member of Deps, or without its provider, would fail
@@ -69,11 +98,11 @@ func (s sink) DecodeFailed(r chain.FailureReason) {
 // the member, and records nothing. The cases pass a nil provider: NewChain
 // checks Deps first, and no provider implementation exists here to pass.
 func TestNewChainRefusesMissingDeps(t *testing.T) {
-	var got []string
+	rec := newSink()
 	full := func() chain.Deps {
 		return chain.Deps{
 			Logger:   slog.New(slog.DiscardHandler),
-			Recorder: sink{&got},
+			Recorder: rec,
 			Encrypts: func(entity.NamespaceID) bool { return true },
 		}
 	}
@@ -93,7 +122,7 @@ func TestNewChainRefusesMissingDeps(t *testing.T) {
 			t.Errorf("NewChain without %s: err = %v, want a refusal naming %s", tc.member, err, tc.member)
 		}
 	}
-	if len(got) != 0 {
+	if got := rec.lines(); len(got) != 0 {
 		t.Errorf("refused NewChain calls recorded %q, want nothing", got)
 	}
 }

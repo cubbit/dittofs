@@ -64,7 +64,7 @@ func buildLogged(t *testing.T, r chain.Registry, p keys.Provider, cfg ...transfo
 func depsFor() chain.Deps {
 	return chain.Deps{
 		Logger:   slog.New(slog.DiscardHandler),
-		Recorder: sink{new([]string)},
+		Recorder: newSink(),
 		Encrypts: func(entity.NamespaceID) bool { return false },
 	}
 }
