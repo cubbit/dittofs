@@ -31,7 +31,7 @@ var (
 		ns:          fixtureNS,
 		seq:         7,
 		exportKeyID: []byte("export-1"),
-		rows: []keyRow{
+		rows: []Row{
 			{Kind: "chunk-id-key", ID: "c1", State: "current", Record: bytes.Repeat([]byte{1}, 40)},
 			{Kind: "data-key", ID: "d1", State: "retired", Record: bytes.Repeat([]byte{2}, 60)},
 			{Kind: "data-key", ID: "d2", State: "current", Record: bytes.Repeat([]byte{3}, 60)},
@@ -49,7 +49,7 @@ const (
 	wantKeysMAC = "1325d06713c4ce38652ada2ee9195c0c673186b41df8a6ce0637ff3b3e6014b3" // gitleaks:allow, a test vector, not a secret
 )
 
-func readFixture(tb testing.TB) []byte {
+func readKeysObjectFixture(tb testing.TB) []byte {
 	tb.Helper()
 
 	b, err := os.ReadFile("testdata/keys-object-v1.bin")
@@ -96,7 +96,7 @@ func TestKeysKeyAndMACMatchTheVector(t *testing.T) {
 func TestKeysObjectFixtureBothWays(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	fixture := readFixture(t)
+	fixture := readKeysObjectFixture(t)
 
 	got, err := decodeKeysObject(fixture, fixtureNS, fixtureExportKey)
 	if err != nil {
@@ -108,7 +108,7 @@ func TestKeysObjectFixtureBothWays(t *testing.T) {
 	}
 
 	shuffled := fixtureObject
-	shuffled.rows = []keyRow{fixtureObject.rows[3], fixtureObject.rows[2], fixtureObject.rows[0], fixtureObject.rows[1]}
+	shuffled.rows = []Row{fixtureObject.rows[3], fixtureObject.rows[2], fixtureObject.rows[0], fixtureObject.rows[1]}
 
 	enc, err := encodeKeysObject(shuffled, fixtureExportKey)
 	if err != nil {
@@ -126,7 +126,7 @@ var recordsAt = 1 + 4 + 16 + 8 + 4 + len(fixtureObject.exportKeyID)
 
 // withRows is the fixture with its records field replaced by rows' bytes in
 // the order given, and its MAC kept.
-func withRows(fixture []byte, rows ...keyRow) []byte {
+func withRows(fixture []byte, rows ...Row) []byte {
 	b := binary.BigEndian.AppendUint64(bytes.Clone(fixture[:recordsAt]), uint64(len(rows)))
 	for _, r := range rows {
 		b = lenPrefixed(lenPrefixed(lenPrefixed(lenPrefixed(b, []byte(r.Kind)), []byte(r.ID)), []byte(r.State)), r.Record)
@@ -142,7 +142,7 @@ func withRows(fixture []byte, rows ...keyRow) []byte {
 func TestKeysMACCoversEveryRecordInOrder(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	fixture := readFixture(t)
+	fixture := readKeysObjectFixture(t)
 	r := fixtureObject.rows
 
 	changed := r[1]
@@ -184,7 +184,7 @@ func TestKeysMACCoversEveryRecordInOrder(t *testing.T) {
 func TestKeysObjectBound(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	o := keysObject{ns: fixtureNS, seq: 1, exportKeyID: []byte("export-1"), rows: []keyRow{{Kind: "data", ID: "d1", State: "active"}}}
+	o := keysObject{ns: fixtureNS, seq: 1, exportKeyID: []byte("export-1"), rows: []Row{{Kind: "data", ID: "d1", State: "active"}}}
 
 	empty, err := encodeKeysObject(o, fixtureExportKey)
 	if err != nil {
@@ -216,7 +216,7 @@ func TestEncodeKeysObjectRefusesARepeatedRow(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	o := fixtureObject
-	o.rows = append([]keyRow{{Kind: "data-key", ID: "d1", State: "current"}}, fixtureObject.rows...)
+	o.rows = append([]Row{{Kind: "data-key", ID: "d1", State: "current"}}, fixtureObject.rows...)
 
 	if _, err := encodeKeysObject(o, fixtureExportKey); !errors.Is(err, errKeysObjectInvalid) || !strings.Contains(err.Error(), `kind "data-key" and ID "d1"`) {
 		t.Errorf("error %v, want the repeated data-key d1 refused", err)
@@ -227,7 +227,7 @@ func TestEncodeKeysObjectRefusesARepeatedRow(t *testing.T) {
 func TestDecodeKeysObjectRefuses(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	fixture := readFixture(t)
+	fixture := readKeysObjectFixture(t)
 	r := fixtureObject.rows
 	mutate := func(f func(b []byte) []byte) []byte { return f(bytes.Clone(fixture)) }
 
@@ -269,7 +269,7 @@ func TestDecodeKeysObjectRefuses(t *testing.T) {
 func TestKeysObjectRefusesAnExportKeyOfTheWrongLength(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	fixture := readFixture(t)
+	fixture := readKeysObjectFixture(t)
 
 	for _, key := range [][]byte{nil, {}, make([]byte, 31), make([]byte, 33)} {
 		if _, err := decodeKeysObject(fixture, fixtureNS, key); err == nil || !strings.Contains(err.Error(), "want 32") {
@@ -288,7 +288,7 @@ func TestKeysObjectRefusesAnExportKeyOfTheWrongLength(t *testing.T) {
 // parsed fields, re-encodes to the same bytes up to the MAC, and those decode,
 // under the MAC the encoder gave them, to the same value.
 func FuzzKeysObject(f *testing.F) {
-	fixture := readFixture(f)
+	fixture := readKeysObjectFixture(f)
 	f.Add(fixture)
 
 	empty, err := encodeKeysObject(keysObject{ns: fixtureNS, exportKeyID: []byte("export-1")}, fixtureExportKey)

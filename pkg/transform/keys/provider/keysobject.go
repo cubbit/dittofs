@@ -14,15 +14,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
 
-// keyRow is one key record as the metadata store's key-record view holds it:
-// its kind, its ID, its state and the stored record, wrapped. It is the
-// view's row type under another name, to be replaced by it when the view
-// lands.
-type keyRow = struct {
-	Kind, ID, State string
-	Record          []byte
-}
-
 // keysObject is one version of a namespace's keys object (RFC 5 Appendix
 // B.2): every key record of the namespace, at a sequence, under the export key
 // whose ID it names.
@@ -30,7 +21,7 @@ type keysObject struct {
 	ns          entity.NamespaceID
 	seq         uint64
 	exportKeyID []byte
-	rows        []keyRow
+	rows        []Row
 }
 
 const (
@@ -81,15 +72,11 @@ func keysMAC(exportKey []byte, ns entity.NamespaceID, seq uint64, exportKeyID, r
 	return m.Sum(nil), nil
 }
 
-func lenPrefixed(b, field []byte) []byte {
-	return append(binary.BigEndian.AppendUint32(b, uint32(len(field))), field...)
-}
-
 // decision: rows are ordered by the byte-wise order of the kind's name, then
 // ID, not by the kind byte the metadata store keys them under, so the
 // provider never needs the store's encoding of a kind. The order is part of
 // version 1's bytes; changing it is a version 2.
-func compareRows(a, b keyRow) int {
+func compareRows(a, b Row) int {
 	return cmp.Or(cmp.Compare(a.Kind, b.Kind), cmp.Compare(a.ID, b.ID))
 }
 
@@ -200,7 +187,7 @@ func parseKeysObject(b []byte, ns entity.NamespaceID) (keysObject, []byte, error
 	// length prefixes, so a count past the bytes left ends at the first
 	// length past the end.
 	for n := r.uint64(); n > 0 && r.err == nil; n-- {
-		o.rows = append(o.rows, keyRow{Kind: string(r.field()), ID: string(r.field()), State: string(r.field()), Record: bytes.Clone(r.field())})
+		o.rows = append(o.rows, Row{Kind: string(r.field()), ID: string(r.field()), State: string(r.field()), Record: bytes.Clone(r.field())})
 	}
 
 	if r.err != nil {
