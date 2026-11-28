@@ -27,8 +27,7 @@ const (
 	relistWait = 6 * time.Second
 )
 
-// clock is the one method of a clock the capability check calls: real time in
-// production; pkg/sim's TestClock satisfies it in tests.
+// clock is what the re-list waits on; pkg/sim's TestClock satisfies it.
 type clock interface {
 	After(d time.Duration) <-chan struct{}
 }
@@ -43,13 +42,11 @@ func (realClock) After(d time.Duration) <-chan struct{} {
 	return ch
 }
 
-// probe is the capability check's steps 2 to 4 (RFC 4 Appendix C.4), in the
-// check namespace ns, run once step 1 proved ch: the reads by key, the batch
-// delete and the listing, each judged into the verdict, and ch with its batch
-// set to whether step 3 found a batch delete it can trust. A call that fails
-// rather than answers, a refused credential, a 5xx or a throttle among them,
-// fails the check with the call's error as the table maps it; only a 403 to
-// step 2's get of a key never written names a feature instead.
+// probe is the capability check's steps 2 to 4 (RFC 4 Appendix C.4) in the
+// check namespace ns, run once step 1 proved ch: it returns ch with its batch
+// set as step 3 found, and the verdict. A call that fails rather than answers
+// fails the check with its error as the table maps it; only a 403 AccessDenied
+// to step 2's get of a key never written names a feature instead.
 func probe(ctx context.Context, c *Client, ns string, ch choice) (choice, verdict, error) {
 	s, err := open(c, ns, remote.Mutable, ch)
 	if err != nil {
@@ -112,7 +109,7 @@ func probeReads(ctx context.Context, s *store, v *verdict) error {
 	_, _, err = probeGet(ctx, s.c, s.prefix+"read/absent", "")
 	status, code := reply(err)
 
-	if status != http.StatusForbidden {
+	if status != http.StatusForbidden || code != "AccessDenied" {
 		if f := failure(ctx, opGet, err); f != nil {
 			return f
 		}
@@ -128,8 +125,9 @@ func probeReads(ctx context.Context, s *store, v *verdict) error {
 // and the two gone from a listing. It reports whether the store may delete in
 // batches. A batch rejected as unsupported, 501, 405 or 400 NotImplemented, is
 // recorded as batch_delete missing, and the store deletes one key per
-// request. A reply that misreports, a key refused, left out or still listed,
-// or any other refusal of the batch, makes batch_delete missing too.
+// request; any other refusal of the batch fails the check. A reply that
+// misreports, a key refused, left out or still listed, makes batch_delete
+// missing too.
 func probeBatch(ctx context.Context, s *store, v *verdict) (bool, error) {
 	keys := []string{s.prefix + "delete/a", s.prefix + "delete/b", s.prefix + "delete/absent"}
 	for _, k := range keys[:2] {
@@ -148,13 +146,14 @@ func probeBatch(ctx context.Context, s *store, v *verdict) (bool, error) {
 		Delete: &types.Delete{Objects: objs, Quiet: aws.Bool(false)},
 	}, contentMD5)
 	if err != nil {
-		if f := failure(ctx, opDelete, err); f != nil {
-			return false, f
+		if status, code := reply(err); status == http.StatusNotImplemented || status == http.StatusMethodNotAllowed ||
+			status == http.StatusBadRequest && code == "NotImplemented" {
+			v.judge(featBatchDelete, false)
+
+			return false, nil
 		}
 
-		v.judge(featBatchDelete, false)
-
-		return false, nil
+		return false, fromSDK(ctx, opDelete, recorded{}, nil, err)
 	}
 
 	ok := !slices.ContainsFunc(deleteResults(keys, out.Deleted, out.Errors), func(e error) bool { return e != nil })
@@ -195,12 +194,14 @@ func probeList(ctx context.Context, s *store, v *verdict) error {
 	// on its own listing.
 	listed := false
 	for i := 0; ; i++ {
-		page, _, _, _, err := s.list(ctx, "", len(names))
-		if !answered(err) && err != nil {
+		page, _, _, err := s.List(ctx, "", len(names))
+		if err != nil && !answered(err) {
 			return err
 		}
 
-		if listed = err == nil && slices.Equal(namesOf(page), names); listed || i == relists {
+		// An answered error is no lag: re-listing will not change it.
+		listed = err == nil && slices.Equal(namesOf(page), names)
+		if listed || err != nil || i == relists {
 			break
 		}
 
@@ -249,32 +250,25 @@ func probeList(ctx context.Context, s *store, v *verdict) error {
 
 // walkOnePerPage lists blocks/ one key per page, each page starting after the
 // last key of the one before, and reports whether the walk returned names
-// exactly, in order, each with its time, and ended within one page of them.
+// exactly, in order, and ended within one page of them; List itself refuses
+// a block without its time.
 //
-// decision: a page out of order, repeating a key, or naming a block without
-// its time fails the check as remote.ErrTransient rather than naming list,
-// since List refuses such a page as a reply it cannot trust before the walk
-// sees it. Read those pages here, from the SDK's reply, if a service is ever
-// seen sending one on every listing, which would fail its every open as
-// retryable.
+// decision: a page out of order, repeating a key or without a block's time
+// fails the check as remote.ErrTransient, which List makes of it, rather than
+// naming list. Judge such pages from the SDK's reply here if a service is seen
+// sending them, since it would fail every open as retryable.
 func walkOnePerPage(ctx context.Context, s *store, names []remote.Name) (bool, error) {
 	var got []remote.Name
 
 	after := remote.Cursor("")
 	for range len(names) + 1 {
-		page, next, done, _, err := s.list(ctx, after, 1)
+		page, next, done, err := s.List(ctx, after, 1)
 		if err != nil {
 			if answered(err) {
 				return false, nil
 			}
 
 			return false, err
-		}
-
-		for _, in := range page {
-			if in.ModTime.IsZero() {
-				return false, nil
-			}
 		}
 
 		got = append(got, namesOf(page)...)

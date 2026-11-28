@@ -56,9 +56,7 @@ type Client struct {
 	tr  *http.Transport
 	api *s3.Client
 
-	// clock is what the capability check's re-list waits on: real time in
-	// production, a test's clock set on the instance.
-	clock clock
+	clock clock // what the capability check's re-list waits on; a test sets its own
 
 	// peerClosed counts the connections the service closed: a reply carrying
 	// Connection: close, or a read that ended in EOF or a reset before the

@@ -4,10 +4,10 @@ package s3
 
 import (
 	"context"
-	"encoding/hex"
 	"errors"
 	"net/http"
-	"strings"
+	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -47,10 +47,9 @@ func probeVerdict(missing, unverified []feature) verdict {
 func checkVerdict(t *testing.T, got, want verdict) {
 	t.Helper()
 
-	states := [...]string{stateUnverified: "unverified", statePresent: "present", stateMissing: "missing"}
 	for f := range featureCount {
 		if got[f] != want[f] {
-			t.Errorf("%s is %s, want %s", f, states[got[f]], states[want[f]])
+			t.Errorf("%s is %s, want %s", f, stateNames[got[f]], stateNames[want[f]])
 		}
 	}
 }
@@ -72,10 +71,7 @@ func conditional(reqs []s3fault.Request) []s3fault.Request {
 
 // firstListKey is the key of step 4's first block, the one put again with
 // If-None-Match.
-func firstListKey(ns string) string {
-	n := remote.Name{1}
-	return ns + "blocks/" + hex.EncodeToString(n[:])
-}
+func firstListKey(ns string) string { return (&store{prefix: ns}).blockKey(remote.Name{1}) }
 
 // On LocalStack as it is every step passes, the batch is chosen and sent with
 // Content-MD5 and no SDK checksum, and the one conditional request goes to a
@@ -101,13 +97,8 @@ func TestProbePassesOnLocalStack(t *testing.T) {
 		}
 		batches++
 
-		if q.Header.Get("Content-Md5") == "" {
-			t.Errorf("DeleteObjects sent no Content-MD5")
-		}
-		for h := range q.Header {
-			if strings.HasPrefix(h, "X-Amz-Checksum-") || h == "X-Amz-Sdk-Checksum-Algorithm" {
-				t.Errorf("DeleteObjects sent %s: %q, want no checksum header but Content-MD5", h, q.Header.Get(h))
-			}
+		if h := integrityHeaders(q.Header); !slices.Equal(h, []string{"Content-Md5"}) {
+			t.Errorf("DeleteObjects sent checksum headers %v, want Content-Md5 alone", h)
 		}
 	}
 	if batches != 1 {
@@ -152,10 +143,22 @@ func TestProbeNamesEachWrongAnswer(t *testing.T) {
 		{"absent_denied", func(tr *s3fault.Transport, ns string) {
 			tr.Inject(s3fault.Rule{Op: "GetObject", KeyPrefix: ns + "read/absent"}, s3fault.Answer(http.StatusForbidden, "AccessDenied", nil))
 		}, []feature{featListBucket}, nil, true, ""},
-		// A service without the batch operation is recorded, not failed.
-		{"batch_rejected", func(tr *s3fault.Transport, _ string) {
+		// A service without the batch operation is recorded, not failed, as
+		// each of the three answers that say so.
+		{"batch_rejected_501", func(tr *s3fault.Transport, _ string) {
 			tr.Inject(s3fault.Rule{Op: "DeleteObjects"}, s3fault.Answer(http.StatusNotImplemented, "NotImplemented", nil))
 		}, []feature{featBatchDelete}, nil, false, ""},
+		{"batch_rejected_405", func(tr *s3fault.Transport, _ string) {
+			tr.Inject(s3fault.Rule{Op: "DeleteObjects"}, s3fault.Answer(http.StatusMethodNotAllowed, "MethodNotAllowed", nil))
+		}, []feature{featBatchDelete}, nil, false, ""},
+		{"batch_rejected_400", func(tr *s3fault.Transport, _ string) {
+			tr.Inject(s3fault.Rule{Op: "DeleteObjects"}, s3fault.Answer(http.StatusBadRequest, "NotImplemented", nil))
+		}, []feature{featBatchDelete}, nil, false, ""},
+		// The object's second byte flipped on every get of it: the whole get
+		// and bytes 2 to 5 come back wrong.
+		{"reads_wrong", func(tr *s3fault.Transport, ns string) {
+			tr.Inject(s3fault.Rule{Op: "GetObject", KeyPrefix: ns + "read/object"}, s3fault.FlipByte(1))
+		}, []feature{featReadAfterWrite, featRangeGet}, nil, true, ""},
 		// One key refused inside the batch, for real.
 		{"batch_key_refused", func(tr *s3fault.Transport, ns string) {
 			tr.Inject(s3fault.Rule{Op: "DeleteObjects"}, s3fault.FailBatchKey(ns+"delete/a", "AccessDenied"))
@@ -207,8 +210,8 @@ func TestProbeMeasuresConditionalPut(t *testing.T) {
 		t.Errorf("refusals %q, want none: conditional put refuses nothing", v.refusals())
 	}
 
-	if c := conditional(r.tr.Requests()); len(c) != 1 || c[0].Key != firstListKey(r.ns) {
-		t.Errorf("conditional requests %+v, want one to %s", c, firstListKey(r.ns))
+	if c := conditional(r.tr.Requests()); len(c) != 1 || c[0].Op != "PutObject" || c[0].Key != firstListKey(r.ns) {
+		t.Errorf("conditional requests %+v, want one PutObject to %s", c, firstListKey(r.ns))
 	}
 }
 
@@ -221,7 +224,7 @@ func TestProbeRelistsWithinTheBound(t *testing.T) {
 		held int
 		ok   bool
 	}{{5, true}, {6, false}} {
-		t.Run("held_"+string(rune('0'+tc.held)), func(t *testing.T) {
+		t.Run("held_"+strconv.Itoa(tc.held), func(t *testing.T) {
 			r := newCheckRig(t)
 			// Under the zero rule: the effect learns its keys from the puts.
 			r.tr.Inject(s3fault.Rule{}, s3fault.HoldNewKeys(tc.held))
@@ -237,7 +240,7 @@ func TestProbeRelistsWithinTheBound(t *testing.T) {
 			armed := clk.Armed(relistWait)
 
 			go func() {
-				_, v, err := probe(context.Background(), r.c, r.ns, lsChoice)
+				_, v, err := probe(t.Context(), r.c, r.ns, lsChoice)
 				done <- result{v, err}
 			}()
 
@@ -324,11 +327,22 @@ func TestProbeFailsOnAFailedCall(t *testing.T) {
 			s3fault.Answer(http.StatusForbidden, "AccessDenied", nil), remote.ErrDenied},
 		{"batch_unavailable", func(string) s3fault.Rule { return s3fault.Rule{Op: "DeleteObjects"} },
 			s3fault.Answer(http.StatusServiceUnavailable, "ServiceUnavailable", nil), remote.ErrTransient},
+		{"batch_malformed", func(string) s3fault.Rule { return s3fault.Rule{Op: "DeleteObjects"} },
+			s3fault.Answer(http.StatusBadRequest, "MalformedXML", nil), remote.ErrInvalid},
+		// The batch rejected first, so step 3 lists nothing and the
+		// throttle lands on step 4's listing.
 		{"list_throttled", func(string) s3fault.Rule { return s3fault.Rule{Op: "ListObjectsV2"} },
 			s3fault.Answer(http.StatusServiceUnavailable, "SlowDown", nil), remote.ErrThrottled},
+		// A 403 to the never-written key with another code is a refused
+		// credential, not the list right missing.
+		{"absent_signature", func(ns string) s3fault.Rule { return s3fault.Rule{Op: "GetObject", KeyPrefix: ns + "read/absent"} },
+			s3fault.Answer(http.StatusForbidden, "SignatureDoesNotMatch", nil), remote.ErrDenied},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newCheckRig(t)
+			if tc.name == "list_throttled" {
+				r.tr.Inject(s3fault.Rule{Op: "DeleteObjects"}, s3fault.Answer(http.StatusNotImplemented, "NotImplemented", nil))
+			}
 			r.tr.Inject(tc.rule(r.ns), tc.eff)
 
 			ch, v, err := probe(t.Context(), r.c, r.ns, lsChoice)

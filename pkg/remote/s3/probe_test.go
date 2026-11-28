@@ -9,7 +9,7 @@ import (
 )
 
 // Steps 2 to 4 run only once step 1 proved a mechanism: on a choice that
-// proves nothing the probe refuses before its first request.
+// proves nothing the store's put refuses the probe's first put, unsent.
 func TestProbeRefusesAnUnprovedChoice(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	srv, n := counting(t, md5ETag)
