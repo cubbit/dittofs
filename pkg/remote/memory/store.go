@@ -39,6 +39,7 @@ type Store struct {
 type namespace struct {
 	mu      sync.Mutex
 	objects map[string]object // by key relative to the prefix
+	load    load
 }
 
 // object is one stored object. Its body is never changed once stored: a put
@@ -92,6 +93,8 @@ const readChunk = 32 << 10
 // cancelled ctx or a failing reader is returned as itself. In
 // remote.ChecksumNone mode sum is not read.
 func (s *Store) Put(ctx context.Context, name remote.Name, body io.Reader, size int64, sum []byte) error {
+	defer s.enter("put", name)()
+
 	if size < 0 {
 		return fmt.Errorf("memory: put of %d bytes: %w", size, remote.ErrInvalid)
 	}
@@ -175,7 +178,16 @@ func (s *Store) hash() hash.Hash {
 // remote.ChecksumNone, as RFC 4 §4.1 allows when the service reports none), so
 // a raw copy's test cannot read one here. Keep the sum the put was checked
 // against and report it when a raw copy's test needs one without a service.
-func (s *Store) Get(ctx context.Context, name remote.Name, r remote.Range) (io.ReadCloser, remote.StoredSum, error) {
+func (s *Store) Get(ctx context.Context, name remote.Name, r remote.Range) (_ io.ReadCloser, _ remote.StoredSum, err error) {
+	// A get is in flight until its reader is closed; one that fails, until it
+	// returns.
+	done := s.enter("get", name)
+	defer func() {
+		if err != nil {
+			done()
+		}
+	}()
+
 	if err := s.open("Get"); err != nil {
 		return nil, remote.StoredSum{}, err
 	}
@@ -202,7 +214,7 @@ func (s *Store) Get(ctx context.Context, name remote.Name, r remote.Range) (io.R
 		b = b[r.Off : r.Off+r.Len]
 	}
 
-	return io.NopCloser(bytes.NewReader(bytes.Clone(b))), remote.StoredSum{}, nil
+	return &reader{Reader: bytes.NewReader(bytes.Clone(b)), done: done}, remote.StoredSum{}, nil
 }
 
 // Close marks the store closed: every later call but Close is refused with

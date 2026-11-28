@@ -16,6 +16,8 @@ import (
 // name repeated in it too, succeeds whole. A cancelled ctx is every name's
 // result, and nothing is deleted.
 func (s *Store) Delete(ctx context.Context, names []remote.Name) []error {
+	defer s.enter("delete", remote.Name{})()
+
 	errs := make([]error, len(names))
 
 	err := s.open("Delete")
@@ -52,6 +54,8 @@ func (s *Store) Delete(ctx context.Context, names []remote.Name) []error {
 // after the cursor, O(k log k) per page over k objects. Keep a sorted index if a test lists over enough blocks
 // for its pages to show in its run time.
 func (s *Store) List(ctx context.Context, after remote.Cursor, n int) ([]remote.Info, remote.Cursor, bool, error) {
+	defer s.enter("list", remote.Name{})()
+
 	if err := s.open("List"); err != nil {
 		return nil, after, false, err
 	}
@@ -94,10 +98,12 @@ func (s *Store) List(ctx context.Context, after remote.Cursor, n int) ([]remote.
 
 		name, ok := parseName(k[len(blockPrefix):])
 		if !ok {
-			// decision: a key under blocks/ that is not a name is skipped with
-			// no log line and no series, since the node serves this store only
-			// in tests, which have no operator to read either. Withdraw this if
-			// the node ever serves the in-memory store outside tests.
+			// decision: a key under blocks/ that is not a name is skipped and
+			// counted in the load record alone, with no log line and no
+			// series, since the node serves this store only in tests, which
+			// have no operator to read either. Withdraw this if the node ever
+			// serves the in-memory store outside tests.
+			s.ns.load.foreign++
 			continue
 		}
 

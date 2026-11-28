@@ -18,6 +18,8 @@ const healthKey = "control/health"
 // no health status: each call returns its own probe's outcome. A direction
 // outside the two is remote.ErrInvalid.
 func (s *Store) Health(ctx context.Context, d remote.Direction) error {
+	defer s.enter("health", remote.Name{})()
+
 	if err := s.open("Health"); err != nil {
 		return err
 	}

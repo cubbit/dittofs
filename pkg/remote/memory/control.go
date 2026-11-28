@@ -28,6 +28,8 @@ func controlKey(role remote.Role) (string, error) {
 // PutControl stores body as role's object, replacing the whole object there.
 // A body over 256 KiB, or a role outside the set, is remote.ErrInvalid.
 func (s *Store) PutControl(ctx context.Context, role remote.Role, body []byte) error {
+	defer s.enter("put_control", remote.Name{})()
+
 	if err := s.open("PutControl"); err != nil {
 		return err
 	}
@@ -56,6 +58,8 @@ func (s *Store) PutControl(ctx context.Context, role remote.Role, body []byte) e
 // store keeps no versions. An absent object is remote.ErrNotFound; a role
 // outside the set is remote.ErrInvalid.
 func (s *Store) GetControl(ctx context.Context, role remote.Role) ([]byte, remote.Version, error) {
+	defer s.enter("get_control", remote.Name{})()
+
 	if err := s.open("GetControl"); err != nil {
 		return nil, "", err
 	}
