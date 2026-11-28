@@ -11,7 +11,9 @@ import (
 // RFC 0 §1.2): the root, the contract, its own settings value and the entity
 // package; the settings value nothing; the chunker the settings value alone;
 // carve and the fold the root, with the settings value it brings, and the
-// entity package with the libraries it imports, BLAKE3 among them. Never another component's implementation, never
+// entity package with the libraries it imports, BLAKE3 among them; the settings
+// section carve and what it reaches, never a settings package, and no carver
+// package the section. Never another component's implementation, never
 // v1's carver. Besides the package it tests, a test may reach the
 // architecture tests' support and carvetest, the carver's test components,
 // which no production row admits; carvetest reaches the standard library
@@ -23,6 +25,7 @@ var table = []archtest.Row{
 	{Pkg: "pkg/carver/carve", Reach: []string{"pkg/carver", "pkg/carver/internal/params", "pkg/metadata/entity"}, Libs: archtest.EntityLibs(), Tests: carverTests},
 	{Pkg: "pkg/carver/internal/chunker", Reach: []string{"pkg/carver/internal/params"}, Tests: chunkerTests, TestLibs: archtest.EntityLibs()},
 	{Pkg: "pkg/carver/assembler", Reach: []string{"pkg/carver", "pkg/carver/internal/params", "pkg/metadata/entity"}, Libs: archtest.EntityLibs(), Tests: carverTests},
+	{Pkg: "pkg/carver/section", Reach: []string{"pkg/carver", "pkg/carver/carve", "pkg/carver/internal/params", "pkg/metadata/entity"}, Libs: archtest.EntityLibs(), Tests: carverTests},
 	{Pkg: "pkg/carver/internal/carvetest", Tests: []string{"internal/prof"}, TestLibs: blake3Libs},
 }
 
@@ -47,7 +50,7 @@ func TestImportRule(t *testing.T) {
 	}
 
 	for _, g := range graphs {
-		for _, want := range []string{"pkg/carver", "pkg/carver [test]", "pkg/carver/internal/params", "pkg/carver/carve", "pkg/carver/internal/chunker", "pkg/carver/internal/chunker [test]", "pkg/carver/assembler", "pkg/carver/internal/carvetest", "pkg/carver/internal/carvetest [test]"} {
+		for _, want := range []string{"pkg/carver", "pkg/carver [test]", "pkg/carver/internal/params", "pkg/carver/carve", "pkg/carver/internal/chunker", "pkg/carver/internal/chunker [test]", "pkg/carver/assembler", "pkg/carver/section", "pkg/carver/section_test [test]", "pkg/carver/internal/carvetest", "pkg/carver/internal/carvetest [test]"} {
 			if !slices.Contains(g.Roots, archtest.Module+want) {
 				t.Fatalf("the walk listed %q, not %s", g.Roots, want)
 			}
@@ -109,7 +112,7 @@ func TestImportRuleWalksTestsTransitively(t *testing.T) {
 		"pkg/carver/carve_test [test] reaches example.com/lib through pkg/carver/carve [test] -> pkg/carver -> pkg/metadata/entity, which row pkg/carver/carve does not allow",
 		"pkg/carver/carve_test [test] reaches pkg/block/carver, which row pkg/carver/carve does not allow",
 		"pkg/carver/carve_test [test] reaches pkg/metadata/kvstore through pkg/carver/carve [test], which row pkg/carver/carve does not allow",
-		"pkg/carver/section has no row",
+		"pkg/carver/stray has no row",
 	}
 	if got := archtest.Check(table, graphs...); !slices.Equal(got, want) {
 		t.Errorf("violations over the planted module %q, want %q", got, want)
@@ -140,6 +143,9 @@ func TestImportRuleRefuses(t *testing.T) {
 		{"carve importing the chunker's settings section", m("pkg/carver/carve"), map[string][]string{
 			m("pkg/carver/carve"): {m("pkg/carver"), m("pkg/carver/section")},
 		}, []string{"pkg/carver/carve reaches pkg/carver/section, which row pkg/carver/carve does not allow"}},
+		{"the settings section importing the settings package", m("pkg/carver/section"), map[string][]string{
+			m("pkg/carver/section"): {m("pkg/carver/carve"), m("pkg/settings")},
+		}, []string{"pkg/carver/section reaches pkg/settings, which row pkg/carver/section does not allow"}},
 		{"a test importing a store", m("pkg/carver/carve [test]"), map[string][]string{
 			m("pkg/carver/carve [test]"): {m("pkg/carver"), m("internal/archtest"), m("pkg/metadata/kvstore")},
 		}, []string{"pkg/carver/carve [test] reaches pkg/metadata/kvstore, which row pkg/carver/carve does not allow"}},
