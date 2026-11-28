@@ -132,6 +132,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 		// protocol's wiring, since no reply could carry the compound's
 		// status: the connection closes naming the row (RFC 20 §4.7).
 		release()
+		p.st.Replay.Drop(h)
 		p.drop(tr, nil, fmt.Errorf("%w: the %s row's Decode sets no EncodeHead", errWiring, row.Name))
 		return
 	}
@@ -254,6 +255,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 	if encErr := p.st.Header.Encode(h, 0, reply); encErr != nil {
 		reply.Release()
 		release()
+		p.st.Replay.Drop(h)
 		p.drop(tr, nil, stageFault(encErr))
 		return
 	}
@@ -261,6 +263,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 	if encErr := inv.EncodeHead(reply, 0, 0, v); encErr != nil {
 		reply.Release()
 		release()
+		p.st.Replay.Drop(h)
 		p.drop(tr, nil, stageFault(encErr))
 		return
 	}
@@ -271,9 +274,15 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 		count  int
 		last   error
 		failed bool
+		// a member that ran has a Cacheable row, whatever the members after
+		// it answered
+		ranCacheable bool
 	)
 	for _, m := range ms {
-		s, send, notFailure, merr := p.member(tr, mts, mt.Errors, m, r, v, drained, &sum)
+		s, send, notFailure, ran, merr := p.member(tr, mts, mt.Errors, m, r, v, drained, &sum)
+		if ran && m.op.Cacheable {
+			ranCacheable = true
+		}
 		if !send {
 			p.unanswered(tr, h, tb, reply, merr, release)
 			return
@@ -281,6 +290,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 		if encErr := p.result(mt, reply, m.op.Code, s, m.inv.Encode, v); encErr != nil {
 			reply.Release()
 			release()
+			p.st.Replay.Drop(h)
 			p.drop(tr, nil, stageFault(encErr))
 			return
 		}
@@ -310,6 +320,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 		if encErr := p.result(mt, reply, code, status, nil, v); encErr != nil {
 			reply.Release()
 			release()
+			p.st.Replay.Drop(h)
 			p.drop(tr, nil, stageFault(encErr))
 			return
 		}
@@ -320,12 +331,18 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 	if encErr := inv.EncodeHead(again, status, count, v); encErr != nil || len(again.B) != headLen {
 		reply.Release()
 		release()
+		p.st.Replay.Drop(h)
 		p.drop(tr, nil, fmt.Errorf("%w: a compound's head of %d bytes rewritten as %d (%v)", errWiring, headLen, len(again.B), encErr))
 		return
 	}
 	release()
-	if row.Cacheable {
+	// The compound row's own Cacheable column is not read: the reply is kept
+	// where a member that ran has a Cacheable row, and never otherwise, so a
+	// compound of reads alone cannot turn the cache over (§4.7).
+	if ranCacheable {
 		p.st.Replay.Store(h, reply)
+	} else {
+		p.st.Replay.Drop(h)
 	}
 	var key uint64
 	if tb.Holds {
@@ -345,9 +362,16 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 // request's context, whatever the member answered, so the compound is
 // dropped with no member after it run (RFC 20 §6.5). The close's own cancel
 // is mapped as no error. notFailure is a NotFailure row's status, past which
-// the compound runs its next member. Its runs of route, resolve_ids and
-// map_error are added to sum.
-func (p *pipeline) member(tr *track, mts *tableSeries, errs *ErrorTable, m member, r *Request, v Version, drained error, sum *sums) (s Status, send, notFailure bool, err error) {
+// the compound runs its next member. ran says the member ran as the
+// duplicate-request cache counts it: its handler was called and answered no
+// error, or one its table maps to a status other than the fault, ErrDelay
+// and a refusal before the handler never counted among them (§4.7). Its
+// runs of route, resolve_ids and map_error are added to sum.
+func (p *pipeline) member(
+	tr *track, mts *tableSeries, errs *ErrorTable, m member,
+	r *Request, v Version, drained error, sum *sums,
+) (s Status, send, notFailure, ran bool, err error) {
+	var called bool
 	err = p.check(m.op, r)
 	sum.add(stageRoute, p.since(tr))
 	if err != nil {
@@ -368,6 +392,7 @@ func (p *pipeline) member(tr *track, mts *tableSeries, errs *ErrorTable, m membe
 	if err == nil {
 		r.invoke = m.inv.Call
 		tr.ran = true
+		called = true
 		err = mts.chains[m.op.Code](tr.ctx, r)
 		// The hinge marks the call's start, which ends resolve_ids, and its
 		// end, from which map_error is timed (§10.1).
@@ -382,8 +407,12 @@ func (p *pipeline) member(tr *track, mts *tableSeries, errs *ErrorTable, m membe
 	default:
 		s, send, notFailure = p.mapped(tr, errs, err, m.op, v, true)
 	}
+
+	ran = called && !errors.Is(err, vfs.ErrDelay) && (err == nil || s != errs.fault)
+
 	sum.add(stageMapError, p.since(tr))
-	return s, send && tr.ctx.Err() == nil, notFailure, err
+
+	return s, send && tr.ctx.Err() == nil, notFailure, ran, err
 }
 
 // result encodes one member's result into reply: its head, then, where the

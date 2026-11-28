@@ -30,6 +30,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/cubbit/dittofs/pkg/resources"
 	"github.com/cubbit/dittofs/pkg/vfs"
+	"github.com/cubbit/dittofs/pkg/vfs/vfstest/memory"
 )
 
 var peer = netip.MustParseAddr("192.0.2.1")
@@ -1057,40 +1058,96 @@ func TestAnUnmappedErrorIsAnsweredTheFaultAndCounted(t *testing.T) {
 // refusal is a reservation's ErrDelay at its deadline, and logs nothing at
 // error (RFC 20 §10.1).
 func TestAWaitTheCloseEndsIsNoError(t *testing.T) {
-	setup := []testproto.Msg{
-		{Op: testproto.OpNegotiate, Version: 1, ID: 1},
-		{Op: testproto.OpSession, Version: 1, ID: 2, Session: 7},
-		{Op: testproto.OpTree, Version: 1, ID: 3, Session: 7, Tree: 1},
-	}
-	// A Create with no filehandle is refused, and its reply stored for its
-	// sequence: the same Create again is answered from the replay cache.
-	create := testproto.Msg{Op: testproto.OpCreate, Version: 1, ID: 4, Session: 7, Tree: 1, Seq: 1, Name: "f"}
 	for _, c := range []struct {
-		name  string
-		first []testproto.Msg // served and answered before the pool fills
-		waits testproto.Msg   // served with the pool full, then the close
+		name string
+		// records served and answered, every reply ok, first
+		first func(root vfs.Handle) [][]testproto.Msg
+		// served with the pool full, its wait then ended by the close
+		waits testproto.Msg
 		fill  func(s *seam, copies *resources.BufPool) func()
 	}{
-		{"the reply reservation", nil, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 5},
-			func(s *seam, _ *resources.BufPool) func() { return s.full() }},
-		{"a replay copy", append(setup, create), create,
+		{
+			"the reply reservation",
+			func(vfs.Handle) [][]testproto.Msg {
+				return nil
+			},
+			testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 5},
+			func(s *seam, _ *resources.BufPool) func() {
+				return s.full()
+			},
+		},
+		// The sequenced Create of the chain below ran, so its reply is cached
+		// over the copies' own pool: sent again alone, that pool full, its
+		// lookup waits for the copy's reservation, which the close ends (§4.7).
+		{
+			"a replay copy",
+			func(root vfs.Handle) [][]testproto.Msg {
+				return [][]testproto.Msg{
+					{{Op: testproto.OpNegotiate, Version: 1, ID: 1}},
+					{{Op: testproto.OpSession, Version: 1, ID: 2, Session: 7}},
+					{{Op: testproto.OpTree, Version: 1, ID: 3, Session: 7, Tree: 1}},
+					{
+						{
+							Op: testproto.OpPutFH, Version: 1, ID: 4,
+							Session: 7, Tree: 1, Handle: root,
+						},
+						{
+							Op: testproto.OpCreate, Version: 1, ID: 5,
+							Session: inherited, Tree: 1, Name: "f", Related: true, Seq: 1,
+						},
+					},
+				}
+			},
+			testproto.Msg{
+				Op: testproto.OpCreate, Version: 1, ID: 6,
+				Session: 7, Tree: 1, Seq: 1, Name: "f",
+			},
 			func(s *seam, copies *resources.BufPool) func() {
 				held, ok := copies.TryGet(peer, 0)
+
 				if !ok {
 					t.Fatal("the replay copies' budget is not free to fill")
 				}
+
 				return held.Release
-			}},
+			},
+		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				m, logs := metrics.New("v", "c"), &logSink{}
 				copies := resources.NewWaitBudget("reply", smallCharge)
-				proto := testproto.New(adapter.Deps{Budgets: &resources.Budgets{Reply: copies}})
+				svc := memory.New(t)
+				share := vfs.ShareRef{Name: svc.Store.Share.Name}
+
+				root, _, err := svc.Root(context.Background(), svc.Admin(), share)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				proto := testproto.New(
+					adapter.Deps{VFS: svc, Budgets: &resources.Budgets{Reply: copies}},
+				).WithCall(svc.Admin())
 				s := newSeamWith(t, proto, smallCharge, adapter.Deps{Metrics: m, Logger: logs.logger()})
-				for _, msg := range c.first {
-					s.serve(msg)
-					s.read()
+
+				for _, rec := range c.first(root) {
+					s.serve(rec...)
+
+					for range rec {
+						replies, err := s.client.Recv()
+						if err != nil {
+							t.Fatalf("reading the record's replies: %v", err)
+						}
+
+						for _, r := range replies {
+							if r.Status != testproto.StatusOK {
+								t.Fatalf(
+									"the message of ID %d is answered %d, want ok",
+									r.ID, r.Status,
+								)
+							}
+						}
+					}
 				}
 				synctest.Wait() // the last reply's buffer is given back after its send
 				free := c.fill(s, resources.NewBufPool(copies))
@@ -1349,6 +1406,8 @@ func (c cachedReplay) Lookup(ctx context.Context, _ core.Header) (*resources.Buf
 
 func (cachedReplay) Store(core.Header, *resources.Buf) {}
 
+func (cachedReplay) Drop(core.Header) {}
+
 // On stages and a table of different labels, a header the codec refuses and
 // a replay hit count under the stages', and a routed request's in-flight
 // count moves to its table's at Route, the stages' back at zero.
@@ -1534,8 +1593,19 @@ func TestEachStageARequestRunsIsObservedOnce(t *testing.T) {
 		{"an Echo over Bare", p.Bare(), echo, slices.DeleteFunc(slices.Clone(order), func(st string) bool {
 			return st == "unwrap" || st == "admit" || st == "replay_check"
 		})},
-		{"a header the codec refuses", edited{p, func(st *core.Stages) { st.Header = faultyHeader{st.Header, errors.New("a bad field")} }}, echo,
-			slices.Concat(upTo("decode_header"), slices.DeleteFunc(slices.Clone(answer), func(st string) bool { return st == "wrap" }))},
+		{
+			"a header the codec refuses",
+			edited{p, func(st *core.Stages) {
+				st.Header = faultyHeader{st.Header, errors.New("a bad field")}
+			}},
+			echo,
+			slices.Concat(upTo("decode_header"), slices.DeleteFunc(
+				slices.Clone(answer),
+				func(st string) bool {
+					return st == "wrap"
+				},
+			)),
+		},
 		{"refused at admit", p, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1, Credits: 5}, slices.Concat(upTo("admit"), answer)},
 		{"refused at route", p, testproto.Msg{Op: 99, Version: 1, ID: 1}, slices.Concat(upTo("route"), answer)},
 		{"refused at resolve_ids", wrapRows(p, func(inv core.Invocation) core.Invocation {

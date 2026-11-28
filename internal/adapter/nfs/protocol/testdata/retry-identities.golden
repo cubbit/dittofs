@@ -1,0 +1,26 @@
+# A call's bytes and the retry identity they translate to, one vector per
+# pair below. The line holds the fields the key is built from, never the hash:
+# its seed is chosen per process, so no run agrees with any record of it.
+# Numbers are hex with the 0x prefix, the address apart.
+
+# an NFSv3 NULL under AUTH_SYS, a machine name, a uid, a gid and two groups
+addr 127.0.0.1 xid 0x11223344 prog 0x186a3 vers 3 proc 0 flavour 1 uid 0x3e8 gid 0x64 groups 0x4 0x18 tls 0
+11223344 00000000 00000002 000186a3 00000003 00000000 00000001 00000020
+00000000 00000004 686f7374 000003e8 00000064 00000002 00000004 00000018
+00000000 00000000 aaaa1111 bbbb2222
+
+# an NFSv3 NULL under AUTH_SYS that claims nothing: no name, uid, gid, groups
+addr 127.0.0.1 xid 0x2a2a2a2a prog 0x186a3 vers 3 proc 0 flavour 1 uid 0 gid 0 groups tls 0
+2a2a2a2a 00000000 00000002 000186a3 00000003 00000000 00000001 00000014
+00000000 00000000 00000000 00000000 00000000 00000000 00000000
+
+# an NFSv3 call under AUTH_NONE, which claims nothing either
+addr 127.0.0.2 xid 0x51515151 prog 0x186a3 vers 3 proc 7 flavour 0 uid 0 gid 0 groups tls 0
+51515151 00000000 00000002 000186a3 00000003 00000007 00000000 00000000
+00000000 00000000
+
+# an NFSv4 COMPOUND of minor version 0, one member, under AUTH_SYS
+addr 127.0.0.2 xid 0x61616161 prog 0x186a3 vers 4 proc 1 flavour 1 uid 7 gid 8 groups 0xa 0x14 0x1e tls 0
+61616161 00000000 00000002 000186a3 00000004 00000001 00000001 00000028
+00000000 00000005 636f6272 61000000 00000007 00000008 00000003 0000000a
+00000014 0000001e 00000000 00000000 00000001 54000000 00000000 00000001

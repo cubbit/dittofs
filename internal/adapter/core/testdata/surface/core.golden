@@ -218,6 +218,8 @@ type ReplayCache interface {
 	Lookup(ctx context.Context, h Header) (*resources.Buf, error)
 
 	Store(h Header, reply *resources.Buf)
+
+	Drop(h Header)
 }
 
 type Request struct {

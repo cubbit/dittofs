@@ -352,6 +352,9 @@ func (r *replay) Store(h core.Header, reply *resources.Buf) {
 	r.m[replayKey{hd.session(), hd.seq()}] = bytes.Clone(reply.B)
 }
 
+// Drop does nothing: this cache keeps no in-progress mark.
+func (r *replay) Drop(core.Header) {}
+
 // forget drops every reply cached under session: a later session of the same
 // ID starts with none.
 func (r *replay) forget(session uint32) {

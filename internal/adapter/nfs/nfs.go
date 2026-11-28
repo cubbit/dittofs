@@ -41,7 +41,7 @@ func New(d adapter.Deps, s settings.NFS) (*core.Server, error) {
 		Services: []string{"nfs", "mount", "nlm", "nsm"},
 		Network:  "tcp",
 		Port:     s.Port,
-		Protocol: protocol.New(tables(d)),
+		Protocol: protocol.New(tables(d), d.Budgets),
 	})
 }
 

@@ -283,14 +283,18 @@ type link struct {
 	ctx    context.Context
 	remote netip.Addr
 	set    settings.Settings // nil: none, so no operation is switched off
-	record int               // the protocol's record cap, Framer.MaxRecord's bytes: a chain's record and a compound's reply stay within it
+	// the protocol's record cap, Framer.MaxRecord's bytes: a chain's record
+	// and a compound's reply stay within it
+	record int
 	out    func(msg *resources.Buf, lo, hi, before uint64) error
 	close  func(err error)
 	// closeAfterSent is close, the records already handed to out sent
 	// first: a chain's bad step's (§4.7).
 	closeAfterSent func(err error)
 	idle           func() // called at each moment nothing runs any more
-	turn           func() // called when a request starts or ends, under the pipeline's mutex, so a connection's idle deadline knows its arm was superseded
+	// called when a request starts or ends, under the pipeline's mutex, so
+	// a connection's idle deadline knows its arm was superseded
+	turn func()
 	// open starts the decode of a header, first for a call's first header, and
 	// shut ends it, returning the TLS upgrade that decode asked for, nil for
 	// none; outUpgrade queues the reply that is the last message sent in
@@ -317,6 +321,7 @@ func (passSecurity) Wrap(Header, *resources.Buf) error                          
 
 func (noReplay) Lookup(context.Context, Header) (*resources.Buf, error) { return nil, nil }
 func (noReplay) Store(Header, *resources.Buf)                           {}
+func (noReplay) Drop(Header)                                            {}
 
 func (noHold) Key(Header) uint64                                    { return 1 << 63 }
 func (noHold) Interim(Header, bool, []Header, *resources.Buf) error { return errNoHold }
@@ -818,6 +823,12 @@ func (alone) resume(answer func()) { answer() }
 func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Request, release func(), a answerer) (*Request, bool) {
 	ctx := tr.ctx
 	cached, err := a.lookup(tr, h)
+	// The lookup below marked this call in its own miss and only then; a hit
+	// and a refusal left it alone. Only the request whose miss made the mark
+	// may clear it, so a copy refused while its call still runs cannot delete
+	// the running call's mark, which would let the next copy rerun a call
+	// the cache holds (§4.7).
+	tr.marked = cached == nil && err == nil
 	p.lap(tr, stageReplayCheck)
 	if cached != nil {
 		tr.label.replayHit()
@@ -859,6 +870,7 @@ func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Reques
 		}
 		if serr != nil {
 			release()
+			p.st.Replay.Drop(h)
 			p.drop(tr, nil, serr)
 			return nil, false
 		}
@@ -926,11 +938,16 @@ func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Reques
 	}
 	if a.halted() {
 		// Its chain stopped while it looked up or reserved, its connection
-		// closed: it neither calls nor answers.
+		// closed: it neither calls nor answers, and clears no mark but its
+		// own, which a lookup that found its call still running made none of.
 		if reply != nil {
 			reply.Release()
 		}
 		release()
+
+		if tr.marked {
+			p.st.Replay.Drop(h)
+		}
 		p.end(tr, false, 0, 0, nil)
 		return r, false
 	}
@@ -1007,10 +1024,21 @@ func (p *pipeline) resolve(tr *track, r *Request, op *Op, inv Invocation, draini
 	return err
 }
 
+// storedReply says a single call's reply is one the duplicate-request cache
+// keeps: its row is Cacheable and the call ran, its handler called and
+// answered no error, or one its table maps to a status other than the fault;
+// ErrDelay does not count, and neither does a refusal before the handler,
+// whose handler was never called (§4.7).
+func storedReply(tr *track, op *Op, err error, errs *ErrorTable, s Status) bool {
+	return op != nil && op.Cacheable && tr.ran &&
+		!errors.Is(err, vfs.ErrDelay) && (err == nil || s != errs.fault)
+}
+
 // finish answers a request whose call, or refusal, gave err: its status
 // mapped by errs, encoded into reply or, with none reserved, a status's
-// buffer, stored where its row is cacheable, and handed to a; or, for a
-// NoReply row, a's unanswered. A request pd says is pending is answered
+// buffer, stored where it ran on a Cacheable row, else dropped from the
+// cache, and handed to a; or, for a NoReply row, a's unanswered.
+// A request pd says is pending is answered
 // under Final's header. A request whose context the connection's close
 // cancelled is dropped instead: its reservations released, nothing encoded,
 // and its span ended unsent (§3.1, §6.5). Its error is still mapped, unless
@@ -1039,6 +1067,11 @@ func (p *pipeline) finish(tr *track, h Header, tb *OpTable, errs *ErrorTable, op
 			reply.Release()
 		}
 		release()
+
+		if tr.marked {
+			p.st.Replay.Drop(h)
+		}
+
 		p.end(tr, false, 0, 0, err)
 		return
 	}
@@ -1049,6 +1082,11 @@ func (p *pipeline) finish(tr *track, h Header, tb *OpTable, errs *ErrorTable, op
 	if reply == nil {
 		if reply = a.status(ctx, p.st.Header.ReplyLen(h)); reply == nil {
 			release()
+
+			if tr.marked {
+				p.st.Replay.Drop(h)
+			}
+
 			p.end(tr, false, 0, 0, err)
 			return
 		}
@@ -1061,13 +1099,23 @@ func (p *pipeline) finish(tr *track, h Header, tb *OpTable, errs *ErrorTable, op
 	if encErr := p.encode(eh, s, reply, inv); encErr != nil {
 		reply.Release()
 		release()
+
+		if tr.marked {
+			p.st.Replay.Drop(h)
+		}
+
 		p.drop(tr, nil, stageFault(encErr))
 		return
 	}
 	p.lap(tr, stageEncode)
 	release()
-	if op != nil && op.Cacheable {
+
+	if storedReply(tr, op, err, errs, s) {
 		p.st.Replay.Store(h, reply)
+	} else if tr.marked {
+		// The else-arm of a stored reply clears this request's own mark,
+		// which a request the replay check refused never made (§4.7).
+		p.st.Replay.Drop(h)
 	}
 	var key uint64
 	if tb != nil && tb.Holds {
@@ -1104,6 +1152,7 @@ type track struct {
 	version   Version      // the version Route accepted
 	versioned bool
 	cached    bool // a replay hit, whose copy's status the pipeline never reads
+	marked    bool // its run itself made the cache's mark, so only it may clear it
 	ran       bool // the service's call started, so its result is the span's
 	unmapped  bool // no row mapped its error, so its result is unmapped (§4.5)
 	notLast   bool // refused ErrNotLast in place of a held error, its result that error (§4.7)
@@ -1315,8 +1364,14 @@ func (p *pipeline) mapped(tr *track, errs *ErrorTable, err error, op *Op, v Vers
 }
 
 // unanswered ends a request refused with a NoReply row, err: no final
-// reply, and where tb holds, an interim in reply's place.
+// reply, and where tb holds, an interim in reply's place. Nothing is
+// stored, so its own mark, the one its miss made, is dropped: a request the
+// replay check refused while its call still runs made none, and clearing
+// that call's mark would free its next copy to rerun it (§4.7).
 func (p *pipeline) unanswered(tr *track, h Header, tb *OpTable, reply *resources.Buf, err error, release func()) {
+	if tr.marked {
+		p.st.Replay.Drop(h)
+	}
 	if tb != nil && tb.Holds {
 		p.interim(tr.ctx, h, reply)
 	} else if reply != nil {

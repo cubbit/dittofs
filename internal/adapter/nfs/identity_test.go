@@ -91,7 +91,7 @@ func recording(t *testing.T) (*recorder, netip.AddrPort) {
 			"mount",
 			"nlm",
 			"nsm",
-		}, Network: "tcp", Protocol: protocol.New(ts),
+		}, Network: "tcp", Protocol: protocol.New(ts, d.Budgets),
 	})
 	if err != nil {
 		t.Fatal(err)

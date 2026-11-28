@@ -99,7 +99,7 @@ var errRefused = errors.New("refused")
 // call's cookie ahead of its stat.
 func TestRowLaysOutTheStatusAsTheStage(t *testing.T) {
 	rn := adaptertest.NewRunner(t)
-	stg := protocol.New(protocol.Tables{}).NewConn(nil).Header
+	stg := protocol.New(protocol.Tables{}, nil).NewConn(nil).Header
 	var args resources.Buf // nlm4_lockargs's cookie, "abcd", which an ACCESS4args reads as its one word
 	args.B = append(binary.BigEndian.AppendUint32(nil, 4), "abcd"...)
 	for _, c := range []struct {
