@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -12,10 +13,12 @@ import (
 )
 
 // chain is a built transform.Chain: the configured transforms in stage order,
-// and the store's decode set.
+// the store's decode set, and the provider Pin reads current material from.
 type chain struct {
 	decode *decodeSet
 	steps  []transform.Transform // the configured transforms, in stage order
+	kinds  [][]string            // each step's Kinds, read once at build
+	keys   keys.Provider
 }
 
 var _ transform.Chain = (*chain)(nil)
@@ -111,7 +114,7 @@ func (r *registry) assemble(ctx context.Context, cfg []transform.Config, m keys.
 				"so compressed sizes would leak content to a writer who places data beside it (RFC 5 Appendix A)", cfg[0].Name, cfg[1].Name)
 		}
 	}
-	steps := make([]transform.Transform, len(cfg))
+	steps, kinds := make([]transform.Transform, len(cfg)), make([][]string, len(cfg))
 	for i, c := range cfg {
 		t, err := fs[i](ctx, c.Settings, m)
 		if err != nil {
@@ -129,9 +132,15 @@ func (r *registry) assemble(ctx context.Context, cfg []transform.Config, m keys.
 			return nil, c.Name, fmt.Errorf("chain: transform %q built from its settings reports ID %#04x stage %d, not its registered ID %#04x stage %d",
 				c.Name, t.ID(), t.Stage(), d.ID(), d.Stage())
 		}
-		steps[i] = t
+		// The chain ID counts a step's materials in one byte, and a kind
+		// listed twice would be counted twice.
+		k := slices.Clone(t.Kinds())
+		if len(k) > math.MaxUint8 || len(slices.Compact(slices.Sorted(slices.Values(k)))) != len(k) {
+			return nil, c.Name, fmt.Errorf("chain: transform %q declares %d material kinds, more than 255 or one twice", c.Name, len(k))
+		}
+		steps[i], kinds[i] = t, k
 	}
-	return &chain{decode: set, steps: steps}, "", nil
+	return &chain{decode: set, steps: steps, kinds: kinds, keys: m}, "", nil
 }
 
 // MaxDecodeLen answers from the decode set, never from the configured
@@ -139,14 +148,8 @@ func (r *registry) assemble(ctx context.Context, cfg []transform.Config, m keys.
 // chain is still admitted (RFC 5 §3.1).
 func (c *chain) MaxDecodeLen(n int) int { return c.decode.maxDecodeLen(n) }
 
-// ponytail: Pin and Decode fail every call with errors.ErrUnsupported, so a
-// chain that builds cannot yet encode or decode. Replace them with the pin and
-// the envelope's decode.
-
-// Pin fails every call with errors.ErrUnsupported.
-func (c *chain) Pin(context.Context, entity.NamespaceID) (transform.Attempt, error) {
-	return nil, errors.ErrUnsupported
-}
+// ponytail: Decode fails every call with errors.ErrUnsupported, so a chain
+// that builds cannot yet decode. Replace it with the envelope's decode.
 
 // Decode fails every call with errors.ErrUnsupported.
 func (c *chain) Decode(context.Context, entity.NamespaceID, []byte, [32]byte, []byte, int, []transform.Encoded) ([]byte, error) {
