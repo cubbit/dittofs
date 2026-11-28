@@ -2,6 +2,8 @@ package chain_test
 
 import (
 	"context"
+	"sync/atomic"
+	"unsafe"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/transform"
@@ -112,4 +114,108 @@ func onSetting(key string, f, fault transform.Factory) transform.Factory {
 		}
 		return f(ctx, s, m)
 	}
+}
+
+// decline is a test transform that declines every chunk, so its Decode, which
+// no body listing it can reach honestly, refuses everything.
+type decline struct {
+	id    transform.ID
+	stage transform.Stage
+}
+
+func (d decline) ID() transform.ID                             { return d.id }
+func (d decline) Version() uint8                               { return 1 }
+func (d decline) Stage() transform.Stage                       { return d.stage }
+func (d decline) Kinds() []string                              { return nil }
+func (d decline) MaxEncodedLen(n int, _ []keys.MaterialID) int { return n }
+func (d decline) LengthOf(int, []keys.MaterialID) (int, bool)  { return 0, false }
+func (d decline) LengthKey() []byte                            { return nil }
+func (d decline) Encode(context.Context, entity.NamespaceID, []keys.MaterialID, []byte, [32]byte, []byte) (transform.Encoded, error) {
+	return transform.Encoded{}, nil
+}
+func (d decline) Decode(context.Context, entity.NamespaceID, []byte, [32]byte, []byte, int, keys.Provider) ([]byte, error) {
+	return nil, transform.ErrMalformed
+}
+func (d decline) factory() transform.Factory {
+	return func(context.Context, map[string]any, keys.Provider) (transform.Transform, error) { return d, nil }
+}
+
+// fault is a fault wrapper over a test transform (kind 3): onDecode, when
+// set, answers Decode in its place, with the limit the chain gave it, and
+// onEncode, when set, rewrites what its Encode returned.
+type fault struct {
+	transform.Transform
+	onDecode func(ctx context.Context, limit int) ([]byte, error)
+	onEncode func(transform.Encoded) transform.Encoded
+}
+
+func (f fault) Encode(ctx context.Context, ns entity.NamespaceID, m []keys.MaterialID, dst []byte, hash [32]byte, plain []byte) (transform.Encoded, error) {
+	e, err := f.Transform.Encode(ctx, ns, m, dst, hash, plain)
+	if f.onEncode != nil {
+		e = f.onEncode(e)
+	}
+	return e, err
+}
+
+func (f fault) Decode(ctx context.Context, ns entity.NamespaceID, dst []byte, hash [32]byte, body []byte, limit int, m keys.Provider) ([]byte, error) {
+	if f.onDecode != nil {
+		return f.onDecode(ctx, limit)
+	}
+	return f.Transform.Decode(ctx, ns, dst, hash, body, limit, m)
+}
+
+func (f fault) factory() transform.Factory {
+	return func(context.Context, map[string]any, keys.Provider) (transform.Transform, error) { return f, nil }
+}
+
+// oddError is an error type of a transform's own, which must not cross the
+// chain; wrapped, when set, is the error it wraps.
+type oddError struct{ wrapped error }
+
+func (e *oddError) Error() string { return "a transform's own error" }
+func (e *oddError) Unwrap() error { return e.wrapped }
+
+// watched wraps a test transform and passes every call through, keeping how
+// many Encode and Decode calls reached it and how many of them were given a
+// dst sharing memory with their input: whether a step's dst overlaps its input
+// is what the chain must never do (RFC 5 §3.1).
+type watched struct {
+	transform.Transform
+	calls, overlaps *atomic.Int64
+}
+
+func newWatched(t transform.Transform) watched {
+	return watched{t, new(atomic.Int64), new(atomic.Int64)}
+}
+
+func (w watched) note(dst, in []byte) {
+	w.calls.Add(1)
+	if overlap(dst, in) {
+		w.overlaps.Add(1)
+	}
+}
+
+func (w watched) Encode(ctx context.Context, ns entity.NamespaceID, m []keys.MaterialID, dst []byte, hash [32]byte, plain []byte) (transform.Encoded, error) {
+	w.note(dst, plain)
+	return w.Transform.Encode(ctx, ns, m, dst, hash, plain)
+}
+
+func (w watched) Decode(ctx context.Context, ns entity.NamespaceID, dst []byte, hash [32]byte, body []byte, limit int, m keys.Provider) ([]byte, error) {
+	w.note(dst, body)
+	return w.Transform.Decode(ctx, ns, dst, hash, body, limit, m)
+}
+
+func (w watched) factory() transform.Factory {
+	return func(context.Context, map[string]any, keys.Provider) (transform.Transform, error) { return w, nil }
+}
+
+// overlap reports whether the memory dst may write, up to its capacity,
+// shares a byte with in.
+func overlap(dst, in []byte) bool {
+	if cap(dst) == 0 || len(in) == 0 {
+		return false
+	}
+	d := uintptr(unsafe.Pointer(unsafe.SliceData(dst)))
+	i := uintptr(unsafe.Pointer(unsafe.SliceData(in)))
+	return d < i+uintptr(len(in)) && i < d+uintptr(cap(dst))
 }
