@@ -25,13 +25,17 @@ import (
 func FuzzCut(f *testing.F) {
 	v := carvetest.LoadVectors(f)
 
-	// Every content kind, both tables, three profiles, both ends and the
-	// three buffer sizes, each seed's length short enough for -race.
+	// Every content kind at the smallest profile over several Max, so each
+	// cuts several chunks and its artificial end emits some; then Random at
+	// two larger profiles. Between them, both tables, both ends and the three
+	// buffer sizes, each seed's length short enough for -race.
+	mx := uint32(4 * carvetest.Targets[0])
 	for i, k := range []carvetest.Kind{carvetest.Random, carvetest.Zeros, carvetest.Period64, carvetest.Text44, carvetest.Period4K, carvetest.RandomRepeat} {
-		target := []uint8{0, 4, 6}[i%3]
-		mx := 4 * carvetest.Targets[target]
-		length := []uint32{uint32(3*mx + 12345), uint32(mx + 1), uint32(mx/2 + 7)}[i%3]
-		f.Add(uint64(i+1), uint8(k), length, target, i%2 == 1, int64(i)*1_000_003, uint8(i%3), length/2+uint32(i))
+		f.Add(uint64(i+1), uint8(k), 3*mx+12345, uint8(0), i%2 == 1, int64(i)*1_000_003, uint8(i%3), 2*mx+uint32(i))
+	}
+	for i, target := range []uint8{4, 6} {
+		mx := uint32(4 * carvetest.Targets[target])
+		f.Add(uint64(i+7), uint8(carvetest.Random), mx+1+uint32(i)*mx/2, target, i == 0, int64(i)*7, uint8(i+1), mx/2)
 	}
 
 	f.Fuzz(func(t *testing.T, seed uint64, kind uint8, length uint32, target uint8, keyed bool, base int64, buffer uint8, limit uint32) {
@@ -48,7 +52,7 @@ func FuzzCut(f *testing.F) {
 		n := int(length % uint32(4*s.Max()+1))
 		k := carvetest.Kind(kind % uint8(carvetest.RandomRepeat+1))
 		data := carvetest.Bytes(k, seed, n)
-		base = (base & math.MaxInt64) % (math.MaxInt64 - int64(n) + 1)
+		base = (base & math.MaxInt64) % (math.MaxInt64 - int64(n))
 		sizes := []int{s.Max(), s.Max() + 1, 2 * s.Max()}
 		b1, b2 := sizes[buffer%3], sizes[(buffer+1)%3]
 		name := fmt.Sprintf("kind %d, %d bytes, target %d, keyed %v, base %d", k, n, tg, keyed, base)
@@ -60,8 +64,12 @@ func FuzzCut(f *testing.F) {
 				t.Fatalf("%s, buffer %d: chunk %d at %d, want %d, the previous end", name, b1, i, c.Offset, end)
 			}
 			end += int64(c.Length)
-			if c.Length <= 0 || int(c.Length) > s.Max() || i < len(got)-1 && int(c.Length) < s.Min() {
-				t.Fatalf("%s, buffer %d: chunk %d of %d is %d bytes, outside [%d, %d]", name, b1, i, len(got), c.Length, s.Min(), s.Max())
+			lo := s.Min()
+			if i == len(got)-1 {
+				lo = 1 // the last chunk before a real end may be shorter than Min
+			}
+			if int(c.Length) < lo || int(c.Length) > s.Max() {
+				t.Fatalf("%s, buffer %d: chunk %d of %d is %d bytes, outside [%d, %d]", name, b1, i, len(got), c.Length, lo, s.Max())
 			}
 		}
 		if end != base+int64(n) {
@@ -71,6 +79,9 @@ func FuzzCut(f *testing.F) {
 		checkClean(t, fmt.Sprintf("%s, buffer %d, against the reference", name, b1), got, ref)
 
 		base2 := math.MaxInt64 - int64(n) - base
+		if base2 == base {
+			base2 ^= 1 // still within [0, MaxInt64 - n]: base is below it
+		}
 		want := slices.Clone(got)
 		for i := range want {
 			want[i].Offset += base2 - base
