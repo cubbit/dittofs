@@ -12,8 +12,8 @@ import (
 // package; the settings value nothing; the chunker the settings value alone;
 // carve and the fold the root, with the settings value it brings, and the
 // entity package with the libraries it imports, BLAKE3 among them; the settings
-// section carve and what it reaches, never a settings package, and no carver
-// package the section. Never another component's implementation, never
+// section the root, carve and what they reach, never a settings package, and
+// no carver package imports the section. Never another component's implementation, never
 // v1's carver. Besides the package it tests, a test may reach the
 // architecture tests' support and carvetest, the carver's test components,
 // which no production row admits; carvetest reaches the standard library
@@ -140,7 +140,7 @@ func TestImportRuleRefuses(t *testing.T) {
 		{"the root importing the journal", m("pkg/carver"), map[string][]string{
 			m("pkg/carver"): {m("pkg/journal")},
 		}, []string{"pkg/carver reaches pkg/journal, which row pkg/carver does not allow"}},
-		{"carve importing the chunker's settings section", m("pkg/carver/carve"), map[string][]string{
+		{"carve importing the carver's settings section", m("pkg/carver/carve"), map[string][]string{
 			m("pkg/carver/carve"): {m("pkg/carver"), m("pkg/carver/section")},
 		}, []string{"pkg/carver/carve reaches pkg/carver/section, which row pkg/carver/carve does not allow"}},
 		{"the settings section importing the settings package", m("pkg/carver/section"), map[string][]string{

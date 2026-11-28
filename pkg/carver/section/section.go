@@ -5,7 +5,12 @@
 // table that registers it gives it its scope, a namespace's.
 package section
 
-import "github.com/cubbit/dittofs/pkg/carver/carve"
+import (
+	"strings"
+
+	"github.com/cubbit/dittofs/pkg/carver"
+	"github.com/cubbit/dittofs/pkg/carver/carve"
+)
 
 // Prefix is the section's prefix in the settings table: the key carver.target.
 //
@@ -27,8 +32,24 @@ func Default() Settings {
 	return Settings{Target: 256 << 10}
 }
 
-// Validate refuses a Target as carve.CheckTarget does; it holds no key
-// material, so it refuses nothing a key would.
+// Validate checks Target alone, as carve.CheckTarget does; it takes no key.
+// The refusal wraps
+// carver.ErrInvalidSettings and its text names the field, target, since the
+// settings table prints it under the section's key, carver.
 func (s Settings) Validate() error {
-	return carve.CheckTarget(s.Target)
+	if err := carve.CheckTarget(s.Target); err != nil {
+		return refusal{err}
+	}
+
+	return nil
 }
+
+// refusal is CheckTarget's error, its text keyed by the field rather than by
+// the carver's sentinel.
+type refusal struct{ err error }
+
+func (r refusal) Error() string {
+	return "target: " + strings.TrimPrefix(r.err.Error(), carver.ErrInvalidSettings.Error()+": ")
+}
+
+func (r refusal) Unwrap() error { return r.err }
