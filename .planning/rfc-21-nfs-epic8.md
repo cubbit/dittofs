@@ -245,7 +245,7 @@ numbered so that subtasks and tests can cite them.
 | R35 | A slot keeps a reply only when the request asked (`sa_cachethis`), and then the whole reply; a request asking to be cached whose reply exceeds the cached size is `NFS4ERR_REP_TOO_BIG_TO_CACHE` and not run | MUST | RFC 21 §3.1; RFC 20 §4.3 | T8.5, T8.7 |
 | R36 | A retransmission of an uncached request, same slot and sequence ID, is `NFS4ERR_RETRY_UNCACHED_REP`, never run again and never answered from a partial reply | MUST | RFC 21 §3.1, §12 (N11) | T8.5 |
 | R37 | A retransmission of a cached request is answered its whole cached reply and never run twice on one session; `core` counts it as `adapter_replay_hits_total{protocol="nfs3"}` | MUST | RFC 21 §3.2, §11.7, §12 (N11); RFC 20 §10.1 | T8.5 |
-| R73 | A compound whose `SEQUENCE` succeeded advances its slot's sequence whether or not its reply is sent, a later member's `NFS4ERR_DELAY` or fault included, and a compound its connection's close dropped after members ran included, whose reply `core` still encodes and hands to `Replay.Store` without sending it, and a compound a member of which ran and whose reply then failed to encode included, for which `core` hands `Replay.Store` in its place a reply holding `SEQUENCE`'s `NFS4_OK` result, each earlier member's result and the failed member's `NFS4ERR_SERVERFAULT` result (RFC 8881 §2.10.6.1.3, §16.2.3), never `Drop` and never a head-only reply; the next sequence on that slot runs, and a resend of the same sequence is the cached reply under `sa_cachethis` and `NFS4ERR_RETRY_UNCACHED_REP` without it, never run again; a `SEQUENCE` that answered an error leaves the slot as it was | MUST | RFC 8881 §2.10.6.1.3 ("has no effect on the slot processing"), §18.46.3 ("MUST still record that it executed the request"); RFC 21 §3.1; RFC 20 §6.5 | T8.5 |
+| R73 | A compound whose `SEQUENCE` succeeded advances its slot's sequence whether or not its reply is sent, a later member's `NFS4ERR_DELAY` or fault included, and a compound its connection's close dropped after members ran included, whose reply `core` still encodes and hands to `Replay.Store` without sending it, and a compound its connection's close cancels mid-call, the member in its handler when it ended, included, for which `core` encodes in its place a reply holding `SEQUENCE`'s `NFS4_OK` result, each earlier member's result and the cancelled member's `NFS4ERR_SERVERFAULT` result (RFC 8881 §15.1.1.6, an error that maps to no specific one), as the encode fault's below, never a `Drop` nor a head-only reply; a member that returned its own result after the cancellation — the close never reaching it — keeps that result in the stored reply (RFC 20 §6.5), and when it is `NFS4_OK` and members follow it, the next member, which never runs, is encoded `NFS4ERR_SERVERFAULT` so the results array ends on an error (RFC 8881 §16.2.3), while one returning `ErrDelay`, which ran nothing, stores `NFS4ERR_DELAY`; and a compound a member of which ran and whose reply then failed to encode included, for which `core` hands `Replay.Store` in its place a reply holding `SEQUENCE`'s `NFS4_OK` result, each earlier member's result and the failed member's `NFS4ERR_SERVERFAULT` result (RFC 8881 §2.10.6.1.3, §15.1.1.6, an error that maps to no specific one), never `Drop` and never a head-only reply; the next sequence on that slot runs, and a resend of the same sequence is the cached reply under `sa_cachethis` and `NFS4ERR_RETRY_UNCACHED_REP` without it, never run again; a `SEQUENCE` that answered an error leaves the slot as it was | MUST | RFC 8881 §2.10.6.1.3 ("has no effect on the slot processing"), §18.46.3 ("MUST still record that it executed the request"); RFC 21 §3.1; RFC 20 §6.5 | T8.5 |
 | R69 | A retransmission whose caller differs from the cached request's is answered `NFS4ERR_SEQ_FALSE_RETRY` as `SEQUENCE`'s result, never the cached reply, and leaves the slot's key and reply as they were | MUST | RFC 8881 §2.10.6.1.3.1 | T8.5 |
 | R75 | A `SEQUENCE` that names a session on a connection not bound to it binds that connection to the session's fore channel when the client's record is not `SP4_MACH_CRED`; under `SP4_MACH_CRED` it is `NFS4ERR_CONN_NOT_BOUND_TO_SESSION`, binds nothing, and the client binds with `BIND_CONN_TO_SESSION` first. A closed connection is dropped from every session it was bound to | MUST | RFC 8881 §2.10.3.1 ("the connection is automatically associated with the fore channel"), §15.1.11.6, §18.46.3; RFC 20 §4.7 (a connection's `OnClose` drops its reference to each session) | T8.5, T8.9 |
 | R38 | A request a drain leaves unanswered runs none of its operations and leaves the slot as it was, its previous sequence ID and reply; a compound its connection's close drops once its `SEQUENCE` marked the slot is R73's, stored and never reverted | MUST | RFC 21 §3.1; RFC 20 §4.7 | T8.5 |
@@ -441,14 +441,29 @@ reclaims themselves and stale stateids (E9); the lease owner and `Reach.Sessions
   `Store` recognises its own request is Q7's (§9): the record's `Buf`, which the header views,
   names the request holding the slot. The mark decides, not whether the reply is sent: a close
   after the members ran drops the compound (RFC 20 §6.5), and its members' writes stand, so `core`
-  still encodes its reply and hands it to `Store` without sending it, before its `release()`. The
+  still encodes its reply and hands it to `Store` without sending it, before its `release()`. A
+  close that cancels the compound mid-call, a member in its handler, does the same, and `core`
+  can tell the two ends of one apart: a handler answering the close's own cancel, `member`'s
+  `endedByClose`, is a member whose write may have landed and whose result was never answered, so
+  the reply is encoded with that member's `NFS4ERR_SERVERFAULT` result (RFC 8881 §15.1.1.6, an
+  error that maps to no specific one), each earlier member's result and `SEQUENCE`'s beside it;
+  a handler returning its own result after the cancellation, the close never reaching it, keeps
+  that result in the stored reply, applied and reported alike (RFC 20 §6.5) — and where that
+  result is `NFS4_OK` and members follow it, the next member, which never runs, is encoded
+  `NFS4ERR_SERVERFAULT` so the results array ends on an error (RFC 8881 §16.2.3), while a handler
+  returning `ErrDelay`, which ran nothing, stores `NFS4ERR_DELAY`. Both ends hand `Store` a
+  whole reply and neither calls `Drop`. The
   slot advances; under `sa_cachethis` it keeps that whole reply, so the client's resend on its new
   connection is the cached reply, as RFC 21 §3.1 has it, and without `sa_cachethis` it keeps none
   and the resend is `NFS4ERR_RETRY_UNCACHED_REP` (R36); never are the members run twice (R73,
-  R37). No RFC amendment: RFC 20 §6.5's reply is still dropped unsent, and `Store` gets a real
-  reply. A member that ran and whose result then fails to encode (`p.drop` in `compound.go`'s member
+  R37). One RFC amendment rides this change: RFC 20 §9's A11, which never answers a cancelled
+  request with a final error the service may contradict, gains the slot's exception — a compound
+  whose `SEQUENCE` marked its slot must store a reply, and no answer is safe, so the cancelled
+  member's status is stored, epic 5's R34 with it. RFC 20 §6.5's reply is still dropped unsent,
+  and `Store` gets a real reply; the ceiling is named at the site's `decision:` marker: a client
+  sees `EIO` for a write that may have landed. A member that ran and whose result then fails to encode (`p.drop` in `compound.go`'s member
   encode) never ends the compound in `Drop`: `core` encodes in its place a reply holding
-  `SEQUENCE`'s `NFS4_OK` result, each earlier member's result and the failed member's `NFS4ERR_SERVERFAULT` result (RFC 8881 §2.10.6.1.3, §16.2.3). `finish`'s encode fault in `pipeline.go` is not
+  `SEQUENCE`'s `NFS4_OK` result, each earlier member's result and the failed member's `NFS4ERR_SERVERFAULT` result (RFC 8881 §2.10.6.1.3, §15.1.1.6, an error that maps to no specific one). `finish`'s encode fault in `pipeline.go` is not
   this case: a compound reaches it only when refused whole, before any member ran, and an NFSv3
   or SMB request is outside R73. `core` hands the reply to `Store(h, reply)`, so the slot commits its mark
   and a resend is that reply under `sa_cachethis`, `NFS4ERR_RETRY_UNCACHED_REP` without it, and
@@ -939,10 +954,19 @@ internal/adapter/nfs/
     has it (D5), with a hook set from `export_test.go` that holds a request between the two, and
     a compound the close cancels after a member ran still encoded, into the reply it reserved, and
     handed to `Replay.Store` without being sent, where today `finish` and the compound runner drop
-    it unencoded (R73, D5); and a member's encode fault after it ran (`p.drop` in `compound.go`) encoding a reply
+    it unencoded (R73, D5); a member's encode fault after it ran (`p.drop` in `compound.go`) encoding a reply
     holding `SEQUENCE`'s `NFS4_OK` result, the earlier members' results and the failed member's
     `NFS4ERR_SERVERFAULT` result, and handing it to `Replay.Store`, never `Drop`,
-    with a hook set from `export_test.go` that fails a member's encode (R73, D5).
+    with a hook set from `export_test.go` that fails a member's encode (R73, D5); and the close
+    cancelling a member mid-call its handler in, the member's context ended by the teardown:
+    a handler that answers the close's own cancel is encoded in its place with the member's
+    `NFS4ERR_SERVERFAULT` result and the earlier members', a handler that returns its own result
+    after the cancellation keeps it and, where it is `NFS4_OK` with members following, the next
+    member, which never runs, is encoded `NFS4ERR_SERVERFAULT` so the results array ends on an
+    error (RFC 8881 §16.2.3), and one returning `ErrDelay` stores `NFS4ERR_DELAY` (RFC 20 §6.5),
+    `core` telling the ends apart by `endedByClose` as `member` already does; both handed to
+    `Replay.Store`, never `Drop`, a `decision:` at the site naming RFC 20 §9's A11 exception and
+    its ceiling: a client sees `EIO` for a write that may have landed (R73).
   - `ops/v4/sequence.go`: the slot check and every sequence error as `SEQUENCE`'s result (D5), its
     row `Cacheable` so every compound it ran in reaches `Store` (R73),
     `NFS4ERR_SEQ_FALSE_RETRY` among them, the connection bound to the fore channel, or
@@ -977,6 +1001,12 @@ internal/adapter/nfs/
   - Under `sa_cachethis`, with the first held between its encode and `Store`, the resend answered
     while it is held commits nothing, and once the first's `Store` runs a later resend is the
     first's reply.
+  - A compound whose member answers the close's cancel keeps its slot's mark and stores the reply
+    the close made: `SEQUENCE`'s result, the earlier members' and the cancelled member's
+    `NFS4ERR_SERVERFAULT`; a member that returns its own result after the close keeps that result,
+    its `NFS4_OK` with members following ending on the next member's `NFS4ERR_SERVERFAULT`, and its
+    `ErrDelay` stored as `NFS4ERR_DELAY`; each resend is the reply stored and runs no member
+    again.
   - A `SEQUENCE` binding a connection whose close has begun is `NFS4ERR_CONN_NOT_BOUND_TO_SESSION`,
     and the fore channel never lists it; `nfs_conn_not_bound_total` counts it once that series
     lands (§1.2).
@@ -1041,7 +1071,18 @@ internal/adapter/nfs/
   `SEQUENCE, CREATE` under `sa_cachethis` through `core`'s compound runner, `CREATE`'s encode failed
   by `core`'s hook once it ran, then the same slot and sequence resent, the reply and the resend's reply each decoded, the results array asserted to hold `SEQUENCE`'s `NFS4_OK` and `CREATE`'s `NFS4ERR_SERVERFAULT` (catches a head-only reply, after which the client keeps its slot sequence and resends forever, R73), and
   `vfstest.Mutations` counting exactly one creating call (catches an encode fault ended in `Drop`,
-  so the mark is cleared and the resend creates again, R73, R37); a client sending `sa_highest_slotid` 0 while idle, then with a member blocked in slot 5,
+  so the mark is cleared and the resend creates again, R73, R37); `SEQUENCE, CREATE` under
+  `sa_cachethis` through `core`'s compound runner, twice over: once `CREATE`'s handler held by the
+  connection's close's beginning and answering the close's own cancel, once held past the close
+  and returning its own result; the same slot and sequence resent on a new connection of the
+  session each time, the stored and the resend's reply each decoded, the results array asserted
+  to hold `SEQUENCE`'s `NFS4_OK` and `CREATE`'s `NFS4ERR_SERVERFAULT` the first time and
+  `SEQUENCE`'s with `CREATE`'s own result the second (catches a mid-call cancel ended in `Drop`, a
+  head-only reply, or a member's own result overwritten by `NFS4ERR_SERVERFAULT` against RFC 20
+  §6.5, R73); `SEQUENCE, PUTFH, CREATE, GETFH` with `CREATE` held past the close and returning
+  `NFS4_OK`, the stored reply asserted to end on `GETFH`'s `NFS4ERR_SERVERFAULT`, never on a
+  success with members missing, and `vfstest.Mutations` holding one creating call (catches a
+  results array cut short under a success, which RFC 8881 §16.2.3 calls malformed, R73); a client sending `sa_highest_slotid` 0 while idle, then with a member blocked in slot 5,
   both answered the granted highest in both fields and the pool's charge read unchanged (catches
   `sa_highest_slotid` read as a retirement, which shrinks a Linux client to one slot, R39, R22,
   D8); the cached resend under a second uid, then the first (catches another user handed the cached
