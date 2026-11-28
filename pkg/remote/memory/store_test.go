@@ -506,3 +506,96 @@ func TestAControlObjectIsACopy(t *testing.T) {
 		t.Errorf("GetControl after the caller changed its slices: %q and error %v, want the bytes put", again, err)
 	}
 }
+
+// The get probe reads the health object: removed beneath the store, the probe
+// is ErrNotFound, and the next put probe puts it again. A direction outside
+// the two is ErrInvalid.
+func TestTheGetProbeReadsTheHealthObject(t *testing.T) {
+	s := newStore(remote.ChecksumNone)
+
+	memory.DeleteRaw(s, "control/health")
+	checkErr(t, "Health(DirGet) with the health object removed", s.Health(t.Context(), remote.DirGet), remote.ErrNotFound)
+
+	if err := s.Health(t.Context(), remote.DirPut); err != nil {
+		t.Fatalf("Health(DirPut) after the health object was removed: %v, want nil", err)
+	}
+
+	if !slices.Contains(memory.RawKeys(s), "control/health") {
+		t.Errorf("keys after a put probe: %q, want control/health put again", memory.RawKeys(s))
+	}
+
+	if err := s.Health(t.Context(), remote.DirGet); err != nil {
+		t.Errorf("Health(DirGet) after a put probe: %v, want nil", err)
+	}
+
+	checkErr(t, "Health of direction 0", s.Health(t.Context(), 0), remote.ErrInvalid)
+
+	if err := s.PutControl(t.Context(), remote.RoleHealth, first); err != nil {
+		t.Fatalf("PutControl of the health object: %v", err)
+	}
+
+	if err := s.Health(t.Context(), remote.DirPut); err != nil {
+		t.Fatalf("Health(DirPut) over a health object a control put stored: %v, want nil", err)
+	}
+
+	if got, _, err := s.GetControl(t.Context(), remote.RoleHealth); err != nil || !bytes.Equal(got, first) {
+		t.Errorf("GetControl of the health object after a put probe: %q and error %v, want the body the control put stored", got, err)
+	}
+}
+
+// While read-only, every write and the put probe are ErrDenied of cause
+// access and reach no key, and the first write once write access returns is
+// stored. The suite's read-only row holds the reads.
+func TestAReadOnlyWrapperRefusesEveryWriteBeforeTheStore(t *testing.T) {
+	s := newStore(remote.ChecksumCRC32C)
+	mustPut(t, s, blockA, first)
+
+	w := memory.Wrap(s)
+	w.SetReadOnly(true)
+
+	before := memory.RawKeys(s)
+	blockB := remote.Name{0xb}
+
+	denied := func(what string, err error) {
+		t.Helper()
+
+		var de *remote.DeniedError
+		if checkErr(t, what, err, remote.ErrDenied); !errors.As(err, &de) || de.Cause != remote.CauseAccess {
+			t.Errorf("%s: error %v, want a *remote.DeniedError of cause access", what, err)
+		}
+	}
+
+	denied("Put while read-only", w.Put(t.Context(), blockB, bytes.NewReader(second), int64(len(second)), sumOf(s.Checksum(), second)))
+	denied("PutControl while read-only", w.PutControl(t.Context(), remote.RoleClaim, first))
+	errs := w.Delete(t.Context(), []remote.Name{blockA, blockB})
+	if len(errs) != 2 {
+		t.Errorf("Delete of 2 names while read-only: %d results, want 2", len(errs))
+	}
+
+	for i, err := range errs {
+		denied(fmt.Sprintf("Delete while read-only, result %d", i), err)
+	}
+
+	if after := memory.RawKeys(s); !slices.Equal(after, before) {
+		t.Errorf("keys after writes refused while read-only: %q, want %q as before", after, before)
+	}
+
+	// The health object removed first, so a put probe that reaches the store
+	// while refused shows as the key put again.
+	memory.DeleteRaw(s, "control/health")
+	denied("Health(DirPut) while read-only", w.Health(t.Context(), remote.DirPut))
+
+	if slices.Contains(memory.RawKeys(s), "control/health") {
+		t.Errorf("keys after a put probe refused while read-only hold control/health, want the probe to reach no key")
+	}
+
+	w.SetReadOnly(false)
+
+	if err := w.Put(t.Context(), blockB, bytes.NewReader(second), int64(len(second)), sumOf(s.Checksum(), second)); err != nil {
+		t.Fatalf("Put once write access returned: %v, want nil", err)
+	}
+
+	if got, err := read(t, s, blockB); err != nil || !bytes.Equal(got, second) {
+		t.Errorf("Get of the block put once write access returned: %d bytes and error %v, want the bytes put", len(got), err)
+	}
+}

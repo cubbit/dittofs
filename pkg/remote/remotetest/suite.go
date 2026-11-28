@@ -45,6 +45,13 @@ type Subject struct {
 	// by the opener's cleanup. The raw-namespace check after each row skips on
 	// a subject without it, and so do the halves of rows that read it.
 	Raw func(ctx context.Context) ([]string, error)
+
+	// ReadOnly turns the store's namespace read-only, or gives write access
+	// back, from the next call on: while on, at least the put probe is
+	// refused on every store over the namespace, Reopen's included. It may be
+	// called after Store is closed. A row that needs it skips on a subject
+	// without it.
+	ReadOnly func(ctx context.Context, on bool) error
 }
 
 // Run runs every row against a fresh subject from open, one row at a time.
@@ -80,6 +87,7 @@ func Run(t *testing.T, open func(t *testing.T) Subject) {
 		{"ListForeignKey", testListForeignKey},
 		{"ListCancel", testListCancel},
 		{"Control", testControl},
+		{"ReadOnly", testReadOnly},
 	} {
 		t.Run(r.name, func(t *testing.T) {
 			prof.Watch(t, prof.Options{})
@@ -250,7 +258,9 @@ func testGetEmptyRange(t *testing.T, sub Subject) {
 }
 
 // Every call after Close is ErrInvalid, and a put refused so stores nothing;
-// Close again returns nil.
+// Close again returns nil. On a subject that can make its namespace
+// read-only, every call is made again once it is, and is still ErrInvalid,
+// never a refusal of access: a closed store refuses before anything else.
 func testAfterClose(t *testing.T, sub Subject) {
 	n, body := name("after-close"), block("after-close", 16)
 	put(t, sub.Store, n, body)
@@ -259,44 +269,87 @@ func testAfterClose(t *testing.T, sub Subject) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	// A name never stored, so a put that stores what it refuses shows in the
-	// raw namespace; so does a control put, read beneath the store below.
-	err := sub.Store.Put(t.Context(), name("after-close-new"), bytes.NewReader(body), int64(len(body)), sum(t, sub.Store.Checksum(), body))
-	if !only(err, remote.ErrInvalid) {
-		t.Errorf("Put after Close: error %v, want ErrInvalid and no other sentinel", err)
-	}
+	callsAfterClose(t, sub, n, body, "")
 
-	got, err := get(t, sub.Store, n, remote.Range{})
-	if !only(err, remote.ErrInvalid) {
-		t.Errorf("Get after Close: %d bytes and error %v, want ErrInvalid and no other sentinel", len(got), err)
-	}
-
-	for i, err := range sub.Store.Delete(t.Context(), []remote.Name{n}) {
-		if !only(err, remote.ErrInvalid) {
-			t.Errorf("Delete after Close: result %d is %v, want ErrInvalid and no other sentinel", i, err)
-		}
-	}
-
-	if page, _, _, err := sub.Store.List(t.Context(), "", 10); !only(err, remote.ErrInvalid) {
-		t.Errorf("List after Close: %d blocks and error %v, want ErrInvalid and no other sentinel", len(page), err)
-	}
-
-	if err := sub.Store.PutControl(t.Context(), remote.RoleClaim, body); !only(err, remote.ErrInvalid) {
-		t.Errorf("PutControl after Close: error %v, want ErrInvalid and no other sentinel", err)
-	}
-
-	if got, _, err := sub.Store.GetControl(t.Context(), remote.RoleHealth); !only(err, remote.ErrInvalid) {
-		t.Errorf("GetControl after Close: %d bytes and error %v, want ErrInvalid and no other sentinel", len(got), err)
-	}
-
-	if sub.Raw != nil && slices.Contains(rawKeys(t, sub.Raw), controlKeys[remote.RoleClaim]) {
-		t.Errorf("the raw namespace holds %s after a PutControl refused after Close, want nothing stored", controlKeys[remote.RoleClaim])
+	if sub.ReadOnly != nil {
+		readOnly(t, sub)
+		callsAfterClose(t, sub, n, body, ", read-only")
 	}
 
 	if err := sub.Store.Close(); err != nil {
 		t.Errorf("Close after Close: %v, want nil", err)
 	}
 }
+
+// callsAfterClose makes every call but Close on sub's closed store, n stored
+// before the close, and fails t on each that is not ErrInvalid alone; mode
+// names the namespace's state in each message.
+func callsAfterClose(t *testing.T, sub Subject, n remote.Name, body []byte, mode string) {
+	t.Helper()
+
+	// A name never stored, so a put that stores what it refuses shows in the
+	// raw namespace; so does a control put, read beneath the store below.
+	err := sub.Store.Put(t.Context(), name("after-close-new"), bytes.NewReader(body), int64(len(body)), sum(t, sub.Store.Checksum(), body))
+	if !only(err, remote.ErrInvalid) {
+		t.Errorf("Put after Close%s: error %v, want ErrInvalid and no other sentinel", mode, err)
+	}
+
+	got, err := get(t, sub.Store, n, remote.Range{})
+	if !only(err, remote.ErrInvalid) {
+		t.Errorf("Get after Close%s: %d bytes and error %v, want ErrInvalid and no other sentinel", mode, len(got), err)
+	}
+
+	for i, err := range sub.Store.Delete(t.Context(), []remote.Name{n}) {
+		if !only(err, remote.ErrInvalid) {
+			t.Errorf("Delete after Close%s: result %d is %v, want ErrInvalid and no other sentinel", mode, i, err)
+		}
+	}
+
+	if k := "blocks/" + hex.EncodeToString(n[:]); sub.Raw != nil && !slices.Contains(rawKeys(t, sub.Raw), k) {
+		t.Errorf("the raw namespace lacks %s after a Delete refused after Close%s, want the block still stored", k, mode)
+	}
+
+	if page, _, _, err := sub.Store.List(t.Context(), "", 10); !only(err, remote.ErrInvalid) {
+		t.Errorf("List after Close%s: %d blocks and error %v, want ErrInvalid and no other sentinel", mode, len(page), err)
+	}
+
+	if err := sub.Store.PutControl(t.Context(), remote.RoleClaim, body); !only(err, remote.ErrInvalid) {
+		t.Errorf("PutControl after Close%s: error %v, want ErrInvalid and no other sentinel", mode, err)
+	}
+
+	if got, _, err := sub.Store.GetControl(t.Context(), remote.RoleHealth); !only(err, remote.ErrInvalid) {
+		t.Errorf("GetControl after Close%s: %d bytes and error %v, want ErrInvalid and no other sentinel", mode, len(got), err)
+	}
+
+	for _, d := range []remote.Direction{remote.DirPut, remote.DirGet} {
+		if err := sub.Store.Health(t.Context(), d); !only(err, remote.ErrInvalid) {
+			t.Errorf("Health(%s) after Close%s: error %v, want ErrInvalid and no other sentinel", dirName[d], mode, err)
+		}
+	}
+
+	if sub.Raw != nil && slices.Contains(rawKeys(t, sub.Raw), controlKeys[remote.RoleClaim]) {
+		t.Errorf("the raw namespace holds %s after a PutControl refused after Close%s, want nothing stored", controlKeys[remote.RoleClaim], mode)
+	}
+}
+
+// readOnly turns sub's namespace read-only, and gives write access back when
+// the row ends, so the opener's cleanup can still remove what the row wrote.
+func readOnly(t *testing.T, sub Subject) {
+	t.Helper()
+
+	if err := sub.ReadOnly(t.Context(), true); err != nil {
+		t.Fatalf("ReadOnly(true): %v", err)
+	}
+
+	t.Cleanup(func() {
+		if err := sub.ReadOnly(context.Background(), false); err != nil {
+			t.Errorf("ReadOnly(false) when the row ended: %v", err)
+		}
+	})
+}
+
+// dirName is each probe direction's name in a row's messages.
+var dirName = map[remote.Direction]string{remote.DirPut: "DirPut", remote.DirGet: "DirGet"}
 
 // A batch deleted twice, holding a name repeated and a name never written,
 // returns nil for every name each time, and leaves its blocks absent.
@@ -625,6 +678,82 @@ func testControl(t *testing.T, sub Subject) {
 
 	if got := walkNames(t, s, 1000, 4); !slices.Equal(got, []remote.Name{n}) {
 		t.Errorf("a walk after a put of every role yielded %d blocks %x, want only the block put %x", len(got), got, n)
+	}
+}
+
+// On a fresh store both probes pass. While the namespace is read-only the put
+// probe is ErrDenied of cause access, on a store opened again over it too,
+// and the get probe and every read pass; the first put probe once write
+// access returns passes.
+func testReadOnly(t *testing.T, sub Subject) {
+	if sub.ReadOnly == nil {
+		t.Skip("the subject has no ReadOnly hook")
+	}
+
+	s := sub.Store
+	n, want := name("read-only"), block("read-only", 16)
+	put(t, s, n, want)
+
+	for _, d := range []remote.Direction{remote.DirPut, remote.DirGet} {
+		if err := s.Health(t.Context(), d); err != nil {
+			t.Errorf("Health(%s) on a fresh store: %v, want nil", dirName[d], err)
+		}
+	}
+
+	readOnly(t, sub)
+
+	stores := map[string]remote.Store{"": s}
+
+	if sub.Reopen != nil {
+		again, err := sub.Reopen(t.Context())
+		if err != nil {
+			t.Fatalf("Reopen: %v", err)
+		}
+
+		t.Cleanup(func() {
+			if err := again.Close(); err != nil {
+				t.Errorf("Close of the reopened store: %v", err)
+			}
+		})
+
+		stores[" on a store opened again"] = again
+	}
+
+	for on, s := range stores {
+		var de *remote.DeniedError
+		if err := s.Health(t.Context(), remote.DirPut); !only(err, remote.ErrDenied) || !errors.As(err, &de) || de.Cause != remote.CauseAccess {
+			t.Errorf("Health(DirPut) while read-only%s: error %v, want ErrDenied alone, a *remote.DeniedError of cause access", on, err)
+		}
+
+		if err := s.Health(t.Context(), remote.DirGet); err != nil {
+			t.Errorf("Health(DirGet) while read-only%s: %v, want nil", on, err)
+		}
+	}
+
+	if got, err := get(t, s, n, remote.Range{}); err != nil || !bytes.Equal(got, want) {
+		t.Errorf("Get while read-only: %d bytes and error %v, want the %d bytes put", len(got), err, len(want))
+	}
+
+	if _, _, err := s.GetControl(t.Context(), remote.RoleHealth); err != nil {
+		t.Errorf("GetControl of the health object while read-only: %v, want nil", err)
+	}
+
+	if page, _, _, err := s.List(t.Context(), "", 10); err != nil || len(page) != 1 {
+		t.Errorf("List while read-only: %d blocks and error %v, want the one block put", len(page), err)
+	}
+
+	if err := sub.ReadOnly(t.Context(), false); err != nil {
+		t.Fatalf("ReadOnly(false): %v", err)
+	}
+
+	for on, s := range stores {
+		if err := s.Health(t.Context(), remote.DirPut); err != nil {
+			t.Errorf("Health(DirPut) after read-only ended%s: %v, want nil on the first call once write access returns", on, err)
+		}
+
+		if err := s.Health(t.Context(), remote.DirGet); err != nil {
+			t.Errorf("Health(DirGet) after read-only ended%s: %v, want nil", on, err)
+		}
 	}
 }
 

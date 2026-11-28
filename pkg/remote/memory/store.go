@@ -66,7 +66,7 @@ func New(now func() time.Time, sum remote.Checksum) *Store {
 	// The health object exists from the moment the store is returned, as a
 	// real store's capability check writes it before the open returns
 	// (RFC 4 §4.7).
-	objects := map[string]object{"control/health": {body: []byte{}, modTime: now()}}
+	objects := map[string]object{healthKey: {body: []byte{}, modTime: now()}}
 
 	return &Store{now: now, sum: sum, ns: &namespace{objects: objects}}
 }
@@ -203,16 +203,6 @@ func (s *Store) Get(ctx context.Context, name remote.Name, r remote.Range) (io.R
 	}
 
 	return io.NopCloser(bytes.NewReader(bytes.Clone(b))), remote.StoredSum{}, nil
-}
-
-// Health is not served yet: it refuses with remote.ErrInvalid.
-func (s *Store) Health(ctx context.Context, d remote.Direction) error {
-	return unserved("Health")
-}
-
-// unserved is the refusal of a call the store does not serve yet.
-func unserved(call string) error {
-	return fmt.Errorf("memory: %s is not served: %w", call, remote.ErrInvalid)
 }
 
 // Close marks the store closed: every later call but Close is refused with
