@@ -1173,7 +1173,8 @@ corpus, chunk size distribution and CPU with each result.
 
 **Suites.** §8.1's transform conformance and §8.2's chain tests run in `unit`, and §8.1's
 key-management row in `integration`, against its KMIP server. The provider's fuzz targets,
-FuzzStoredWrap and FuzzKeyRecord, run their seed corpora in `unit`. No suite runs yet §8.3's benchmarks,
+FuzzStoredWrap, FuzzKeyRecord and FuzzKMIPWrap, and the KMIP transport's FuzzReadMessage, run their seed
+corpora in `unit`. No suite runs yet §8.3's benchmarks,
 fuzzing past the seed corpus, or T13's removal with two nodes holding the key.
 
 ## 9. Open questions
