@@ -11,6 +11,10 @@ import (
 	"github.com/cubbit/dittofs/pkg/carver/internal/params"
 )
 
+// maxEmptyReads is how many reads in a row may return no bytes and no error
+// before Cut gives up on the reader.
+const maxEmptyReads = 100
+
 // Cut cuts one unbroken stretch read from r, whose first byte sits at file
 // offset base, into chunks, calling emit once per chunk in order. The bytes
 // handed to emit are borrowed: they are good only until emit returns, and a
@@ -19,8 +23,9 @@ import (
 // carver.ErrInvalidSettings. realEnd says whether the stretch ends for good;
 // on an artificial end the tail after the last content-chosen boundary is not
 // emitted, and consumed says how far Cut cut: how far, from base, the chunks
-// emit accepted reach. An error from r or emit stops Cut and is returned as
-// it came. A negative base, or a stretch whose next byte would sit past
+// emit accepted reach. A reader that keeps returning no bytes and no error
+// fails it with io.ErrNoProgress. An error from r or emit stops Cut and is
+// returned as it came. A negative base, or a stretch whose next byte would sit past
 // math.MaxInt64, fails it with an error wrapping fs.ErrInvalid, so offsets
 // never overflow.
 func Cut(r io.Reader, base int64, s carver.Settings, buf []byte, realEnd bool,
@@ -48,14 +53,15 @@ func Cut(r io.Reader, base int64, s carver.Settings, buf []byte, realEnd bool,
 		// is always in view and NextBoundary sees under Max bytes only at the
 		// stretch's end. A buffer of exactly Max moves up to Max bytes per
 		// chunk; a larger one moves less often, which is the caller's to size
-		// (RFC 2 §10.5, at most 2 × Max). The loop has no bound on empty reads
-		// yet: a reader that keeps returning no bytes and no error is read for
-		// ever.
+		// (RFC 2 §10.5, at most 2 × Max). A reader that returns no bytes and
+		// no error maxEmptyReads times in a row fails Cut with
+		// io.ErrNoProgress, the bound bufio.Reader's fill uses, so such a
+		// reader is neither taken for the end nor read for ever.
 		if !eof && hi-lo < s.Max() {
 			hi = copy(buf, buf[lo:hi])
 			lo = 0
 
-			for !eof && hi < len(buf) {
+			for empty := 0; !eof && hi < len(buf); {
 				// decision: a reader's error stops Cut at once, before the
 				// bytes that came with it are cut: the extents stay dirty and
 				// the retry re-reads them (RFC 2 §7). io.EOF with bytes is the
@@ -75,6 +81,12 @@ func Cut(r io.Reader, base int64, s carver.Settings, buf []byte, realEnd bool,
 					eof = true
 				} else if rerr != nil {
 					return consumed, rerr
+				}
+
+				if k > 0 || eof {
+					empty = 0
+				} else if empty++; empty == maxEmptyReads {
+					return consumed, io.ErrNoProgress
 				}
 			}
 		}
