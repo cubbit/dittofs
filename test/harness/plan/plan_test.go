@@ -46,7 +46,7 @@ func TestPRTier(t *testing.T) {
 		"journal-conformance",
 		"engine-conformance", "engine-soak", "settings-scan-smoke", "reconcile-settings-smoke",
 		"adapter-conformance",
-		"integration", "integration/portmap", "integration/kerberos",
+		"integration", "integration/portmap", "integration/kerberos", "integration/s3-allocs",
 		"operator",
 		"e2e/second-user", "e2e/kerberos", "e2e/cross-protocol",
 		"pjdfstest/badger-s3/3", "pjdfstest/badger-s3/4", "pjdfstest/badger-s3/4.1",
