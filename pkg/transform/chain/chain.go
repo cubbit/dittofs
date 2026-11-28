@@ -22,15 +22,17 @@ import (
 // with an error naming the member, so a nil Encrypts never makes the implicit
 // encrypt-stage check fail open and a nil Logger, Recorder or m fails here
 // rather than panicking at its first use; an unregistered name, in cfg or in
-// deps.Require; a factory's failure, for decoding or for cfg; a duplicate,
-// two transforms of one stage, or a list out of stage order (RFC 5 §2.3),
-// never reordering it; a transform, configured or registered, whose Stage is
-// not one of StageCompress, StageEncrypt and StageRedundancy, or that
-// reports another ID than it registered under; and an encrypt stage beside a
-// compress stage whose settings do not carry with_encryption: accept (RFC 5
-// §3.2). Every refusal but a missing member of deps is logged once at Error,
-// with the reason and the transform at fault (RFC 5 §6). Only an untyped nil
-// Recorder is refused: a Recorder holding a nil pointer is the caller's bug.
+// deps.Require; a factory's failure, or a nil transform, for decoding or for
+// cfg; a duplicate, two transforms of one stage, or a list out of stage order
+// (RFC 5 §2.3), never reordering it; a transform, configured or registered,
+// whose Stage is not one of StageCompress, StageEncrypt and StageRedundancy,
+// or that reports another ID than it registered under; and an encrypt stage
+// beside a compress stage whose settings do not carry with_encryption: accept
+// (RFC 5 §3.2). Every refusal but a missing member of deps is logged once at
+// Error, with the reason and the transform at fault (RFC 5 §6). Only an
+// untyped nil Recorder is refused: a Recorder holding a nil pointer is the
+// caller's bug. The chain it returns fails Pin and Decode with
+// errors.ErrUnsupported until both are built.
 func NewChain(ctx context.Context, cfg []transform.Config, m keys.Provider, deps Deps) (transform.Chain, error) {
 	return process.newChain(ctx, cfg, m, deps)
 }

@@ -28,23 +28,19 @@ type logLine struct {
 func newChain(t *testing.T, r chain.Registry, cfg []transform.Config, require ...string) (transform.Chain, []logLine, error) {
 	t.Helper()
 	var buf bytes.Buffer
-	var recorded []string
 	c, err := r.NewChain(context.Background(), cfg, keystest.NewMemory(), chain.Deps{
 		Logger:   slog.New(slog.NewJSONHandler(&buf, nil)),
-		Recorder: sink{&recorded},
+		Recorder: sink{new([]string)},
 		Require:  require,
 		Encrypts: func(entity.NamespaceID) bool { return false },
 	})
 	var lines []logLine
-	for _, l := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
-		if l == "" {
-			continue
+	for dec := json.NewDecoder(&buf); dec.More(); {
+		var l logLine
+		if err := dec.Decode(&l); err != nil {
+			t.Fatalf("decoding a log line: %v", err)
 		}
-		var ll logLine
-		if err := json.Unmarshal([]byte(l), &ll); err != nil {
-			t.Fatalf("log line %q: %v", l, err)
-		}
-		lines = append(lines, ll)
+		lines = append(lines, l)
 	}
 	return c, lines, err
 }
@@ -111,19 +107,20 @@ func TestNewChainStageRules(t *testing.T) {
 		})
 	}
 	for _, list := range [][]string{nil, {"c"}, {"e", "r"}, {"c", "r"}, {"c2", "r"}} {
-		c, lines, err := newChain(t, stages(), names(list...))
-		if err != nil || c == nil {
-			t.Errorf("NewChain(%q) = %v, %v, want a chain", list, c, err)
-			continue
-		}
-		if len(lines) != 0 {
-			t.Errorf("NewChain(%q) logged %+v, want nothing", list, lines)
-		}
-		// The bound is the registry's, whatever is configured: c, e and c2
-		// add nothing and r adds half, plus the 8-byte envelope.
-		if got := c.MaxDecodeLen(1000); got != 1500+8 {
-			t.Errorf("NewChain(%q).MaxDecodeLen(1000) = %d, want %d", list, got, 1500+8)
-		}
+		t.Run("builds "+strings.Join(list, ", "), func(t *testing.T) {
+			c, lines, err := newChain(t, stages(), names(list...))
+			if err != nil || c == nil {
+				t.Fatalf("NewChain(%q) = %v, %v, want a chain", list, c, err)
+			}
+			if len(lines) != 0 {
+				t.Errorf("NewChain(%q) logged %+v, want nothing", list, lines)
+			}
+			// The bound is the registry's, whatever is configured: c, e and
+			// c2 add nothing and r adds half, plus the 8-byte envelope.
+			if got := c.MaxDecodeLen(1000); got != 1500+8 {
+				t.Errorf("NewChain(%q).MaxDecodeLen(1000) = %d, want %d", list, got, 1500+8)
+			}
+		})
 	}
 }
 
@@ -169,12 +166,12 @@ func TestNewChainRefusesTransformsThatCannotStart(t *testing.T) {
 	boom := errors.New("factory fault")
 	enc := pad{id: idB, stage: transform.StageEncrypt}
 	for _, tc := range []struct {
-		name    string
-		fault   transform.Factory
-		require []string
-		reason  []string
+		name   string
+		fault  transform.Factory
+		wrap   error
+		reason []string
 	}{
-		{"failing factory", failing(boom), nil, []string{`"e"`, boom.Error()}},
+		{"failing factory", failing(boom), boom, []string{`"e"`, boom.Error()}},
 		{"no transform", nilTransform, nil, []string{`"e"`, "no transform"}},
 		{"another stage", pad{id: idB, stage: transform.StageRedundancy}.factory(), nil, []string{`"e"`, "stage 3", "stage 2"}},
 		{"another ID", pad{id: idA, stage: transform.StageEncrypt}.factory(), nil, []string{`"e"`, "0x8001", "0x8002"}},
@@ -186,7 +183,7 @@ func TestNewChainRefusesTransformsThatCannotStart(t *testing.T) {
 			cfg := []transform.Config{{Name: "e", Settings: map[string]any{"fault": true}}, {Name: "r"}}
 			c, lines, err := newChain(t, r, cfg)
 			wantRefused(t, "e faulting, r", c, err, lines, "e", tc.reason...)
-			if tc.name == "failing factory" && !errors.Is(err, boom) {
+			if tc.wrap != nil && !errors.Is(err, tc.wrap) {
 				t.Errorf("NewChain(e faulting, r): err = %v, want it to wrap the factory's error", err)
 			}
 		})
@@ -203,11 +200,11 @@ func TestNewChainRefusesTransformsThatCannotStart(t *testing.T) {
 }
 
 // A registered transform that fails to build for decoding fails every chain,
-// and the line names it in its reason.
+// and the line names it.
 func TestNewChainLogsDecodeSetRefusal(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := stages()
 	r.Register(idC+2, "broken", failing(errors.New("factory fault")))
 	c, lines, err := newChain(t, r, names("c"))
-	wantRefused(t, "c, beside a broken registration", c, err, lines, "", `"broken"`, "factory fault")
+	wantRefused(t, "c, beside a broken registration", c, err, lines, "broken", `"broken"`, "factory fault")
 }
