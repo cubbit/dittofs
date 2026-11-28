@@ -307,9 +307,10 @@ func TestFinishAgesAShortLastPlanByItsZeroRefs(t *testing.T) {
 // carried bytes toward the target.
 func TestFoldCarriesARepeatOncePerBlock(t *testing.T) {
 	// The first chunk three times in the first block's span, which holds 16
-	// distinct chunks of 64 KiB in 18 refs, and once past its end.
+	// distinct chunks of 64 KiB in 18 refs, and once as the next chunk after
+	// it fills, which closes it though the plan carries that hash.
 	three := stream(0, lengths(21, 64<<10))
-	three[5].Hash, three[10].Hash, three[20].Hash = three[0].Hash, three[0].Hash, three[0].Hash
+	three[5].Hash, three[10].Hash, three[18].Hash = three[0].Hash, three[0].Hash, three[0].Hash
 	// One chunk, 100 repeats of it, 15 more distinct chunks and one past them.
 	many := stream(0, lengths(117, 64<<10))
 	for i := 1; i <= 100; i++ {
