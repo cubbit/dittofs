@@ -22,6 +22,7 @@ import (
 	"github.com/cubbit/dittofs/internal/sidecar"
 	"github.com/cubbit/dittofs/internal/tlsconfig"
 	"github.com/cubbit/dittofs/internal/vfs"
+	"github.com/cubbit/dittofs/pkg/adapter"
 	"github.com/cubbit/dittofs/pkg/adapter/settings"
 	"github.com/cubbit/dittofs/pkg/bootstrap"
 	"github.com/cubbit/dittofs/pkg/engine"
@@ -366,8 +367,13 @@ func build(cfg Config, in seams) (_ *Node, err error) {
 	n.runner = newRunner(n.meta.ControlPlane(), cfg.Clock, cfg.Bootstrap.Node.ID, cfg.Logger, steps)
 	n.watchdog = health.NewWatchdog(cfg.Clock)
 	n.sidecars = sidecar.New()
+	inst, err := n.meta.Installation(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("node: %w", err)
+	}
+	server := adapter.Server{Installation: inst.ID, Node: cfg.Bootstrap.Node.ID}
 	n.drains, n.endDrains = context.WithCancel(context.Background())
-	n.nfs, n.smb = newSlots(adapterDeps(n.fs, n.budgets, cfg.Metrics, cfg.Logger, n.watchdog), n.sidecars, addrs,
+	n.nfs, n.smb = newSlots(adapterDeps(n.fs, server, n.budgets, cfg.Metrics, cfg.Logger, n.watchdog), n.sidecars, addrs,
 		[]uint16{listenPort(cfg.Bootstrap.API.Listen[0]), listenPort(cfg.Bootstrap.Metrics.Listen)}, cfg.Clock, n.drains)
 	n.health.Add(&adapterConditions{n})
 	n.life.ready.Store(readyStarting)

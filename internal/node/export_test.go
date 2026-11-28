@@ -444,3 +444,6 @@ func (k *keptKeys) Versions(ctx context.Context, kind entity.SecretKind, owner e
 
 // SignIns is the sign-in service the node hands its API.
 func (n *Node) SignIns() *auth.Service { return n.auth }
+
+// AdapterServer is the server identity the node hands every adapter it builds.
+func (n *Node) AdapterServer() adapter.Server { return n.nfs.deps.Server }
