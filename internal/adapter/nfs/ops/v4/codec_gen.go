@@ -100,7 +100,7 @@ func (x *channelAttrs) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(channelAttrs)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -123,7 +123,7 @@ func (x *channelAttrs) decodeXDR(d *wire.Decoder, v uint32) {
 	}
 }
 
-func (x *channelAttrs) encodeXDR(e *wire.Encoder, v uint32) {
+func (x *channelAttrs) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
 	e.Uint32(x.HeaderPad)
 	e.Uint32(x.MaxRequest)
 	e.Uint32(x.MaxResp)
@@ -161,7 +161,7 @@ func (x *authSysParms) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(authSysParms)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -182,7 +182,7 @@ func (x *authSysParms) decodeXDR(d *wire.Decoder, v uint32) {
 	}
 }
 
-func (x *authSysParms) encodeXDR(e *wire.Encoder, v uint32) {
+func (x *authSysParms) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
 	e.Uint32(x.Stamp)
 	e.String(x.Machine, 255)
 	e.Uint32(x.UID)
@@ -216,7 +216,7 @@ func (x *gssCBHandles) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(gssCBHandles)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -230,7 +230,7 @@ func (x *gssCBHandles) decodeXDR(d *wire.Decoder, v uint32) {
 	x.FromClient = d.Opaque(1024)
 }
 
-func (x *gssCBHandles) encodeXDR(e *wire.Encoder, v uint32) {
+func (x *gssCBHandles) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
 	e.Uint32(x.Service)
 	e.Opaque(x.FromServer, 1024)
 	e.Opaque(x.FromClient, 1024)
@@ -257,7 +257,7 @@ func (x *callbackSecParms) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(callbackSecParms)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -278,14 +278,14 @@ func (x *callbackSecParms) decodeXDR(d *wire.Decoder, v uint32) {
 	}
 }
 
-func (x *callbackSecParms) encodeXDR(e *wire.Encoder, v uint32) {
+func (x *callbackSecParms) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
 	e.Uint32(x.Flavour)
 	switch {
 	case x.Flavour == 0:
 	case x.Flavour == 1:
-		x.Sys.encodeXDR(e, v)
+		x.Sys.encodeXDR(e, out, v)
 	case x.Flavour == 6:
-		x.GSS.encodeXDR(e, v)
+		x.GSS.encodeXDR(e, out, v)
 	default:
 		e.NoArm(uint32(x.Flavour))
 	}
@@ -315,7 +315,7 @@ func (x *createSessionArgs) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(createSessionArgs)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -338,16 +338,16 @@ func (x *createSessionArgs) decodeXDR(d *wire.Decoder, v uint32) {
 	}
 }
 
-func (x *createSessionArgs) encodeXDR(e *wire.Encoder, v uint32) {
+func (x *createSessionArgs) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
 	e.Uint64(x.ClientID)
 	e.Uint32(x.Sequence)
 	e.Uint32(x.Flags)
-	x.Fore.encodeXDR(e, v)
-	x.Back.encodeXDR(e, v)
+	x.Fore.encodeXDR(e, out, v)
+	x.Back.encodeXDR(e, out, v)
 	e.Uint32(x.Program)
 	e.Count(len(x.SecParms), 16)
 	for i0 := range x.SecParms {
-		x.SecParms[i0].encodeXDR(e, v)
+		x.SecParms[i0].encodeXDR(e, out, v)
 	}
 }
 
@@ -380,7 +380,7 @@ func (x *createSessionRes) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(createSessionRes)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -392,9 +392,9 @@ func (x *createSessionRes) decodeXDR(d *wire.Decoder, v uint32) {
 	d.StatusArm()
 }
 
-func (x *createSessionRes) encodeXDR(e *wire.Encoder, v uint32) {
+func (x *createSessionRes) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
 	if x.Ok != nil {
-		x.Ok.encodeXDR(e, v)
+		x.Ok.encodeXDR(e, out, v)
 	}
 }
 
@@ -419,7 +419,7 @@ func (x *createSessionResOk) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(createSessionResOk)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -435,12 +435,12 @@ func (x *createSessionResOk) decodeXDR(d *wire.Decoder, v uint32) {
 	x.Back.decodeXDR(d, v)
 }
 
-func (x *createSessionResOk) encodeXDR(e *wire.Encoder, v uint32) {
+func (x *createSessionResOk) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
 	e.Fixed(x.SessionID[:])
 	e.Uint32(x.Sequence)
 	e.Uint32(x.Flags)
-	x.Fore.encodeXDR(e, v)
-	x.Back.encodeXDR(e, v)
+	x.Fore.encodeXDR(e, out, v)
+	x.Back.encodeXDR(e, out, v)
 }
 
 func (*createSessionResOk) MaxWire(v uint32) int {
@@ -469,7 +469,7 @@ func (x *exchangeIDArgs) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(exchangeIDArgs)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -489,13 +489,13 @@ func (x *exchangeIDArgs) decodeXDR(d *wire.Decoder, v uint32) {
 	}
 }
 
-func (x *exchangeIDArgs) encodeXDR(e *wire.Encoder, v uint32) {
-	x.Owner.encodeXDR(e, v)
+func (x *exchangeIDArgs) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
+	x.Owner.encodeXDR(e, out, v)
 	e.Uint32(x.Flags)
-	x.Protect.encodeXDR(e, v)
+	x.Protect.encodeXDR(e, out, v)
 	e.Count(len(x.ImplID), 1)
 	for i0 := range x.ImplID {
-		x.ImplID[i0].encodeXDR(e, v)
+		x.ImplID[i0].encodeXDR(e, out, v)
 	}
 }
 
@@ -525,7 +525,7 @@ func (x *clientOwner) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(clientOwner)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -538,7 +538,7 @@ func (x *clientOwner) decodeXDR(d *wire.Decoder, v uint32) {
 	x.OwnerID = d.Opaque(1024)
 }
 
-func (x *clientOwner) encodeXDR(e *wire.Encoder, v uint32) {
+func (x *clientOwner) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
 	e.Fixed(x.Verifier[:])
 	e.Opaque(x.OwnerID, 1024)
 }
@@ -563,7 +563,7 @@ func (x *stateProtectOps) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(stateProtectOps)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -586,7 +586,7 @@ func (x *stateProtectOps) decodeXDR(d *wire.Decoder, v uint32) {
 	}
 }
 
-func (x *stateProtectOps) encodeXDR(e *wire.Encoder, v uint32) {
+func (x *stateProtectOps) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
 	e.Count(len(x.MustEnforce), 3)
 	for i0 := range x.MustEnforce {
 		e.Uint32(x.MustEnforce[i0])
@@ -617,7 +617,7 @@ func (x *secOID) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(secOID)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -629,7 +629,7 @@ func (x *secOID) decodeXDR(d *wire.Decoder, v uint32) {
 	x.OID = d.Opaque(1024)
 }
 
-func (x *secOID) encodeXDR(e *wire.Encoder, v uint32) {
+func (x *secOID) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
 	e.Opaque(x.OID, 1024)
 }
 
@@ -652,7 +652,7 @@ func (x *ssvSPParms) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(ssvSPParms)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -678,15 +678,15 @@ func (x *ssvSPParms) decodeXDR(d *wire.Decoder, v uint32) {
 	x.NumHandles = d.Uint32()
 }
 
-func (x *ssvSPParms) encodeXDR(e *wire.Encoder, v uint32) {
-	x.Ops.encodeXDR(e, v)
+func (x *ssvSPParms) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
+	x.Ops.encodeXDR(e, out, v)
 	e.Count(len(x.HashAlgs), 16)
 	for i0 := range x.HashAlgs {
-		x.HashAlgs[i0].encodeXDR(e, v)
+		x.HashAlgs[i0].encodeXDR(e, out, v)
 	}
 	e.Count(len(x.EncrAlgs), 16)
 	for i0 := range x.EncrAlgs {
-		x.EncrAlgs[i0].encodeXDR(e, v)
+		x.EncrAlgs[i0].encodeXDR(e, out, v)
 	}
 	e.Uint32(x.Window)
 	e.Uint32(x.NumHandles)
@@ -719,7 +719,7 @@ func (x *stateProtectA) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(stateProtectA)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -740,14 +740,14 @@ func (x *stateProtectA) decodeXDR(d *wire.Decoder, v uint32) {
 	}
 }
 
-func (x *stateProtectA) encodeXDR(e *wire.Encoder, v uint32) {
+func (x *stateProtectA) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
 	e.Uint32(x.How)
 	switch {
 	case x.How == 0:
 	case x.How == 1:
-		x.MachOps.encodeXDR(e, v)
+		x.MachOps.encodeXDR(e, out, v)
 	case x.How == 2:
-		x.SSV.encodeXDR(e, v)
+		x.SSV.encodeXDR(e, out, v)
 	default:
 		e.NoArm(uint32(x.How))
 	}
@@ -777,7 +777,7 @@ func (x *stateProtectR) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(stateProtectR)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -796,12 +796,12 @@ func (x *stateProtectR) decodeXDR(d *wire.Decoder, v uint32) {
 	}
 }
 
-func (x *stateProtectR) encodeXDR(e *wire.Encoder, v uint32) {
+func (x *stateProtectR) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
 	e.Uint32(x.How)
 	switch {
 	case x.How == 0:
 	case x.How == 1:
-		x.MachOps.encodeXDR(e, v)
+		x.MachOps.encodeXDR(e, out, v)
 	default:
 		e.NoArm(uint32(x.How))
 	}
@@ -829,7 +829,7 @@ func (x *implID) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(implID)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -843,10 +843,10 @@ func (x *implID) decodeXDR(d *wire.Decoder, v uint32) {
 	x.Date.decodeXDR(d, v)
 }
 
-func (x *implID) encodeXDR(e *wire.Encoder, v uint32) {
+func (x *implID) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
 	e.String(x.Domain, 1024)
 	e.String(x.Name, 1024)
-	x.Date.encodeXDR(e, v)
+	x.Date.encodeXDR(e, out, v)
 }
 
 func (*implID) MaxWire(v uint32) int {
@@ -872,7 +872,7 @@ func (x *nfsTime) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(nfsTime)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -885,7 +885,7 @@ func (x *nfsTime) decodeXDR(d *wire.Decoder, v uint32) {
 	x.NSeconds = d.Uint32()
 }
 
-func (x *nfsTime) encodeXDR(e *wire.Encoder, v uint32) {
+func (x *nfsTime) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
 	e.Uint64(uint64(x.Seconds))
 	e.Uint32(x.NSeconds)
 }
@@ -910,7 +910,7 @@ func (x *serverOwner) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(serverOwner)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -923,7 +923,7 @@ func (x *serverOwner) decodeXDR(d *wire.Decoder, v uint32) {
 	x.MajorID = d.Opaque(1024)
 }
 
-func (x *serverOwner) encodeXDR(e *wire.Encoder, v uint32) {
+func (x *serverOwner) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
 	e.Uint64(x.MinorID)
 	e.Opaque(x.MajorID, 1024)
 }
@@ -948,7 +948,7 @@ func (x *exchangeIDRes) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(exchangeIDRes)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -960,9 +960,9 @@ func (x *exchangeIDRes) decodeXDR(d *wire.Decoder, v uint32) {
 	d.StatusArm()
 }
 
-func (x *exchangeIDRes) encodeXDR(e *wire.Encoder, v uint32) {
+func (x *exchangeIDRes) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
 	if x.Ok != nil {
-		x.Ok.encodeXDR(e, v)
+		x.Ok.encodeXDR(e, out, v)
 	}
 }
 
@@ -987,7 +987,7 @@ func (x *exchangeIDResOk) EncodeWire(v uint32, out *resources.Buf) error {
 		x = new(exchangeIDResOk)
 	}
 	e := wire.Encoder{B: out.B}
-	x.encodeXDR(&e, v)
+	x.encodeXDR(&e, out, v)
 	if e.Err != nil {
 		return e.Err
 	}
@@ -1010,16 +1010,16 @@ func (x *exchangeIDResOk) decodeXDR(d *wire.Decoder, v uint32) {
 	}
 }
 
-func (x *exchangeIDResOk) encodeXDR(e *wire.Encoder, v uint32) {
+func (x *exchangeIDResOk) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
 	e.Uint64(x.ClientID)
 	e.Uint32(x.SequenceID)
 	e.Uint32(x.Flags)
-	x.Protect.encodeXDR(e, v)
-	x.Owner.encodeXDR(e, v)
+	x.Protect.encodeXDR(e, out, v)
+	x.Owner.encodeXDR(e, out, v)
 	e.Opaque(x.Scope, 1024)
 	e.Count(len(x.ImplID), 1)
 	for i0 := range x.ImplID {
-		x.ImplID[i0].encodeXDR(e, v)
+		x.ImplID[i0].encodeXDR(e, out, v)
 	}
 }
 
