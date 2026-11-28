@@ -79,6 +79,9 @@ type Deps struct {
 type Provider struct {
 	records KeyRecords
 	rand    io.Reader
+	log     *slog.Logger
+	now     func() time.Time
+	cache   cache
 
 	// masterKeyID names the key-file master key; aead holds the key itself,
 	// which never leaves this process.
@@ -205,5 +208,14 @@ func build(masterKeyID [16]byte, key []byte, deps Deps) (*Provider, error) {
 		return nil, fmt.Errorf("provider: master key %x: %w", masterKeyID, err)
 	}
 
-	return &Provider{records: deps.Records, rand: deps.Rand, masterKeyID: masterKeyID, aead: aead, masterKeyFP: fingerprint(key)}, nil
+	p := &Provider{records: deps.Records, rand: deps.Rand, log: deps.Logger, now: deps.Now, masterKeyID: masterKeyID, aead: aead, masterKeyFP: fingerprint(key)}
+	if p.log == nil {
+		p.log = slog.New(slog.DiscardHandler)
+	}
+	if p.now == nil {
+		p.now = time.Now
+	}
+	p.cache.sets = make(map[entity.NamespaceID]map[slot]*entry)
+	p.cache.epochs = make(map[entity.NamespaceID]uint64)
+	return p, nil
 }
