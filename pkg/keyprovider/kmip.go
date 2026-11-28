@@ -125,13 +125,19 @@ func kmipRetiredKeyLoader(ctx context.Context, client *kmip.Client) retiredKeyLo
 // the AES-256 length the wrap layer requires is a configuration error.
 func fetchKMIPKey(ctx context.Context, client *kmip.Client, uid string) ([]byte, error) {
 	key, err := client.GetSymmetricKey(ctx, uid)
-	if errors.Is(err, kmip.ErrKeyLength) {
-		return nil, fmt.Errorf("%w: %w", ErrInvalidConfig, err)
-	}
 	if err != nil {
-		return nil, fmt.Errorf("keyprovider: %w", err)
+		return nil, kmipKeyErr(err)
 	}
 	return key, nil
+}
+
+// kmipKeyErr maps a failed Get: a key of the wrong length is a
+// configuration error, anything else a fetch failure.
+func kmipKeyErr(err error) error {
+	if errors.Is(err, kmip.ErrKeyLength) {
+		return fmt.Errorf("%w: %w", ErrInvalidConfig, err)
+	}
+	return fmt.Errorf("keyprovider: %w", err)
 }
 
 func buildKMIPTLSConfig(cfg Config) (*tls.Config, error) {
@@ -141,7 +147,7 @@ func buildKMIPTLSConfig(cfg Config) (*tls.Config, error) {
 	}
 	keyPEM, err := os.ReadFile(cfg.ClientKey)
 	if err != nil {
-		return nil, fmt.Errorf("keyprovider: load kmip client cert: %w", err)
+		return nil, fmt.Errorf("keyprovider: read kmip client key: %w", err)
 	}
 	var caPEM []byte
 	if cfg.ServerCA != "" {

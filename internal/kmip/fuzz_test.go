@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"encoding/binary"
 	"testing"
+
+	"github.com/gemalto/kmip-go/kmip14"
 )
 
 // FuzzReadMessage holds the frame read to an independent reading of the
 // header: an input holding a whole frame whose declared length is within the
 // cap reads as exactly that frame, a prefix of the input; any other input is
-// refused. Nothing panics, and no read runs past the frame.
+// refused. No read runs past the frame, and the response, Get and
+// GetAttributes decodes of what it accepts return an error or a value, never
+// a panic.
 func FuzzReadMessage(f *testing.F) {
 	f.Add(frame(16, 0))
 	f.Add(frame(3, 5))
@@ -44,5 +48,10 @@ func FuzzReadMessage(f *testing.F) {
 		if r.Len() != len(in)-want {
 			t.Fatalf("readMessage left %d bytes, want %d after the frame", r.Len(), len(in)-want)
 		}
+		if raw, err := decodeResponse(kmip14.OperationGet, got); err == nil {
+			_, _ = decodeSymmetricKey("uid-1", raw)
+		}
+		_, _ = decodeSymmetricKey("uid-1", got)
+		_, _ = decodeState("uid-1", got)
 	})
 }

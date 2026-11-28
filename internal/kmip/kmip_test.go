@@ -6,15 +6,18 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/binary"
 	"encoding/pem"
 	"errors"
+	"io"
 	"math/big"
 	"net"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -38,7 +41,8 @@ func selfSigned(t *testing.T) (certPEM, keyPEM []byte) {
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().Add(time.Hour),
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
+		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1")},
 		BasicConstraintsValid: true,
 		IsCA:                  true,
 	}
@@ -299,6 +303,7 @@ func TestReadMessage(t *testing.T) {
 		{"padded", frame(3, 5)},
 		{"aligned", frame(16, 0)},
 		{"empty value", frame(0, 0)},
+		{"a marshalled response", response(t, kmip14.OperationGet, kmip14.ResultStatusSuccess, 0, nil)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// A second frame follows on the same reader: the read stops at
@@ -397,14 +402,96 @@ func TestDialClosedListener(t *testing.T) {
 	}
 }
 
-func TestNewClientDefaultTimeout(t *testing.T) {
-	prof.Watch(t, prof.Options{})
-	for _, in := range []time.Duration{0, -time.Second} {
-		if got := NewClient("h:1", nil, in).timeout; got != defaultTimeout {
-			t.Fatalf("NewClient(timeout %s): timeout %s, want the default %s", in, got, defaultTimeout)
-		}
+// silentListener accepts on 127.0.0.1:0 and never writes. With tlsCfg set it
+// completes the TLS handshake first, so a client stalls on its request's
+// answer; without it the client stalls in the handshake.
+func silentListener(t *testing.T, serve func(net.Conn)) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
 	}
-	if got := NewClient("h:1", nil, time.Second).timeout; got != time.Second {
-		t.Fatalf("NewClient(timeout 1s): timeout %s, want 1s", got)
+	var mu sync.Mutex
+	var conns []net.Conn
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			conns = append(conns, conn)
+			mu.Unlock()
+			serve(conn)
+			_ = conn.Close()
+		}
+	}()
+	// Closing the accepted connections too ends a serve whose client never
+	// hung up, as when the client's timeout fails.
+	t.Cleanup(func() {
+		_ = ln.Close()
+		mu.Lock()
+		for _, c := range conns {
+			_ = c.Close()
+		}
+		mu.Unlock()
+		<-done
+	})
+	return ln.Addr().String()
+}
+
+// A server that never answers costs one timeout, whether it stalls in the
+// handshake or after it, and a context deadline later than the timeout does
+// not extend it.
+func TestTimeout(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	certPEM, keyPEM := selfSigned(t)
+	clientCfg, err := TLSConfig(certPEM, keyPEM, certPEM)
+	if err != nil {
+		t.Fatalf("TLSConfig: %v", err)
+	}
+	serverCert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		t.Fatalf("server key pair: %v", err)
+	}
+	serverCfg := &tls.Config{Certificates: []tls.Certificate{serverCert}, MinVersion: tls.VersionTLS12}
+	// Each serve reads until the client hangs up, so the client's own
+	// timeout is what ends the call.
+	drain := func(c net.Conn) { _, _ = io.Copy(io.Discard, c) }
+	for _, tc := range []struct {
+		name  string
+		serve func(net.Conn)
+	}{
+		{"in the handshake", drain},
+		{"after the handshake", func(c net.Conn) {
+			tc := tls.Server(c, serverCfg)
+			if tc.Handshake() == nil {
+				drain(tc)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const timeout = 200 * time.Millisecond
+			c := NewClient(silentListener(t, tc.serve), clientCfg, timeout)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
+			defer cancel()
+			errc := make(chan error, 1)
+			go func() {
+				_, err := c.State(ctx, "uid-1")
+				errc <- err
+			}()
+			// A bounded wait is the assertion here: no clock reaches the
+			// dialer or the connection's deadline.
+			select {
+			case err := <-errc:
+				if err == nil {
+					t.Fatal("State against a silent server: nil error")
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatalf("State against a silent server did not return within 10s, want about the %s timeout", timeout)
+			}
+		})
 	}
 }

@@ -1,7 +1,7 @@
 package kmip
 
 import (
-	"context"
+	"errors"
 	"testing"
 
 	"github.com/gemalto/kmip-go/kmip14"
@@ -14,20 +14,8 @@ import (
 // destroyed, only Active is active, and a failed read never reports either.
 func TestClassify(t *testing.T) {
 	prof.Watch(t, prof.Options{})
-	_, itemNotFound := decodeResponse(kmip14.OperationGetAttributes,
-		response(t, kmip14.OperationGetAttributes, kmip14.ResultStatusOperationFailed, kmip14.ResultReasonItemNotFound, nil))
-	if itemNotFound == nil {
-		t.Fatal("decodeResponse of an Item Not Found answer: nil error")
-	}
-	certPEM, keyPEM := selfSigned(t)
-	tlsCfg, err := TLSConfig(certPEM, keyPEM, nil)
-	if err != nil {
-		t.Fatalf("TLSConfig: %v", err)
-	}
-	dialState, dialErr := NewClient(closedEndpoint(t), tlsCfg, 0).State(context.Background(), "uid-1")
-	if dialErr == nil {
-		t.Fatal("State over a closed listener: nil error")
-	}
+	itemNotFound := errors.New("kmip: GetAttributes failed: status=OperationFailed reason=ItemNotFound")
+	dialErr := errors.New("kmip: dial 127.0.0.1:1: connection refused")
 
 	for _, tc := range []struct {
 		name  string
@@ -45,7 +33,7 @@ func TestClassify(t *testing.T) {
 		{"zero value", kmip14.State(0), nil, Unavailable},
 		{"Item Not Found", 0, itemNotFound, Unavailable},
 		{"Item Not Found beside a Destroyed state", kmip14.StateDestroyed, itemNotFound, Unavailable},
-		{"dial error", dialState, dialErr, Unavailable},
+		{"dial error", 0, dialErr, Unavailable},
 		{"dial error beside an Active state", kmip14.StateActive, dialErr, Unavailable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

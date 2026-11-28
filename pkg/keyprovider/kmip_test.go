@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -16,6 +17,9 @@ import (
 	"time"
 
 	"github.com/gemalto/kmip-go/kmip14"
+
+	"github.com/cubbit/dittofs/internal/kmip"
+	"github.com/cubbit/dittofs/internal/prof"
 )
 
 // TestKMIP_ConfigValidation runs without a live KMIP server — it
@@ -45,6 +49,7 @@ func TestKMIP_ConfigValidation(t *testing.T) {
 // unless Active, and a retired key only when its material is destroyed, so a
 // Compromised or Deactivated retired key still reads the blocks under it.
 func TestKMIP_StateDecisions(t *testing.T) {
+	prof.Watch(t, prof.Options{})
 	for _, tc := range []struct {
 		state                          kmip14.State
 		currentRefused, retiredRefused bool
@@ -87,6 +92,7 @@ func TestKMIP_StateDecisions(t *testing.T) {
 // system roots, and a client certificate that does not load is refused, each
 // naming what failed.
 func TestBuildKMIPTLSConfig(t *testing.T) {
+	prof.Watch(t, prof.Options{})
 	dir := t.TempDir()
 	empty := filepath.Join(dir, "empty.pem")
 	if err := os.WriteFile(empty, nil, 0o600); err != nil {
@@ -102,7 +108,7 @@ func TestBuildKMIPTLSConfig(t *testing.T) {
 		want string
 	}{
 		{"missing client cert", Config{ClientCert: filepath.Join(dir, "none"), ClientKey: empty}, "load kmip client cert"},
-		{"client cert not PEM", Config{ClientCert: empty, ClientKey: empty}, "kmip: load client cert"},
+		{"missing client key", Config{ClientCert: cert, ClientKey: filepath.Join(dir, "none")}, "read kmip client key"},
 		{"missing server CA", Config{ClientCert: empty, ClientKey: empty, ServerCA: filepath.Join(dir, "none")}, "read kmip server CA"},
 		{"empty server CA", Config{ClientCert: cert, ClientKey: key, ServerCA: empty}, "kmip: server CA has no PEM certs"},
 	} {
@@ -140,4 +146,20 @@ func writeClientCert(t *testing.T, dir string) (certPath, keyPath string) {
 		t.Fatalf("write key: %v", err)
 	}
 	return certPath, keyPath
+}
+
+// A Get that fails on the key's length is a configuration error, as before
+// the transport moved; any other failure is not, and both keep this
+// package's prefix or sentinel.
+func TestKMIPKeyErr(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	length := fmt.Errorf("%w: key %q has unexpected length 16", kmip.ErrKeyLength, "uid-1")
+	if err := kmipKeyErr(length); !errors.Is(err, ErrInvalidConfig) || !errors.Is(err, kmip.ErrKeyLength) {
+		t.Fatalf("kmipKeyErr(wrong length) = %v, want ErrInvalidConfig wrapping ErrKeyLength", err)
+	}
+	other := errors.New("kmip: dial 127.0.0.1:1: connection refused")
+	err := kmipKeyErr(other)
+	if errors.Is(err, ErrInvalidConfig) || !errors.Is(err, other) || !strings.HasPrefix(err.Error(), "keyprovider: ") {
+		t.Fatalf("kmipKeyErr(dial failure) = %v, want the failure under keyprovider:, not ErrInvalidConfig", err)
+	}
 }

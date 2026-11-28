@@ -83,16 +83,16 @@ func TLSConfig(clientCertPEM, clientKeyPEM, serverCAPEM []byte) (*tls.Config, er
 // per unwrap. A pooled connection with a concurrency bound replaces it once
 // a cold start or a master-key rotation shows the handshakes in a profile.
 func (c *Client) Do(ctx context.Context, op kmip14.Operation, payload any) (ttlv.TTLV, error) {
-	dialer := &net.Dialer{Timeout: c.timeout}
-	conn, err := tls.DialWithDialer(dialer, "tcp", c.endpoint, c.tls)
+	// The call ends at the earlier of the context's deadline and the timeout.
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	dialer := &tls.Dialer{NetDialer: &net.Dialer{}, Config: c.tls}
+	conn, err := dialer.DialContext(ctx, "tcp", c.endpoint)
 	if err != nil {
 		return nil, fmt.Errorf("kmip: dial %s: %w", c.endpoint, err)
 	}
 	defer func() { _ = conn.Close() }()
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		deadline = time.Now().Add(c.timeout)
-	}
+	deadline, _ := ctx.Deadline()
 	if err := conn.SetDeadline(deadline); err != nil {
 		return nil, fmt.Errorf("kmip: set deadline: %w", err)
 	}
@@ -126,7 +126,7 @@ func (c *Client) Do(ctx context.Context, op kmip14.Operation, payload any) (ttlv
 // reason names.
 func decodeResponse(op kmip14.Operation, msg ttlv.TTLV) (ttlv.TTLV, error) {
 	var resp kmip.ResponseMessage
-	if err := ttlv.Unmarshal(msg, &resp); err != nil {
+	if err := unmarshal(msg, &resp); err != nil {
 		return nil, fmt.Errorf("kmip: unmarshal %v response: %w", op, err)
 	}
 	if len(resp.BatchItem) == 0 {
@@ -150,7 +150,7 @@ func decodeResponse(op kmip14.Operation, msg ttlv.TTLV) (ttlv.TTLV, error) {
 func (c *Client) GetSymmetricKey(ctx context.Context, uid string) ([]byte, error) {
 	raw, err := c.Do(ctx, kmip14.OperationGet, kmip.GetRequestPayload{UniqueIdentifier: uid})
 	if err != nil {
-		return nil, fmt.Errorf("kmip: get key %s: %w", uid, err)
+		return nil, fmt.Errorf("get key %s: %w", uid, err)
 	}
 	return decodeSymmetricKey(uid, raw)
 }
@@ -158,7 +158,7 @@ func (c *Client) GetSymmetricKey(ctx context.Context, uid string) ([]byte, error
 // decodeSymmetricKey reads the key material out of a Get response payload.
 func decodeSymmetricKey(uid string, raw ttlv.TTLV) ([]byte, error) {
 	var payload kmip.GetResponsePayload
-	if err := ttlv.Unmarshal(raw, &payload); err != nil {
+	if err := unmarshal(raw, &payload); err != nil {
 		return nil, fmt.Errorf("kmip: decode Get payload of key %s: %w", uid, err)
 	}
 	if payload.ObjectType != kmip14.ObjectTypeSymmetricKey {
@@ -172,6 +172,7 @@ func decodeSymmetricKey(uid string, raw ttlv.TTLV) ([]byte, error) {
 		return nil, fmt.Errorf("kmip: key %s: %w", uid, err)
 	}
 	if len(key) != keySize {
+		clear(key)
 		return nil, fmt.Errorf("%w: key %q has unexpected length %d (want %d for AES-256)", ErrKeyLength, uid, len(key), keySize)
 	}
 	return key, nil
@@ -222,7 +223,7 @@ func (c *Client) State(ctx context.Context, uid string) (kmip14.State, error) {
 	raw, err := c.Do(ctx, kmip14.OperationGetAttributes,
 		getAttributesRequestPayload{UniqueIdentifier: uid, AttributeName: []string{kmip14.TagState.CanonicalName()}})
 	if err != nil {
-		return 0, fmt.Errorf("kmip: state of key %s: %w", uid, err)
+		return 0, fmt.Errorf("state of key %s: %w", uid, err)
 	}
 	return decodeState(uid, raw)
 }
@@ -232,7 +233,7 @@ func (c *Client) State(ctx context.Context, uid string) (kmip14.State, error) {
 func decodeState(uid string, raw ttlv.TTLV) (kmip14.State, error) {
 	stateName := kmip14.TagState.CanonicalName()
 	var payload getAttributesResponsePayload
-	if err := ttlv.Unmarshal(raw, &payload); err != nil {
+	if err := unmarshal(raw, &payload); err != nil {
 		return 0, fmt.Errorf("kmip: decode GetAttributes payload of key %s: %w", uid, err)
 	}
 	for _, attr := range payload.Attribute {
@@ -278,4 +279,16 @@ func readMessage(r io.Reader) (ttlv.TTLV, error) {
 		return nil, err
 	}
 	return ttlv.TTLV(msg), nil
+}
+
+// unmarshal is ttlv.Unmarshal with its panics returned as errors: the
+// library panics on some malformed input, such as a byte string where a
+// structure belongs, and the bytes come from the server.
+func unmarshal(raw ttlv.TTLV, v any) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("malformed TTLV: %v", r)
+		}
+	}()
+	return ttlv.Unmarshal(raw, v)
 }
