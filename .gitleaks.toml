@@ -5,6 +5,10 @@ useDefault = true
 
 [allowlist]
 description = "Known-safe placeholders and example values"
+paths = [
+  # BLAKE3's published test vectors (upstream test_vectors.json), digests not credentials.
+  '''^pkg/carver/internal/carvetest/testdata/blake3/test_vectors\.json$''',
+]
 regexes = [
   # AWS's official documentation example key — not a real credential.
   '''AKIAIOSFODNN7EXAMPLE''',
