@@ -56,6 +56,8 @@ type Client struct {
 	tr  *http.Transport
 	api *s3.Client
 
+	clock clock // what the capability check's re-list waits on; a test sets its own
+
 	// peerClosed counts the connections the service closed: a reply carrying
 	// Connection: close, or a read that ended in EOF or a reset before the
 	// client closed the connection itself. No metric reads it; the steady-load
@@ -99,7 +101,7 @@ func NewClient(cfg ClientConfig, d Deps) (*Client, error) {
 		cfg.StorageClass = "STANDARD"
 	}
 
-	c := &Client{cfg: cfg, log: d.Logger.With("component", "remote"), rec: d.Recorder}
+	c := &Client{cfg: cfg, log: d.Logger.With("component", "remote"), rec: d.Recorder, clock: realClock{}}
 
 	// decision: one attempt per call holds above net/http only. Its transport
 	// resends a GET once, by itself, when the pooled connection it went out on
