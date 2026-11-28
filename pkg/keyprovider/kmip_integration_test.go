@@ -11,6 +11,9 @@ import (
 	"testing"
 
 	"github.com/gemalto/kmip-go/kmip14"
+
+	"github.com/cubbit/dittofs/internal/kmip"
+	"github.com/cubbit/dittofs/internal/prof"
 )
 
 // requireKMIPEnv makes live tests opt-in. Once enabled, every required
@@ -158,5 +161,90 @@ func TestKMIP_RetiredCompromisedKeyLoadsLive(t *testing.T) {
 	t.Cleanup(func() { _ = p.Close() })
 	if _, ok := p.retired[compromised]; !ok {
 		t.Fatalf("retired set does not hold %q; a compromised retired key must stay readable", compromised)
+	}
+}
+
+// neverIssuedUID is a uid PyKMIP never hands out: it numbers its objects.
+const neverIssuedUID = "dittofs-never-issued"
+
+// kmipClient builds the transport client the provider would build from cfg.
+func kmipClient(t *testing.T, cfg Config) *kmip.Client {
+	t.Helper()
+	tlsCfg, err := buildKMIPTLSConfig(cfg)
+	if err != nil {
+		t.Fatalf("buildKMIPTLSConfig: %v", err)
+	}
+	return kmip.NewClient(cfg.Endpoint, tlsCfg, 0)
+}
+
+// TestKMIP_GetUnknownUIDLive: a Get of a uid the server never issued fails
+// with the server's own result, the status and reason by name and the uid,
+// under this package's prefix.
+func TestKMIP_GetUnknownUIDLive(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	cfg := requireKMIPEnv(t)
+	_, err := fetchKMIPKey(context.Background(), kmipClient(t, cfg), neverIssuedUID)
+	if err == nil {
+		t.Fatalf("Get of %q: nil error", neverIssuedUID)
+	}
+	for _, want := range []string{"keyprovider: ", "Get failed", "reason=ItemNotFound", neverIssuedUID} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Get of %q: error %q does not name %q", neverIssuedUID, err, want)
+		}
+	}
+	if errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("Get of %q: error %v is ErrInvalidConfig, want a fetch failure", neverIssuedUID, err)
+	}
+}
+
+// TestKMIP_RetiredUIDValidationLive covers the two startup rejections on the
+// KMIP path, where the uid is the id, so a duplicate shows in the
+// configuration.
+func TestKMIP_RetiredUIDValidationLive(t *testing.T) {
+	base := requireKMIPEnv(t)
+	retired := kmipStateUID(t, "DITTOFS_TEST_KMIP_RETIRED_KEY_UID")
+	for _, tc := range []struct {
+		name string
+		refs []string
+	}{
+		{"current uid also listed as retired", []string{base.KeyUID}},
+		{"same retired uid listed twice", []string{retired, retired}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prof.Watch(t, prof.Options{})
+			cfg := base
+			cfg.RetiredKeyUIDs = tc.refs
+			p, err := newKMIPProvider(context.Background(), cfg)
+			if err == nil {
+				_ = p.Close()
+			}
+			if !errors.Is(err, ErrInvalidConfig) {
+				t.Fatalf("newKMIPProvider with retired %q: error %v, want ErrInvalidConfig", tc.refs, err)
+			}
+		})
+	}
+}
+
+// TestKMIP_UnreadableRetiredUIDDegradesLive: a retired uid the server does
+// not hold costs access to the blocks under it, not the whole provider.
+func TestKMIP_UnreadableRetiredUIDDegradesLive(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	cfg := requireKMIPEnv(t)
+	cfg.RetiredKeyUIDs = []string{neverIssuedUID}
+	p, err := newKMIPProvider(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("newKMIPProvider with a retired uid the server never issued: %v, want success", err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	if len(p.retired) != 0 {
+		t.Fatalf("retired set holds %d keys, want 0", len(p.retired))
+	}
+	blockKey := bytes.Repeat([]byte{0x55}, 32)
+	wrapped, id, err := p.Wrap(context.Background(), blockKey)
+	if err != nil {
+		t.Fatalf("Wrap: %v", err)
+	}
+	if _, err := p.Unwrap(context.Background(), wrapped, id); err != nil {
+		t.Fatalf("Unwrap: %v", err)
 	}
 }
