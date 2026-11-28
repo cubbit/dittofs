@@ -103,6 +103,7 @@ To see what CI will run for your branch, `test/harness/bin/dt plan --tier pr --b
 | `settings-scan-smoke` | the reconcile scan benchmark once per change at `-benchtime=1x`, non-blocking | pr | any machine |
 | `reconcile-settings-smoke` | the reconcile benchmark's settings case, the whole settings reconcile, once per change at `-benchtime=1x`, non-blocking | pr | any machine |
 | `adapter-conformance` | the adapters' conformance specifications, behind their own tag | pr | any machine |
+| `fuzz` | the fuzz targets it lists, past their seeds, ten minutes each; a crasher lands in the cell's output, to commit as a seed | nightly | any machine |
 | `integration` | `-tags=integration` tests against real services | pr | Docker with KMIP up; `integration/portmap` needs a Linux host with rpcbind |
 | `operator` | the Kubernetes operator: `make test`, `make lint`, manifests, kustomize | pr | any machine with `make` and `kubectl` |
 | `e2e` | `-tags=e2e` tests through real kernel NFS and SMB mounts, as root | merge | Linux, or dtc |

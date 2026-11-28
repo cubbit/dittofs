@@ -141,6 +141,19 @@ suites:
       # dt run --changed never narrows them away.
       whole-tree:
         cmd: go test -race -timeout=5m -run=^(TestImportRules|TestNodeExports|TestReferenceMatchesCommandTrees|TestImports|TestOpenAPIMatchesRouteTable|TestRepositoryNamesNoRefusedVariable)$ ./internal/node/ ./internal/node/api/ ./cmd/gendocs/ ./pkg/identity/ ./pkg/bootstrap/
+  # The fuzz targets listed here, past their seeds, which unit runs; unrelated to test/fuzz.
+  # go test fuzzes one target of one package at a time, so each is one line, and every line runs
+  # even after one fails; a target joins with its line and raises both timeouts by its ten
+  # minutes. A crasher lands under its package's testdata/fuzz/, and the last line copies it into
+  # {out} for its owner to commit as a seed. The generated corpus is not kept between nights.
+  # ponytail: one serial cell, ten minutes a target, fits about thirty targets in a job's six
+  # hours. Split it into options, one cell per owning package or RFC, when the list nears that.
+  fuzz:
+    tier: nightly
+    cmd:
+      - go test -run=^$ -fuzz=^FuzzReferenceBounds$ -fuzztime=10m ./pkg/carver/internal/carvetest/
+      - { sh: 'fs=$(git ls-files -o --exclude-standard -- ":(glob)**/testdata/fuzz/**") || exit 1; test -n "$fs" || exit 0; printf "%s\n" "$fs" | while IFS= read -r f; do mkdir -p {out}/"$(dirname "$f")" && cp "$f" {out}/"$f" || exit 1; done' }
+    timeout: { test: 15m, cell: 20m }
   # The journal's conformance checks, behind their own tag: they fail until the journal they
   # check is written, and each failure is a known one, so the unit suite would turn red on them.
   journal-conformance:
