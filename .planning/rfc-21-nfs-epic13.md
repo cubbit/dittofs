@@ -247,7 +247,7 @@ subtasks and tests can cite them.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R34 | "§10 context table": a `DESTROY` with a corrupted header MIC refused and the context still usable; a call above the window whose verifier fails `CREDPROBLEM` and the window unchanged, so a call at the old window's top still runs; a call at `MAXSEQ` `CTXPROBLEM` and the context gone; with the table's share sized to four contexts, one principal opening a fifth evicts its own oldest, never another's; a reconnect on a new TCP connection keeps its context | test row | RFC 21 §13 (§10 context table *(1 node)*) | T13.5 |
+| R34 | "§10 context table": a `DESTROY` with a corrupted header MIC refused and the context still usable; a call above the window whose verifier fails `CREDPROBLEM` and the window unchanged, so a call at the old window's top still runs; a call at `MAXSEQ` `CTXPROBLEM` and the context gone; with the table's count cap set to four and a pool that holds every context, one principal opening a fifth evicts its own oldest, never another's; with the pool at the fixed cost plus one `INIT`'s bound, a second `INIT` while the first is held in `SignIn` `CREDPROBLEM` and nothing evicted; with the pool at the fixed cost plus four trimmed sizes plus one bound, a fifth `INIT` on the same ticket built; a reconnect on a new TCP connection keeps its context | test row | RFC 21 §13 (§10 context table *(1 node)*) | T13.5 |
 | R35 | "§6.3 `MNT` on a Kerberos-only share"'s `sec=krb5` step: a `GETATTR` with the handle an `AUTH_SYS` `MNT` returned, over `sec=krb5`, answered | test row | RFC 21 §13 (§6.3 `MNT` on a Kerberos-only share *(1 node)*) | T13.7 |
 | R36 | "§8.1 privilege"'s Kerberos steps: over Kerberos as the `admin` principal, `chown` of another user's file and a read of a mode-0600 file of another user both succeed; on a `sec=krb5` export, a principal the mapping links to uid 0 restores other owners with `no_root_squash`, and with `root_squash` is squashed and refused `NFS4ERR_PERM` | test row | RFC 21 §13 (§8.1 privilege *(1 node)*), §8.1 | T13.7 |
 | R37 | "expiry": over `sec=krb5`, a context kept open past its ticket's `Expires` has its next request refused with the expired-credential answer | test row | RFC 18 §10 (expiry), §3.1 | T13.5, T13.8 |
@@ -786,7 +786,7 @@ test/pcap-corpus/
   - A context idle 8 hours on the clock is gone at the next `insert` or `get`; a `check` whose verdict
     is run alone moves its idle time and its place in either list; a dropped number and a `get`
     move neither; an `insert` or `get` evicts at most 16 idle contexts.
-  - With the budget too small for one more context, `reserve` refuses and charges nothing; `insert` leaves charged only the context's real size (D8).
+  - With the budget too small for one more context, `reserve` refuses and charges nothing; `insert` leaves charged only the lesser of the context's bound and its real size (D8).
   - In the window: a repeated or too-old number drops; one above advances it; one at or above
     `MAXSEQ`, or at or past the ticket's end, deletes the context.
   - Every deletion releases its reservation: the budget is back to zero once the table is empty.
@@ -801,7 +801,10 @@ test/pcap-corpus/
   evicted (catches an innocent context evicted by a starved pool, or an eviction before `SignIn`
   has named the principal, D8); a budget below one context on an empty table (catches a context held
   uncharged, R3, D8); a reservation trimmed by `insert`, the budget read back (catches the bound kept
-  as the charge, D8); `MAXSEQ` and the ticket's end (R9); the budget's balance after
+  as the charge, D8); a real `gss.Context` whose evidence past its reservation's bound — no real
+  `SignIn` answers one, RFC 21 §10, so the test builds the context itself — `insert`ed, the
+  reserved bytes read back equal the bound, the lesser of the two (catches a charge at the
+  evidence's size, D8, RFC 24 §2.5); `MAXSEQ` and the ticket's end (R9); the budget's balance after
   every deletion (catches a leaked charge, R3). The race of D4, driven rather than hoped for: a
   pause hook set per instance from `export_test.go` holds one call between its window update and
   its move, another call's `check` takes the same context to `MAXSEQ` and deletes it, then the
@@ -879,7 +882,7 @@ test/pcap-corpus/
   `Reset` after its `INIT`s:
   - the `Identity` on that `r.Call` (catches a principal or protection dropped between the stage and
     the handler, R16, R17, R39);
-  - R34's five steps, each asserting the reply and the table's state read back, the forged calls
+  - R34's other five steps, each asserting the reply and the table's state read back, the forged calls
     leaving `vfstest.Mutations` empty (catch an unauthenticated teardown, R10, a window moved by a
     forgery, R7, one principal evicting another, R4, a context keyed by connection, R2, a dropped or
     rejected call run, R8);
@@ -887,12 +890,27 @@ test/pcap-corpus/
     `vfstest.Mutations` holds one entry, and the context's idle time read back after the replay is
     the first send's (catches a replayed sequence number run or answered, R6, R8, or one that keeps
     a context alive, R5);
-  - an `INIT` with the table's budget spent: a `CREDPROBLEM` reply read on the
-    connection, no context added, and the same `INIT`'s bytes sent again once the pool frees set up
-    a context, so its authenticator never reached the replay cache; then a fresh `INIT` from the
-    initiator, a new AP-REQ as `rpc.gssd`'s next upcall sends, sets up a context too (catch an
-    `INIT` dropped unanswered, which leaves the client waiting its RPC timeout, a context held
-    uncharged, or a charge taken after `SignIn`, D8);
+  - an `INIT` with the pool after built contexts: the connection-state `Budget` the adapter is
+    handed built at the connection's fixed cost F (RFC 24 §4.4) plus one context's trimmed size T
+    plus one `INIT`'s bound B (`resources.NewBudget`, RFC 24 §2.5; `SplitFor`'s 4 MiB floor does
+    not apply to one a test builds, §2.4), one `INIT` built first so a wrongly-evicting refusal
+    has something to lose; the next `INIT` held in `SignIn` by a fault-injection wrapper around
+    the real one, a third `INIT` a `CREDPROBLEM` reply read on the connection, nothing charged
+    for it, and the built context still answering a call (catches a `CREDPROBLEM` that evicts a
+    context, or one that loses the built one); the held `INIT` released and its context built,
+    the `Budget` read back at F + 2T; the two contexts destroyed with valid `RPCSEC_GSS_DESTROY`s,
+    the `Budget` at F; the same held `INIT`'s bytes sent again set up a context, so its
+    authenticator never reached the replay cache (catches an `INIT` refused by timing rather
+    than the pool, an `INIT` dropped unanswered, which leaves the client waiting its RPC timeout,
+    a context held uncharged, or a charge taken after `SignIn`, D8); that context destroyed too,
+    then a fresh `INIT` from the initiator, a new AP-REQ as `rpc.gssd`'s next upcall sends, sets
+    up a context;
+  - the row's fifth case: five tokens built first, each `INIT` carrying its own authenticator so
+    its own bound, the pool sized at the fixed cost F plus the four contexts' trimmed sizes plus
+    the fifth token's own bound, T read back from one context built on a roomy `Budget` first, all
+    five `INIT`s sent on one ticket so each context's trimmed size is the same, the count cap at
+    its default (the case before it leaves the cap at four): all five built, the `Budget` read
+    back at F plus five trimmed sizes (catches a charge never trimmed, R34);
   - two contexts sending one XID and the same arguments: two entries in `vfstest.Mutations`; one
     context retransmitting under a new sequence number: one; a `CREATE` whose connection is closed
     before its reply is read, retransmitted under a new sequence number on a new connection from
