@@ -231,9 +231,11 @@ func oldestRef(p carver.BlockPlan) time.Time {
 	return o
 }
 
-// zero marks s[from:to] all zeros.
+// zero marks s[from:to] all zeros, with the one hash all-zero chunks of a
+// length share.
 func zero(s []carver.ChunkInfo, from, to int) {
 	for i := from; i < to; i++ {
 		s[i].Zero = true
+		s[i].Hash = entity.ChunkHash{0xff, byte(s[i].Length >> 16)}
 	}
 }

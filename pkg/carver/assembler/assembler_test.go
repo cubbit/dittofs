@@ -225,8 +225,11 @@ func TestFoldNeverCarriesAZeroChunk(t *testing.T) {
 	r := fold(t, c, s, t0)
 	checkPlans(t, c, s, r.plans, t0, r.held)
 	// 2,000 carried chunks of 1 KiB at a 1 MiB target.
-	if len(r.plans) != 2 || len(r.plans[0].Carried) != 1024 {
-		t.Errorf("got %d plans, the first carrying %d chunks; want 2, the first carrying 1024", len(r.plans), len(r.plans[0].Carried))
+	if len(r.plans) != 2 {
+		t.Fatalf("got %d plans, want 2", len(r.plans))
+	}
+	if got := len(r.plans[0].Carried); got != 1024 {
+		t.Errorf("first plan: got %d carried chunks, want 1024", got)
 	}
 }
 
@@ -268,6 +271,9 @@ func TestFoldPlacesZeroRefsInTheNearestPlan(t *testing.T) {
 		t.Fatalf("got %d plans, want %d", len(r.plans), len(want))
 	}
 	for i, p := range r.plans {
+		if len(p.Refs) == 0 {
+			t.Fatalf("plan %d: no refs", i)
+		}
 		if first, n := p.Refs[0], len(p.Refs); first != s[want[i][0]] || n != want[i][1]-want[i][0] {
 			t.Errorf("plan %d: got %d refs from %+v, want input chunks %d to %d", i, n, first, want[i][0], want[i][1])
 		}
