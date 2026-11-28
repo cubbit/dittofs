@@ -109,4 +109,8 @@ var (
 	// ErrMaterialDestroyed is material the provider once held and has lost or
 	// removed for good.
 	ErrMaterialDestroyed = errors.New("keys: material destroyed")
+	// ErrWrapLimit is a wrap refused because its master key has made the 2³²
+	// wraps RFC 5 Appendix B.1 allows one key; only a master-key rotation
+	// lets wrapping resume.
+	ErrWrapLimit = errors.New("keys: master key wrap limit reached, rotate the master key")
 )
