@@ -11,6 +11,13 @@ import (
 // then each applied transform's ID, 2 bytes big-endian, in stage order.
 const envelopeV1 = 1
 
+// stages is how many stages a chain holds, and so the most IDs an envelope
+// lists (RFC 5 §2.3).
+const stages = 3
+
+// envelopeLen is the length of an envelope listing n IDs (RFC 5 §2.4).
+func envelopeLen(n int) int { return 2 + 2*n }
+
 // appendEnvelope appends version 1's envelope listing ids to b.
 func appendEnvelope(b []byte, ids []transform.ID) []byte {
 	b = append(b, envelopeV1, byte(len(ids)))
@@ -23,7 +30,7 @@ func appendEnvelope(b []byte, ids []transform.ID) []byte {
 // parsed is an envelope as parseEnvelope read it: the applied transforms'
 // decoders in stage order, and the offset of the last one's output.
 type parsed struct {
-	steps [3]transform.Transform
+	steps [stages]transform.Transform
 	n     int
 	off   int
 }
@@ -32,8 +39,7 @@ type parsed struct {
 // is decoded. It refuses with transform.ErrMalformed an unknown version, a
 // count past the body's end, an ID the set does not hold, and any list whose
 // stages do not strictly rise, which refuses an ID twice, two IDs of one stage
-// and IDs out of stage order alike (RFC 5 §2.4). A list that strictly rises
-// over three stages holds at most three IDs.
+// and IDs out of stage order alike (RFC 5 §2.4).
 func (s *decodeSet) parseEnvelope(body []byte) (parsed, error) {
 	var p parsed
 	if len(body) < 2 {
@@ -43,7 +49,7 @@ func (s *decodeSet) parseEnvelope(body []byte) (parsed, error) {
 		return p, fmt.Errorf("%w: envelope version %d is unknown", transform.ErrMalformed, body[0])
 	}
 	count := int(body[1])
-	p.off = 2 + 2*count
+	p.off = envelopeLen(count)
 	if p.off > len(body) {
 		return p, fmt.Errorf("%w: an envelope of %d IDs runs past the %d-byte body", transform.ErrMalformed, count, len(body))
 	}
@@ -59,8 +65,8 @@ func (s *decodeSet) parseEnvelope(body []byte) (parsed, error) {
 			return p, fmt.Errorf("%w: envelope lists transform %#04x of stage %d after stage %d", transform.ErrMalformed, id, st, prev)
 		}
 		prev = st
-		p.steps[i] = t
-		p.n = i + 1
+		p.steps[i] = t // stages that strictly rise are at most three
 	}
+	p.n = count
 	return p, nil
 }

@@ -140,16 +140,22 @@ func (d decline) factory() transform.Factory {
 	return func(context.Context, map[string]any, keys.Provider) (transform.Transform, error) { return d, nil }
 }
 
-// fault is a fault wrapper over a test transform (kind 3): onDecode, when
-// set, answers Decode in its place, with the limit the chain gave it, and
-// onEncode, when set, rewrites what its Encode returned.
+// fault is a fault wrapper over a test transform: onDecode, when set,
+// answers Decode in its place, with the limit the chain gave it; returnsInput
+// makes Decode return its input; onEncode, when set, rewrites what its Encode
+// returned; and onEncodeErr, when set, fails Encode with it.
 type fault struct {
 	transform.Transform
-	onDecode func(ctx context.Context, limit int) ([]byte, error)
-	onEncode func(transform.Encoded) transform.Encoded
+	onDecode     func(ctx context.Context, limit int) ([]byte, error)
+	returnsInput bool
+	onEncode     func(transform.Encoded) transform.Encoded
+	onEncodeErr  error
 }
 
 func (f fault) Encode(ctx context.Context, ns entity.NamespaceID, m []keys.MaterialID, dst []byte, hash [32]byte, plain []byte) (transform.Encoded, error) {
+	if f.onEncodeErr != nil {
+		return transform.Encoded{}, f.onEncodeErr
+	}
 	e, err := f.Transform.Encode(ctx, ns, m, dst, hash, plain)
 	if f.onEncode != nil {
 		e = f.onEncode(e)
@@ -160,6 +166,9 @@ func (f fault) Encode(ctx context.Context, ns entity.NamespaceID, m []keys.Mater
 func (f fault) Decode(ctx context.Context, ns entity.NamespaceID, dst []byte, hash [32]byte, body []byte, limit int, m keys.Provider) ([]byte, error) {
 	if f.onDecode != nil {
 		return f.onDecode(ctx, limit)
+	}
+	if f.returnsInput {
+		return body, nil
 	}
 	return f.Transform.Decode(ctx, ns, dst, hash, body, limit, m)
 }

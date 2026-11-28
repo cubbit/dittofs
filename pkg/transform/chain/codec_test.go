@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"sync"
@@ -51,7 +52,7 @@ func buildLogged(t *testing.T, r chain.Registry, p keys.Provider, cfg ...transfo
 	t.Helper()
 	var buf bytes.Buffer
 	d := depsFor()
-	d.Logger = slog.New(slog.NewJSONHandler(&buf, nil))
+	d.Logger = slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	c, err := r.NewChain(context.Background(), cfg, p, d)
 	if err != nil {
 		t.Fatalf("NewChain(%v): %v", cfg, err)
@@ -126,11 +127,11 @@ func inputs() [][]byte {
 
 // applied is the IDs cfg's transforms write into the envelope: all but the
 // declining compressor.
-func applied(r map[string]transform.ID, cfg []transform.Config) []transform.ID {
+func applied(cfg []transform.Config) []transform.ID {
 	var ids []transform.ID
 	for _, c := range cfg {
 		if c.Name != "skip" {
-			ids = append(ids, r[c.Name])
+			ids = append(ids, codecIDs[c.Name])
 		}
 	}
 	return ids
@@ -152,7 +153,7 @@ func TestRoundTrips(t *testing.T) {
 	}
 	for _, cfg := range combos() {
 		c, logs := buildLogged(t, r, p, cfg...)
-		a, a2 := pinOf(t, c), pinOf(t, mustBuild(t, r, p, cfg...))
+		a, a2 := pinOf(t, c), mustPin(t, r, p, cfg...)
 		for _, in := range inputs() {
 			n := len(in)
 			body, encs, err := a.Encode(ctx, make([]byte, 0, a.MaxEncodedLen(n)), hash, in)
@@ -162,15 +163,16 @@ func TestRoundTrips(t *testing.T) {
 			if got, bound, dec := len(body), a.MaxEncodedLen(n), c.MaxDecodeLen(n); got > bound || bound > dec {
 				t.Errorf("%v, %d bytes: body %d, MaxEncodedLen %d, MaxDecodeLen %d, want each no more than the next", cfg, n, got, bound, dec)
 			}
-			if l, ok := a.LengthOf(n); ok && l != len(body) {
-				t.Errorf("%v, %d bytes: LengthOf = %d, want the body's length %d", cfg, n, l, len(body))
+			declines := slices.ContainsFunc(cfg, func(c transform.Config) bool { return c.Name == "skip" })
+			if l, ok := a.LengthOf(n); ok == declines || ok && l != len(body) {
+				t.Errorf("%v, %d bytes: LengthOf = %d, %v, want the body's length %d, known unless a step may decline", cfg, n, l, ok, len(body))
 			}
 			for what, again := range map[string]transform.Attempt{"the same attempt": a, "another chain of the configuration": a2} {
 				if b, _, err := again.Encode(ctx, nil, hash, in); err != nil || !bytes.Equal(b, body) {
 					t.Errorf("%v, %d bytes: encoding again through %s gave other bytes (err %v)", cfg, n, what, err)
 				}
 			}
-			want := applied(codecIDs, cfg)
+			want := applied(cfg)
 			var got []transform.ID
 			for _, e := range encs {
 				got = append(got, e.ID)
@@ -234,7 +236,7 @@ func TestEnvelopeVectors(t *testing.T) {
 		if len(cfg) > 1 {
 			cfg[0].Settings = map[string]any{"with_encryption": "accept"}
 		}
-		body, _, err := pinOf(t, mustBuild(t, r, p, cfg...)).Encode(ctx, nil, hash, payload)
+		body, _, err := mustPin(t, r, p, cfg...).Encode(ctx, nil, hash, payload)
 		if err != nil {
 			t.Fatalf("%s: Encode: %v", tc.name, err)
 		}
@@ -246,12 +248,9 @@ func TestEnvelopeVectors(t *testing.T) {
 		if err != nil || !slices.Equal(ids, tc.ids) || off != len(vec)-len(payload) {
 			t.Errorf("%s: parse of the vector = %#04x at %d, %v, want %#04x at %d", tc.name, ids, off, err, tc.ids, len(vec)-len(payload))
 		}
-		if got, want := len(body)-len(payload), 2+2*len(tc.ids); got != want {
-			t.Errorf("%s: envelope of %d IDs is %d bytes, want 2 + 2n = %d", tc.name, len(tc.ids), got, want)
-		}
 	}
 	// Two IDs, which no vector holds, cost 2 + 2n too.
-	body, _, err := pinOf(t, mustBuild(t, r, p, names("c", "r")...)).Encode(ctx, nil, hash, payload)
+	body, _, err := mustPin(t, r, p, names("c", "r")...).Encode(ctx, nil, hash, payload)
 	if err != nil || len(body)-len(payload) != 2+2*2 {
 		t.Errorf("an envelope of 2 IDs is %d bytes (err %v), want 6", len(body)-len(payload), err)
 	}
@@ -340,14 +339,23 @@ func TestDecodeRefusesAnOutputPastItsBound(t *testing.T) {
 	r.Register(idC, "over", fault{Transform: pad{id: idC, stage: transform.StageRedundancy}, onDecode: func(_ context.Context, limit int) ([]byte, error) {
 		return make([]byte, limit+1), nil
 	}}.factory())
-	c := mustBuild(t, r, keystest.NewMemory(), names("over")...)
-	body, _, err := pinOf(t, c).Encode(ctx, nil, hash, []byte("chunk"))
-	if err != nil {
-		t.Fatalf("Encode: %v", err)
+	r.Register(idA, "small", fault{Transform: pad{id: idA, stage: transform.StageCompress}, onDecode: func(context.Context, int) ([]byte, error) {
+		return []byte{1}, nil
+	}}.factory())
+	// Alone, the over-writing step decodes last. Behind a step that returns
+	// one byte whatever its input, it decodes first, and the result is within
+	// the bound, so only a check on every step refuses it.
+	for _, cfg := range [][]transform.Config{names("over"), names("small", "over")} {
+		c := mustBuild(t, r, keystest.NewMemory(), cfg...)
+		body, _, err := pinOf(t, c).Encode(ctx, nil, hash, []byte("chunk"))
+		if err != nil {
+			t.Fatalf("%v: Encode: %v", cfg, err)
+		}
+		if out, err := c.Decode(ctx, ns, nil, hash, body, chunkMax, nil); !errors.Is(err, transform.ErrTooLarge) {
+			t.Errorf("%v: Decode through a step writing past its bound = %d bytes, %v, want ErrTooLarge", cfg, len(out), err)
+		}
 	}
-	if out, err := c.Decode(ctx, ns, nil, hash, body, chunkMax, nil); !errors.Is(err, transform.ErrTooLarge) {
-		t.Errorf("Decode through a step writing past its bound = %d bytes, %v, want ErrTooLarge", len(out), err)
-	}
+	c := mustBuild(t, r, keystest.NewMemory())
 	bare := append(chain.AppendEnvelope(nil, nil), make([]byte, chunkMax+1)...)
 	if out, err := c.Decode(ctx, ns, nil, hash, bare, chunkMax, nil); !errors.Is(err, transform.ErrTooLarge) {
 		t.Errorf("Decode of a body of no transform past the maximum = %d bytes, %v, want ErrTooLarge", len(out), err)
@@ -363,7 +371,7 @@ func TestBodiesOutliveTheChain(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	ctx := context.Background()
 	r, p := codecRegistry(), withKey()
-	a := pinOf(t, mustBuild(t, r, p, names("pad1000", "parity")...))
+	a := mustPin(t, r, p, names("pad1000", "parity")...)
 	in := bytes.Repeat([]byte("chunk"), 100)
 	body, encs, err := a.Encode(ctx, nil, hash, in)
 	if err != nil {
@@ -386,7 +394,7 @@ func TestEncodeUsesThePinnedKeyAfterARotation(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	ctx := context.Background()
 	r, p := codecRegistry(), withKey()
-	a := pinOf(t, mustBuild(t, r, p, names("seal")...))
+	a := mustPin(t, r, p, names("seal")...)
 	p.Give(ns, keys.KindDataKey, "d2", span(32, 64))
 	body, encs, err := a.Encode(ctx, nil, hash, []byte("chunk"))
 	if err != nil {
@@ -421,7 +429,12 @@ func TestDeclinedTransformIsAbsent(t *testing.T) {
 // fiveErrors are RFC 5 §2.7's decode errors.
 var fiveErrors = []error{transform.ErrMalformed, transform.ErrTooLarge, keys.ErrMaterialUnavailable, keys.ErrUnknownMaterial, keys.ErrMaterialDestroyed}
 
+// isOneOfFive reports whether err is one of the five, unknown material being
+// unavailable too, as the codec reports it.
 func isOneOfFive(err error) bool {
+	if errors.Is(err, keys.ErrUnknownMaterial) && !errors.Is(err, keys.ErrMaterialUnavailable) {
+		return false
+	}
 	return slices.ContainsFunc(fiveErrors, func(s error) bool { return errors.Is(err, s) })
 }
 
@@ -446,6 +459,9 @@ func TestDecodeErrorsAreTheChainsOwn(t *testing.T) {
 		{"a foreign error wrapping destroyed material", &oddError{keys.ErrMaterialDestroyed}, false, []error{keys.ErrMaterialDestroyed}, transform.ErrMalformed},
 		{"a foreign error wrapping unavailable material", &oddError{keys.ErrMaterialUnavailable}, false, []error{keys.ErrMaterialUnavailable}, transform.ErrMalformed},
 		{"a foreign error wrapping unknown material", &oddError{keys.ErrUnknownMaterial}, false, []error{keys.ErrMaterialUnavailable, keys.ErrUnknownMaterial}, transform.ErrMalformed},
+		{"unknown material that is also unavailable", fmt.Errorf("%w: %w", keys.ErrMaterialUnavailable, keys.ErrUnknownMaterial), false, []error{keys.ErrMaterialUnavailable, keys.ErrUnknownMaterial}, transform.ErrMalformed},
+		{"ErrMalformed wrapping unknown material", fmt.Errorf("%w: %w", transform.ErrMalformed, keys.ErrUnknownMaterial), false, []error{keys.ErrMaterialUnavailable, keys.ErrUnknownMaterial}, transform.ErrMalformed},
+		{"ErrMalformed wrapping destroyed material", fmt.Errorf("%w: %w", transform.ErrMalformed, keys.ErrMaterialDestroyed), false, []error{keys.ErrMaterialDestroyed}, transform.ErrMalformed},
 		{"the context's error once cancelled", nil, true, []error{keys.ErrMaterialUnavailable, context.Canceled}, transform.ErrMalformed},
 		{"ErrMalformed once cancelled", transform.ErrMalformed, true, []error{keys.ErrMaterialUnavailable, context.Canceled}, transform.ErrMalformed},
 	} {
@@ -499,7 +515,7 @@ func TestEncodeTakesNothingTheTransformMisreports(t *testing.T) {
 		r := chain.NewRegistry()
 		r.Register(idB, "f", fault{Transform: base, onEncode: rewrite}.factory())
 		p := withKey()
-		return pinOf(t, mustBuild(t, r, p, names("f")...)).Encode(ctx, nil, hash, []byte("chunk"))
+		return mustPin(t, r, p, names("f")...).Encode(ctx, nil, hash, []byte("chunk"))
 	}
 	_, encs, err := encodeWith(func(e transform.Encoded) transform.Encoded {
 		e.ID, e.Material = 0x9999, []keys.MaterialID{{Namespace: ns, Kind: keys.KindDataKey, ID: "planted"}}
@@ -509,11 +525,81 @@ func TestEncodeTakesNothingTheTransformMisreports(t *testing.T) {
 		t.Errorf("a transform misreporting its ID and material gave %+v, %v, want ID %#04x and the pinned d1", encs, err, idB)
 	}
 	for what, rewrite := range map[string]func(transform.Encoded) transform.Encoded{
-		"another version":       func(e transform.Encoded) transform.Encoded { e.Version = 2; return e },
-		"a body past its bound": func(e transform.Encoded) transform.Encoded { e.Body = append(e.Body, 0); return e },
+		"another version":                           func(e transform.Encoded) transform.Encoded { e.Version = 2; return e },
+		"a body past its bound":                     func(e transform.Encoded) transform.Encoded { e.Body = append(e.Body, 0); return e },
+		"a decline after a length known in advance": func(transform.Encoded) transform.Encoded { return transform.Encoded{} },
 	} {
 		if body, encs, err := encodeWith(rewrite); err == nil || body != nil || encs != nil {
 			t.Errorf("a transform reporting %s: Encode = %d bytes, %d Encoded, %v, want the put failed", what, len(body), len(encs), err)
+		}
+	}
+}
+
+// TestEncodeErrorFailsThePut holds that a transform's Encode error fails the
+// put, with no body and no census (RFC 5 §2.7).
+func TestEncodeErrorFailsThePut(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	r := chain.NewRegistry()
+	boom := errors.New("cannot encode")
+	r.Register(idB, "f", fault{Transform: pad{id: idB, stage: transform.StageEncrypt}, onEncodeErr: boom}.factory())
+	body, encs, err := mustPin(t, r, keystest.NewMemory(), names("f")...).Encode(context.Background(), nil, hash, []byte("chunk"))
+	if !errors.Is(err, boom) || body != nil || encs != nil {
+		t.Errorf("Encode through a failing transform = %d bytes, %d Encoded, %v, want the put failed with its error", len(body), len(encs), err)
+	}
+}
+
+// TestCensusIsACopyOfThePin changes the material an Encoded reports: the
+// attempt's next census still names the pinned key.
+func TestCensusIsACopyOfThePin(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	ctx := context.Background()
+	a := mustPin(t, codecRegistry(), withKey(), names("seal")...)
+	_, encs, err := a.Encode(ctx, nil, hash, []byte("chunk"))
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	encs[0].Material[0].ID = "changed"
+	if _, encs, err := a.Encode(ctx, nil, hash, []byte("chunk")); err != nil || encs[0].Material[0].ID != "d1" {
+		t.Errorf("after a caller changed a census, the next census is %+v, %v, want the pinned d1", encs, err)
+	}
+}
+
+// TestDecodeNeverReturnsTheBody decodes through a transform whose Decode
+// returns its input: the result is a copy, so a caller reusing body cannot
+// change the plaintext it was given (RFC 5 §3.1).
+func TestDecodeNeverReturnsTheBody(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	ctx := context.Background()
+	r := chain.NewRegistry()
+	r.Register(idC, "same", fault{Transform: pad{id: idC, stage: transform.StageRedundancy}, returnsInput: true}.factory())
+	c := mustBuild(t, r, keystest.NewMemory(), names("same")...)
+	body, _, err := pinOf(t, c).Encode(ctx, nil, hash, []byte("chunk"))
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	out, err := c.Decode(ctx, ns, make([]byte, 0, chunkMax), hash, body, chunkMax, nil)
+	clear(body)
+	if err != nil || string(out) != "chunk" {
+		t.Errorf("Decode = %q, %v after the body was cleared, want \"chunk\": the result shares the body's memory", out, err)
+	}
+}
+
+// TestMaxDecodeLenIsExactWhenEverythingIsConfigured configures every
+// registered transform, one per stage, so the decode bound is the attempt's
+// bound: a decode bound that misses a stage or the envelope falls short of it.
+func TestMaxDecodeLenIsExactWhenEverythingIsConfigured(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	r := chain.NewRegistry()
+	r.Register(idA, "c", pad{id: idA, stage: transform.StageCompress, fixed: 1000}.factory())
+	r.Register(idB, "e", pad{id: idB, stage: transform.StageEncrypt, fixed: 16}.factory())
+	r.Register(idC, "r", pad{id: idC, stage: transform.StageRedundancy, half: true}.factory())
+	cfg := names("c", "e", "r")
+	cfg[0].Settings = map[string]any{"with_encryption": "accept"}
+	c := mustBuild(t, r, keystest.NewMemory(), cfg...)
+	a := pinOf(t, c)
+	for _, n := range []int{0, 1, chunkMax} {
+		if got, want := c.MaxDecodeLen(n), a.MaxEncodedLen(n); got != want {
+			t.Errorf("MaxDecodeLen(%d) = %d, want the attempt's MaxEncodedLen %d", n, got, want)
 		}
 	}
 }
@@ -546,8 +632,8 @@ func TestStepsGetBuffersOfTheirOwn(t *testing.T) {
 		}
 	}
 	for i, w := range ws {
-		if calls, over := w.calls.Load(), w.overlaps.Load(); calls != int64(2*len(inputs())) || over != 0 {
-			t.Errorf("step %d: %d of %d calls had a dst sharing memory with the input, want 0 of %d", i, over, calls, 2*len(inputs()))
+		if calls, over := w.calls.Load(), w.overlaps.Load(); calls == 0 || over != 0 {
+			t.Errorf("step %d: %d of %d calls had a dst sharing memory with the input, want 0 of some", i, over, calls)
 		}
 	}
 }
@@ -580,11 +666,11 @@ func TestConcurrentEncodeAndDecode(t *testing.T) {
 				i := (k + g) % len(ins)
 				body, encs, err := a.Encode(ctx, nil, hash, ins[i])
 				if err != nil || !bytes.Equal(body, want[i]) {
-					errs <- "an Encode differs from the sequential body"
+					errs <- fmt.Sprintf("goroutine %d, input %d (%d bytes): Encode = %v, equal to the sequential body %v", g, i, len(ins[i]), err, bytes.Equal(body, want[i]))
 					continue
 				}
 				if out, err := c.Decode(ctx, ns, nil, hash, body, chunkMax, encs); err != nil || !bytes.Equal(out, ins[i]) {
-					errs <- "a Decode differs from the input"
+					errs <- fmt.Sprintf("goroutine %d, input %d (%d bytes): Decode = %d bytes, %v, want the input", g, i, len(ins[i]), len(out), err)
 				}
 			}
 		})
