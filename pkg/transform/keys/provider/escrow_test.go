@@ -51,7 +51,7 @@ func readFile(t *testing.T, path string) []byte {
 
 // isNotEscrowed reports whether err is ErrNotEscrowed naming p's master key.
 func isNotEscrowed(p *Provider, err error) bool {
-	return errors.Is(err, keys.ErrNotEscrowed) && strings.Contains(err.Error(), fmt.Sprintf("%x", p.masterKeyID))
+	return errors.Is(err, keys.ErrNotEscrowed) && strings.Contains(err.Error(), fmt.Sprintf("%x", p.kf.masterKeyID))
 }
 
 // A copy of the master key's file passes and returns its ID and fingerprint;
@@ -103,7 +103,7 @@ func TestVerifyEscrowCountsOneWrap(t *testing.T) {
 
 	p, records, path, _, _ := escrowProvider(t)
 	ctx := context.Background()
-	if ok, err := records.RaiseWrapCount(ctx, p.masterKeyID[:], 1<<32-2, 1<<32); !ok || err != nil {
+	if ok, err := records.RaiseWrapCount(ctx, p.kf.masterKeyID[:], 1<<32-2, 1<<32); !ok || err != nil {
 		t.Fatalf("raise the count to 2³² − 2 = %v, %v; want true, nil", ok, err)
 	}
 
@@ -193,7 +193,7 @@ func TestReconfigure(t *testing.T) {
 		}
 	}
 
-	if _, err := p.unwrap(before[0], aad); err != nil {
+	if _, err := p.unwrap(context.Background(), before[0], aad); err != nil {
 		t.Errorf("unwrap, after the refused Reconfigures, of a wrap made before them: %v", err)
 	}
 

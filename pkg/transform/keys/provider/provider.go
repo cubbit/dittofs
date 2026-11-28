@@ -47,9 +47,10 @@ type KeyRecords interface {
 
 // Config is a store configuration's provider settings.
 type Config struct {
-	KeyFile    string   // the master key's file
-	Passphrase string   // the key file's passphrase (RFC 13 Appendix C)
-	Escrowed   []Escrow // the passed escrow checks the store configuration records
+	KeyFile    string     // the master key's file
+	Passphrase string     // the key file's passphrase (RFC 13 Appendix C)
+	Escrowed   []Escrow   // the passed escrow checks the store configuration records
+	KMIP       KMIPConfig // the key service holding the master key, when KeyFile is empty
 }
 
 // Escrow is a passed escrow check: what VerifyEscrow returns and the store
@@ -83,13 +84,11 @@ type Provider struct {
 	now     func() time.Time
 	cache   cache
 
-	// masterKeyID names the key-file master key; aead holds the key itself,
-	// which never leaves this process.
-	masterKeyID [16]byte
-	aead        cipher.AEAD
-	// masterKeyFP is the master key's fingerprint, which an escrow pass
-	// must name.
-	masterKeyFP [32]byte
+	// custody holds the master key: kf for a key file, or a key service.
+	custody custody
+	// kf is the key-file custody, nil when a key service holds the master
+	// key.
+	kf *fileCustody
 
 	// cfg is the Config last given to New or Reconfigure.
 	cfg atomic.Pointer[Config]
@@ -125,8 +124,15 @@ func sameID(storage, id string) bool {
 }
 
 // ValidateConfig checks cfg's shape and reads nothing, so a setting is checked
-// where its key file is absent.
+// where its key file is absent; it dials nothing either. A configuration names
+// one custody: a key file, or a key service by its KMIP endpoint.
 func ValidateConfig(cfg Config) error {
+	if cfg.KeyFile != "" && cfg.KMIP.Endpoint != "" {
+		return errors.New("provider: both a key file and a key service: name one")
+	}
+	if cfg.KMIP.Endpoint != "" {
+		return validateKMIP(cfg.KMIP)
+	}
 	if cfg.KeyFile == "" {
 		return errors.New("provider: no key file")
 	}
@@ -141,16 +147,27 @@ func ValidateConfig(cfg Config) error {
 	return nil
 }
 
-// New builds the provider of cfg. It reads and unwraps the master key from
-// cfg's key file, and fails if it cannot, so a store whose master key is
+// New builds the provider of cfg. With a key file, it reads and unwraps the
+// master key from it, and fails if it cannot, so a store whose master key is
 // unreadable does not open; it refuses a master key that is one of the
-// storage keys in deps.
+// storage keys in deps. With a key service, it loads the client's
+// certificates and dials nothing: the service is first reached as a
+// namespace opens.
 func New(ctx context.Context, cfg Config, deps Deps) (*Provider, error) {
 	if err := ValidateConfig(cfg); err != nil {
 		return nil, err
 	}
 	if deps.Records == nil || deps.Rand == nil {
 		return nil, errors.New("provider: Deps needs Records and Rand")
+	}
+	if cfg.KMIP.Endpoint != "" {
+		c, err := newKeyService(cfg.KMIP, deps.StorageKeys)
+		if err != nil {
+			return nil, err
+		}
+		p := over(c, deps)
+		p.setConfig(cfg)
+		return p, nil
 	}
 
 	id, masterKeyID, key, err := openKeyFile(cfg)
@@ -208,7 +225,15 @@ func build(masterKeyID [16]byte, key []byte, deps Deps) (*Provider, error) {
 		return nil, fmt.Errorf("provider: master key %x: %w", masterKeyID, err)
 	}
 
-	p := &Provider{records: deps.Records, rand: deps.Rand, log: deps.Logger, now: deps.Now, masterKeyID: masterKeyID, aead: aead, masterKeyFP: fingerprint(key)}
+	kf := &fileCustody{records: deps.Records, rand: deps.Rand, masterKeyID: masterKeyID, aead: aead, masterKeyFP: fingerprint(key)}
+	p := over(kf, deps)
+	p.kf = kf
+	return p, nil
+}
+
+// over is the provider over c and deps.
+func over(c custody, deps Deps) *Provider {
+	p := &Provider{records: deps.Records, rand: deps.Rand, log: deps.Logger, now: deps.Now, custody: c}
 	if p.log == nil {
 		p.log = slog.New(slog.DiscardHandler)
 	}
@@ -217,5 +242,5 @@ func build(masterKeyID [16]byte, key []byte, deps Deps) (*Provider, error) {
 	}
 	p.cache.sets = make(map[entity.NamespaceID]map[slot]*entry)
 	p.cache.epochs = make(map[entity.NamespaceID]uint64)
-	return p, nil
+	return p
 }

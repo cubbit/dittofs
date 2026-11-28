@@ -93,40 +93,52 @@ func parseStoredWrap(b []byte) (storedWrap, error) {
 // sealIn is one key to wrap and the associated data that binds it.
 type sealIn struct{ aad, key []byte }
 
+// wrap wraps each key of in under the provider's master key, through its
+// custody, returning each one's stored wrap in order.
+func (p *Provider) wrap(ctx context.Context, in ...sealIn) ([][]byte, error) {
+	return p.custody.wrap(ctx, in...)
+}
+
+// unwrap opens stored, a stored wrap of the provider's custody, with
+// associated data aad.
+func (p *Provider) unwrap(ctx context.Context, stored, aad []byte) ([]byte, error) {
+	return p.custody.unwrap(ctx, stored, aad)
+}
+
 // wrap wraps each key of in under the key-file master key, returning each
 // one's stored wrap in order. It first raises the master key's wrap count by
 // len(in), so a wrap the count refuses draws no nonce and seals nothing.
-func (p *Provider) wrap(ctx context.Context, in ...sealIn) ([][]byte, error) {
+func (k *fileCustody) wrap(ctx context.Context, in ...sealIn) ([][]byte, error) {
 	// decision: the count is raised before any nonce is drawn and committed
 	// whether or not the wraps that follow are used, so a failure or a crash
 	// between the raise and the wrap overcounts by design: RFC 5 Appendix B.1
 	// allows a crash to overcount, never to undercount. Withdraw it only if
 	// the count and the record a wrap goes into ever commit together.
-	ok, err := p.records.RaiseWrapCount(ctx, p.masterKeyID[:], uint64(len(in)), wrapLimit)
+	ok, err := k.records.RaiseWrapCount(ctx, k.masterKeyID[:], uint64(len(in)), wrapLimit)
 	if err != nil {
-		return nil, fmt.Errorf("provider: raise the wrap count of master key %x: %w", p.masterKeyID, err)
+		return nil, fmt.Errorf("provider: raise the wrap count of master key %x: %w", k.masterKeyID, err)
 	}
 	if !ok {
-		return nil, fmt.Errorf("%w: master key %x has no room for %d more of its 2³² wraps; rotate it", keys.ErrWrapLimit, p.masterKeyID, len(in))
+		return nil, fmt.Errorf("%w: master key %x has no room for %d more of its 2³² wraps; rotate it", keys.ErrWrapLimit, k.masterKeyID, len(in))
 	}
 
 	out := make([][]byte, 0, len(in))
 	for _, w := range in {
 		nonce := make([]byte, nonceLen, nonceLen+len(w.key)+tagLen)
-		if _, err := io.ReadFull(p.rand, nonce); err != nil {
+		if _, err := io.ReadFull(k.rand, nonce); err != nil {
 			return nil, fmt.Errorf("provider: draw a wrap nonce: %w", err)
 		}
-		sealed := p.aead.Seal(nonce, nonce, w.key, w.aad)
-		out = append(out, storedWrap{kind: kindKeyFile, masterKeyID: p.masterKeyID[:], wrap: sealed}.encode())
+		sealed := k.aead.Seal(nonce, nonce, w.key, w.aad)
+		out = append(out, storedWrap{kind: kindKeyFile, masterKeyID: k.masterKeyID[:], wrap: sealed}.encode())
 	}
 
 	return out, nil
 }
 
-// unwrap opens stored, a key-file stored wrap under the provider's master
+// unwrap opens stored, a key-file stored wrap under the key file's master
 // key, with associated data aad: a wrap of another provider kind, under
 // another master key, or bound to other associated data is refused.
-func (p *Provider) unwrap(stored, aad []byte) ([]byte, error) {
+func (k *fileCustody) unwrap(_ context.Context, stored, aad []byte) ([]byte, error) {
 	s, err := parseStoredWrap(stored)
 	if err != nil {
 		return nil, err
@@ -134,16 +146,16 @@ func (p *Provider) unwrap(stored, aad []byte) ([]byte, error) {
 	if s.kind != kindKeyFile {
 		return nil, fmt.Errorf("provider: stored wrap of provider kind %#x, not the key file's", s.kind)
 	}
-	if !bytes.Equal(s.masterKeyID, p.masterKeyID[:]) {
-		return nil, fmt.Errorf("provider: stored wrap under master key %x, not %x", s.masterKeyID, p.masterKeyID)
+	if !bytes.Equal(s.masterKeyID, k.masterKeyID[:]) {
+		return nil, fmt.Errorf("provider: stored wrap under master key %x, not %x", s.masterKeyID, k.masterKeyID)
 	}
 	if len(s.wrap) < nonceLen+tagLen {
 		return nil, fmt.Errorf("%w: key-file wrap of %d bytes, shorter than its nonce and tag", errStoredWrap, len(s.wrap))
 	}
 
-	key, err := p.aead.Open(nil, s.wrap[:nonceLen], s.wrap[nonceLen:], aad)
+	key, err := k.aead.Open(nil, s.wrap[:nonceLen], s.wrap[nonceLen:], aad)
 	if err != nil {
-		return nil, fmt.Errorf("provider: unwrap under master key %x: %w", p.masterKeyID, err)
+		return nil, fmt.Errorf("provider: unwrap under master key %x: %w", k.masterKeyID, err)
 	}
 
 	return key, nil

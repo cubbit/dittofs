@@ -67,7 +67,7 @@ func (p *Provider) Open(ctx context.Context, ns entity.NamespaceID) error {
 		if e.row.State != stateCurrent {
 			continue
 		}
-		if _, _, err := p.serve(ns, set, e); err != nil {
+		if _, _, err := p.serve(ctx, ns, set, e); err != nil {
 			return err
 		}
 	}
@@ -110,7 +110,7 @@ func (p *Provider) Current(ctx context.Context, ns entity.NamespaceID, kind stri
 		return keys.MaterialID{}, fmt.Errorf("provider: namespace %s holds no current %s: %w", ns, kind, keys.ErrUnknownMaterial)
 	}
 
-	_, fp, err := p.serve(ns, set, cur)
+	_, fp, err := p.serve(ctx, ns, set, cur)
 	if err != nil {
 		return keys.MaterialID{}, err
 	}
@@ -141,7 +141,7 @@ func (p *Provider) Get(ctx context.Context, id keys.MaterialID) ([]byte, error) 
 		}
 	}
 
-	key, _, err := p.serve(id.Namespace, set, e)
+	key, _, err := p.serve(ctx, id.Namespace, set, e)
 	if err != nil {
 		return nil, err
 	}
@@ -236,7 +236,7 @@ func (p *Provider) update(ctx context.Context, ns entity.NamespaceID, fn func(ro
 // serve returns e's key, e one of set, the records of ns, and its recorded
 // fingerprint once its state, its unwrap and its fingerprint have been
 // checked, caching the key.
-func (p *Provider) serve(ns entity.NamespaceID, set map[slot]*entry, e *entry) ([]byte, [32]byte, error) {
+func (p *Provider) serve(ctx context.Context, ns entity.NamespaceID, set map[slot]*entry, e *entry) ([]byte, [32]byte, error) {
 	if e.row.State == stateDestroyed {
 		return nil, [32]byte{}, fmt.Errorf("provider: %s %x of namespace %s: %w", e.row.Kind, e.row.ID, ns, keys.ErrMaterialDestroyed)
 	}
@@ -248,7 +248,7 @@ func (p *Provider) serve(ns entity.NamespaceID, set map[slot]*entry, e *entry) (
 		return key, fp, nil
 	}
 
-	key, fp, err := p.open(ns, set, e.row)
+	key, fp, err := p.open(ctx, ns, set, e.row)
 	if err != nil {
 		// decision: a record that fails its codec, whose two master key IDs
 		// differ, whose wrap names a master key this provider does not hold,
@@ -276,7 +276,7 @@ func (p *Provider) serve(ns entity.NamespaceID, set map[slot]*entry, e *entry) (
 // open decodes row's record of ns, whose records are set, and returns its key,
 // unwrapped when it is wrapped, and its recorded fingerprint, which the key
 // must match.
-func (p *Provider) open(ns entity.NamespaceID, set map[slot]*entry, row Row) ([]byte, [32]byte, error) {
+func (p *Provider) open(ctx context.Context, ns entity.NamespaceID, set map[slot]*entry, row Row) ([]byte, [32]byte, error) {
 	rec, err := decodeKeyRecord(row.Record)
 	if err != nil {
 		return nil, [32]byte{}, err
@@ -299,7 +299,7 @@ func (p *Provider) open(ns entity.NamespaceID, set map[slot]*entry, row Row) ([]
 		if !bytes.Equal(s.masterKeyID, rec.masterKeyID) {
 			return nil, [32]byte{}, fmt.Errorf("%w: record names master key %x, its wrap %x", errKeyRecord, rec.masterKeyID, s.masterKeyID)
 		}
-		if key, err = p.unwrap(rec.key, wrapAAD(ns[:], row.Kind, row.ID)); err != nil {
+		if key, err = p.unwrap(ctx, rec.key, wrapAAD(ns[:], row.Kind, row.ID)); err != nil {
 			return nil, [32]byte{}, err
 		}
 	}

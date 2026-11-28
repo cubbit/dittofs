@@ -78,7 +78,7 @@ func wrapped(t *testing.T, p *Provider, ns entity.NamespaceID, kind, id, state s
 	if err != nil {
 		t.Fatalf("wrap: %v", err)
 	}
-	return Row{Kind: kind, ID: id, State: state, Record: p.record(fingerprint(key), p.masterKeyID[:], w[0])}
+	return Row{Kind: kind, ID: id, State: state, Record: p.record(fingerprint(key), p.kf.masterKeyID[:], w[0])}
 }
 
 // put writes rows into ns's records through the view, as another writer would.
@@ -153,7 +153,7 @@ func TestGetAndCurrentAnswers(t *testing.T) {
 			return edit(wrapped(t, f.p, ns, keys.KindDataKey, "k", stateCurrent, key), func(r *keyRecord) { r.fingerprint[0] ^= 1 })
 		}, keys.ErrMaterialUnavailable},
 		{"two master key IDs that differ", func(ns entity.NamespaceID) Row {
-			return edit(wrapped(t, f.p, ns, keys.KindDataKey, "k", stateCurrent, key), func(r *keyRecord) { r.masterKeyID = other.p.masterKeyID[:] })
+			return edit(wrapped(t, f.p, ns, keys.KindDataKey, "k", stateCurrent, key), func(r *keyRecord) { r.masterKeyID = other.p.kf.masterKeyID[:] })
 		}, keys.ErrMaterialUnavailable},
 		{"a wrap under a master key not held", func(ns entity.NamespaceID) Row {
 			return wrapped(t, other.p, ns, keys.KindDataKey, "k", stateCurrent, key)
@@ -399,7 +399,7 @@ func TestOpenUnwrapsEveryCurrentKey(t *testing.T) {
 		t.Fatalf("Open of a namespace whose keys all unwrap: %v", err)
 	}
 
-	p.aead = failingOpen{p.aead}
+	p.kf.aead = failingOpen{p.kf.aead}
 	for _, tc := range []struct {
 		kind, id string
 		key      []byte

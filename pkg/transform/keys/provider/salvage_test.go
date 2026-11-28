@@ -83,7 +83,7 @@ func TestSalvageWrapBindsItsExport(t *testing.T) {
 	}
 
 	own := wrapAAD(nil, kindSalvageKey, string(export))
-	if got, err := p.unwrap(wrap, own); err != nil || !bytes.Equal(got, key) {
+	if got, err := p.unwrap(context.Background(), wrap, own); err != nil || !bytes.Equal(got, key) {
 		t.Fatalf("unwrap under its export's AAD = %x, %v; want the key", got, err)
 	}
 
@@ -97,21 +97,21 @@ func TestSalvageWrapBindsItsExport(t *testing.T) {
 		{"the export under a namespace", wrapAAD(ns[:], kindSalvageKey, string(export))},
 		{"the export as a data key's ID", wrapAAD(nil, keys.KindDataKey, string(export))},
 	} {
-		if got, err := p.unwrap(wrap, tc.aad); err == nil {
+		if got, err := p.unwrap(context.Background(), wrap, tc.aad); err == nil {
 			t.Errorf("unwrap under %s's AAD = %x, nil; want an error", tc.name, got)
 		}
 	}
 
 	elsewhere, _, _ := newProvider(t, rand.Reader)
-	if got, err := elsewhere.unwrap(wrap, own); err == nil {
+	if got, err := elsewhere.unwrap(context.Background(), wrap, own); err == nil {
 		t.Errorf("unwrap under another key file's master key = %x, nil; want an error", got)
 	}
 
-	sameID, err := build(p.masterKeyID, make([]byte, 32), Deps{Records: keystest.NewRecords(), Rand: rand.Reader})
+	sameID, err := build(p.kf.masterKeyID, make([]byte, 32), Deps{Records: keystest.NewRecords(), Rand: rand.Reader})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, err := sameID.unwrap(wrap, own); err == nil || errors.Is(err, errStoredWrap) {
+	if got, err := sameID.unwrap(context.Background(), wrap, own); err == nil || errors.Is(err, errStoredWrap) {
 		t.Errorf("unwrap under other key bytes with the same master key ID = %x, %v; want the AEAD's refusal", got, err)
 	}
 }
@@ -145,7 +145,7 @@ func TestSalvageWrapCountsAndWritesNoRecord(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	if ok, err := records.RaiseWrapCount(ctx, p.masterKeyID[:], 1<<32-2, 1<<32); !ok || err != nil {
+	if ok, err := records.RaiseWrapCount(ctx, p.kf.masterKeyID[:], 1<<32-2, 1<<32); !ok || err != nil {
 		t.Fatalf("raise the count to 2³² − 2 = %v, %v; want true, nil", ok, err)
 	}
 
