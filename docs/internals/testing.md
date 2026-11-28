@@ -1246,6 +1246,7 @@ Flags:
       --ad-dc[=true|false]                        run the suite's ad-dc option
       --adapter-allocs[=true|false]               run the suite's adapter-allocs option
       --base string                               compare the branch with REF wherever a command uses {base}, instead of the base dt finds: origin/develop, or in CI the event's
+      --carver-allocs[=true|false]                run the suite's carver-allocs option
       --changed[=true|false]                      where a suite's packages gives patterns, test only the packages with a change committed since the base: every one without a base, when go.mod, go.sum or go.work changed, or when a changed file is in no package
       --ci[=true|false]                           an unmet need fails the run instead of skipping the cell, and new failures are annotated
       --cross-protocol[=true|false]               run the suite's cross-protocol option
