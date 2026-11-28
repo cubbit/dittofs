@@ -44,8 +44,11 @@ type rig struct {
 // deleted at cleanup.
 func newRig(t *testing.T, fault Fault) *rig {
 	t.Helper()
-	prof.Watch(t, prof.Options{})
+	// Before the watch: its handshake is the process's first connection to
+	// the endpoint, which on macOS leaves a descriptor open for the life of
+	// the process.
 	endpoint, roots := LocalStack(t)
+	prof.Watch(t, prof.Options{})
 	https := func() *http.Transport {
 		tr := &http.Transport{
 			TLSClientConfig: &tls.Config{RootCAs: roots},
@@ -110,8 +113,9 @@ func (r *rig) stored(t *testing.T, key string) (body []byte, ok bool) {
 
 // Each fault acts on its own call and on the side of it it names: a dropped
 // or answered put stores nothing, a cut put stores nothing, a lost reply's
-// put is stored although the client got an error, and a truncated get ends
-// early under the service's full Content-Range. The next put of each key,
+// put is stored although the client got an error, a lost get's reply is
+// closed, and a truncated get ends early under the service's full
+// Content-Range. The next put of each key,
 // which no fault selects, is stored, so no fault acts on the call after it.
 func TestEachFaultActsOnItsOwnCall(t *testing.T) {
 	errDrop, errCut := errors.New("dropped"), errors.New("cut")
@@ -160,8 +164,16 @@ func TestEachFaultActsOnItsOwnCall(t *testing.T) {
 	if _, err := r.admin.PutObject(t.Context(), &s3.PutObjectInput{Bucket: &r.bucket, Key: &key, Body: bytes.NewReader(body)}); err != nil {
 		t.Fatal(err)
 	}
+	// A lost reply with a body, and a truncated one, are sent under a context
+	// that never ends, which would otherwise close the connection under a body
+	// left open, so the leak watch fails the test when either body is.
+	ctx := context.Background()
+	r.tr.Inject(Rule{Op: "GetObject", KeyPrefix: key, Times: 1}, LoseReply())
+	if _, err := r.client.GetObject(ctx, &s3.GetObjectInput{Bucket: &r.bucket, Key: &key}); !errors.Is(err, errReplyLost) {
+		t.Errorf("GetObject %s under LoseReply: %v, want the lost reply's error", key, err)
+	}
 	r.tr.Inject(Rule{Op: "GetObject", KeyPrefix: key, Times: 1}, TruncateReply(10))
-	out, err := r.client.GetObject(t.Context(), &s3.GetObjectInput{Bucket: &r.bucket, Key: &key, Range: aws.String("bytes=0-99")})
+	out, err := r.client.GetObject(ctx, &s3.GetObjectInput{Bucket: &r.bucket, Key: &key, Range: aws.String("bytes=0-99")})
 	if err != nil {
 		t.Fatalf("GetObject %s under TruncateReply(10): %v", key, err)
 	}
