@@ -179,7 +179,7 @@ jobs:
       localstack:
         image: ${{ contains(matrix.needs, 'service:localstack') && 'localstack/localstack:4.13.1' || '' }}
         env:
-          SERVICES: s3
+          SERVICES: s3,kms
           EAGER_SERVICE_LOADING: "1"
           GATEWAY_LISTEN: "0.0.0.0:4566"
           DISABLE_CORS_CHECKS: "1"
