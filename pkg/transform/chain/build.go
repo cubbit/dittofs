@@ -6,17 +6,21 @@ import (
 	"math"
 	"slices"
 
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/transform"
 	"github.com/cubbit/dittofs/pkg/transform/keys"
 )
 
 // chain is a built transform.Chain: the configured transforms in stage order,
-// the store's decode set, and the provider Pin reads current material from.
+// the store's decode set, the provider Pin reads current material from and a
+// decode's census view asks, and what every body read must carry.
 type chain struct {
-	decode *decodeSet
-	steps  []transform.Transform // the configured transforms, in stage order
-	kinds  [][]string            // each step's Kinds, read once at build
-	keys   keys.Provider
+	decode   *decodeSet
+	steps    []transform.Transform // the configured transforms, in stage order
+	kinds    [][]string            // each step's Kinds, read once at build
+	keys     keys.Provider
+	require  []transform.ID                // Deps.Require, resolved at build
+	encrypts func(entity.NamespaceID) bool // Deps.Encrypts
 }
 
 var _ transform.Chain = (*chain)(nil)
@@ -37,7 +41,7 @@ func (r *registry) newChain(ctx context.Context, cfg []transform.Config, m keys.
 			return nil, fmt.Errorf("chain: %s is missing", d.name)
 		}
 	}
-	c, name, err := r.assemble(ctx, cfg, m, deps.Require)
+	c, name, err := r.assemble(ctx, cfg, m, deps)
 	if err != nil {
 		deps.Logger.ErrorContext(ctx, "chain: the transform chain cannot be built", "transform", name, "reason", err)
 		return nil, err
@@ -66,7 +70,7 @@ func (r *registry) resolve(names []string) ([]transform.ID, []transform.Factory,
 // and a registry only grows, so every resolved ID is in the set. The list's
 // shape is judged from the decode set's transforms, so no configured factory
 // runs for a list that is refused.
-func (r *registry) assemble(ctx context.Context, cfg []transform.Config, m keys.Provider, require []string) (*chain, string, error) {
+func (r *registry) assemble(ctx context.Context, cfg []transform.Config, m keys.Provider, deps Deps) (*chain, string, error) {
 	names := make([]string, len(cfg))
 	for i, c := range cfg {
 		names[i] = c.Name
@@ -75,7 +79,8 @@ func (r *registry) assemble(ctx context.Context, cfg []transform.Config, m keys.
 	if unknown != "" {
 		return nil, unknown, fmt.Errorf("chain: transform %q is not registered", unknown)
 	}
-	if _, _, unknown := r.resolve(require); unknown != "" {
+	reqIDs, _, unknown := r.resolve(deps.Require)
+	if unknown != "" {
 		return nil, unknown, fmt.Errorf("chain: required transform %q is not registered", unknown)
 	}
 	set, name, err := r.build(ctx, m)
@@ -114,6 +119,13 @@ func (r *registry) assemble(ctx context.Context, cfg []transform.Config, m keys.
 	}
 	steps, kinds := make([]transform.Transform, len(cfg)), make([][]string, len(cfg))
 	for i, c := range cfg {
+		// decision: a factory gets the store's provider itself, as RFC 5
+		// §3.1's Factory has it, since Encode reads its pinned material
+		// there; so a transform's Decode can go around the census view by
+		// keeping it, and transformtest's census-only check, not the chain,
+		// holds a transform to the view. Hand factories a provider that
+		// answers only for pinned material if a transform is ever loaded
+		// that its operator does not trust.
 		t, err := fs[i](ctx, c.Settings, m)
 		if err != nil {
 			return nil, c.Name, fmt.Errorf("chain: building transform %q: %w", c.Name, err)
@@ -138,7 +150,7 @@ func (r *registry) assemble(ctx context.Context, cfg []transform.Config, m keys.
 		}
 		steps[i], kinds[i] = t, k
 	}
-	return &chain{decode: set, steps: steps, kinds: kinds, keys: m}, "", nil
+	return &chain{decode: set, steps: steps, kinds: kinds, keys: m, require: reqIDs, encrypts: deps.Encrypts}, "", nil
 }
 
 // MaxDecodeLen answers from the decode set, never from the configured

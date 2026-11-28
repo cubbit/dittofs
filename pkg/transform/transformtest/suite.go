@@ -238,7 +238,9 @@ func (p *counted) Get(ctx context.Context, id keys.MaterialID) ([]byte, error) {
 // §2.5, §3.1): it answers Get only for material its block's census lists, of
 // the namespace read, handing the provider the census's entry, since a body
 // names its material by ID alone; every other ID, and Current, is
-// ErrMalformed without asking the provider.
+// ErrMalformed without asking the provider. A provider error that is none of
+// keys' three material errors is ErrMaterialUnavailable, as the chain's view
+// reports it.
 type census struct {
 	p      keys.Provider
 	ns     entity.NamespaceID
@@ -253,7 +255,11 @@ func (c census) Get(ctx context.Context, id keys.MaterialID) ([]byte, error) {
 	if id.Namespace == c.ns {
 		for _, l := range c.listed {
 			if l.Namespace == c.ns && l.Kind == id.Kind && l.ID == id.ID {
-				return c.p.Get(ctx, l)
+				b, err := c.p.Get(ctx, l)
+				if err != nil && !errors.Is(err, keys.ErrUnknownMaterial) && !errors.Is(err, keys.ErrMaterialUnavailable) && !errors.Is(err, keys.ErrMaterialDestroyed) {
+					return nil, fmt.Errorf("transformtest: reading %s %q of namespace %s: %s: %w", l.Kind, l.ID, l.Namespace, err, keys.ErrMaterialUnavailable)
+				}
+				return b, err
 			}
 		}
 	}
