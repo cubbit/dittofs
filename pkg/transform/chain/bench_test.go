@@ -4,21 +4,20 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"log/slog"
 	"testing"
 
-	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/transform"
-	"github.com/cubbit/dittofs/pkg/transform/chain"
 	"github.com/cubbit/dittofs/pkg/transform/keystest"
 )
 
 // BenchmarkChainOverhead measures the chain around two identity transforms, a
 // compressor and a redundancy step, against the same two transforms called
-// directly into buffers made once, for each direction and chunk size. The
-// chain's overhead is the chain case's time over the transforms case's, which
-// RFC 5 §8.3 sets within 2%: compare the two with
-// benchstat -col /via over -count=10 runs on one machine. It gates nothing.
+// directly into buffers made once, for each direction and chunk size: compare
+// the two with benchstat -col /via over -count=10 runs on one machine. It
+// gates nothing. The chain case includes the step buffer it makes per call and,
+// on encode, the copy behind the envelope, which its ponytail: marker
+// accepts, so its gap is RFC 5 §8.3's overhead, to be held within 2%, only
+// once those are paid off.
 func BenchmarkChainOverhead(b *testing.B) {
 	ctx := context.Background()
 	steps := []transform.Transform{
@@ -27,11 +26,9 @@ func BenchmarkChainOverhead(b *testing.B) {
 	}
 	for _, size := range []int{4 << 10, 1 << 20} {
 		plain := bytes.Repeat([]byte{0x5a}, size)
-		c, err := allocsRegistry().NewChain(ctx, names("c", "r"), keystest.NewMemory(), chain.Deps{
-			Logger:   slog.New(slog.DiscardHandler),
-			Recorder: &tally{},
-			Encrypts: func(entity.NamespaceID) bool { return false },
-		})
+		d := depsFor()
+		d.Recorder = &tally{}
+		c, err := allocsRegistry().NewChain(ctx, names("c", "r"), keystest.NewMemory(), d)
 		if err != nil {
 			b.Fatalf("NewChain: %v", err)
 		}

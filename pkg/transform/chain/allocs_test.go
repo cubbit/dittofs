@@ -31,29 +31,33 @@ func allocsRegistry() chain.Registry {
 	return r
 }
 
-// tally is a recorder keeping only how many calls each of its series was
-// given, an atomic add each, so it allocates nothing per call and what a
-// check counts is the chain's own.
-type tally struct{ calls atomic.Int64 }
+// tally is a recorder keeping only how many calls of each kind its series
+// were given, an atomic add each, so it allocates nothing per call and what a
+// check counts is the chain's own. For hands out a new handle on each call,
+// so a series resolved on a chunk's path, not at build, costs an allocation
+// the checks count.
+type tally struct{ encoded, decoded, failed atomic.Int64 }
 
-func (t *tally) For(string) chain.TransformRecorder { return t }
+func (t *tally) For(string) chain.TransformRecorder { return &tallied{t} }
 
-func (t *tally) Encoded(bool, int, int, time.Duration) { t.calls.Add(1) }
-func (t *tally) Decoded(int, int, time.Duration)       { t.calls.Add(1) }
-func (t *tally) DecodeFailed(chain.FailureReason)      { t.calls.Add(1) }
+// tallied is one series handle of a tally.
+type tallied struct{ t *tally }
+
+func (h *tallied) Encoded(bool, int, int, time.Duration) { h.t.encoded.Add(1) }
+func (h *tallied) Decoded(int, int, time.Duration)       { h.t.decoded.Add(1) }
+func (h *tallied) DecodeFailed(chain.FailureReason)      { h.t.failed.Add(1) }
+
+// calls is how many calls of each kind t holds: encoded, decoded, failed.
+func (t *tally) calls() [3]int64 {
+	return [3]int64{t.encoded.Load(), t.decoded.Load(), t.failed.Load()}
+}
 
 // allocsChain builds cfg over allocsRegistry, recording into rec, and pins it
 // for ns, under a provider holding a data key.
 func allocsChain(t *testing.T, rec *tally, cfg ...string) (transform.Chain, transform.Attempt) {
 	t.Helper()
-	p := keystest.NewMemory()
-	p.Give(ns, keys.KindDataKey, "d1", span(0, 32))
-	c := buildInto(t, allocsRegistry(), p, rec, nil, cfg...)
-	a, err := c.Pin(context.Background(), ns)
-	if err != nil {
-		t.Fatalf("Pin(%v): %v", cfg, err)
-	}
-	return c, a
+	c := buildInto(t, allocsRegistry(), withKey(), rec, nil, cfg...)
+	return c, pinOf(t, c)
 }
 
 // TestAllocsEncode holds Attempt.Encode, with a caller's dst, to its
@@ -85,7 +89,7 @@ func TestAllocsEncode(t *testing.T) {
 			rec := &tally{}
 			_, a := allocsChain(t, rec, tc.cfg...)
 			dst := make([]byte, 0, a.MaxEncodedLen(len(plain)))
-			before := rec.calls.Load()
+			before := rec.calls()
 			got := testing.AllocsPerRun(allocRuns, func() {
 				if _, _, err := a.Encode(context.Background(), dst, hash, plain); err != nil {
 					t.Fatalf("Encode: %v", err)
@@ -94,8 +98,12 @@ func TestAllocsEncode(t *testing.T) {
 			if got != tc.want {
 				t.Errorf("Encode over %v allocates %v times per call, want %v", tc.cfg, got, tc.want)
 			}
-			if n, want := rec.calls.Load()-before, (allocRuns+1)*tc.recorded; n != want {
-				t.Errorf("Encode over %v made %d series calls, want %d", tc.cfg, n, want)
+			after := rec.calls()
+			if n, want := after[0]-before[0], (allocRuns+1)*tc.recorded; n != want {
+				t.Errorf("Encode over %v recorded %d encodes, want %d", tc.cfg, n, want)
+			}
+			if after[1] != before[1] || after[2] != before[2] {
+				t.Errorf("Encode over %v recorded %d decodes and %d decode failures, want none", tc.cfg, after[1]-before[1], after[2]-before[2])
 			}
 		})
 	}
@@ -111,13 +119,14 @@ func TestAllocsDecode(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	plain := bytes.Repeat([]byte("chunk"), 200)
 	for _, tc := range []struct {
-		name string
-		cfg  []string
-		want float64 // also the series calls per Decode, one per step
+		name     string
+		cfg      []string
+		want     float64
+		recorded int64 // series calls per Decode
 	}{
-		{"one applied step", []string{"c"}, 1},
-		{"two applied steps", []string{"c", "r"}, 2},
-		{"three applied steps", []string{"c", "e", "r"}, 3},
+		{"one applied step", []string{"c"}, 1, 1},
+		{"two applied steps", []string{"c", "r"}, 2, 2},
+		{"three applied steps", []string{"c", "e", "r"}, 3, 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := &tally{}
@@ -127,7 +136,7 @@ func TestAllocsDecode(t *testing.T) {
 				t.Fatalf("Encode: %v", err)
 			}
 			dst := make([]byte, 0, len(plain))
-			before := rec.calls.Load()
+			before := rec.calls()
 			got := testing.AllocsPerRun(allocRuns, func() {
 				out, err := c.Decode(context.Background(), ns, dst, hash, body, len(plain), encs)
 				if err != nil || !bytes.Equal(out, plain) {
@@ -137,8 +146,12 @@ func TestAllocsDecode(t *testing.T) {
 			if got != tc.want {
 				t.Errorf("Decode over %v allocates %v times per call, want %v", tc.cfg, got, tc.want)
 			}
-			if n, want := rec.calls.Load()-before, int64(allocRuns+1)*int64(tc.want); n != want {
-				t.Errorf("Decode over %v made %d series calls, want %d", tc.cfg, n, want)
+			after := rec.calls()
+			if n, want := after[1]-before[1], (allocRuns+1)*tc.recorded; n != want {
+				t.Errorf("Decode over %v recorded %d decodes, want %d", tc.cfg, n, want)
+			}
+			if after[0] != before[0] || after[2] != before[2] {
+				t.Errorf("Decode over %v recorded %d encodes and %d decode failures, want none", tc.cfg, after[0]-before[0], after[2]-before[2])
 			}
 		})
 	}
