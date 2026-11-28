@@ -144,13 +144,14 @@ func TestImportRuleRefusesFilesystemAndOpenState(t *testing.T) {
 }
 
 // The syncer's contract, which the engine may import, imports nothing but
-// the standard library, so the allowance never reaches the syncer's
-// implementation through it.
-func TestSyncerContractImportsOnlyTheStandardLibrary(t *testing.T) {
+// the standard library and the remote tier's contract, which pkg/remote's own
+// import walk holds to the standard library, so the allowance never reaches
+// an implementation through it.
+func TestSyncerContractReachesNoImplementation(t *testing.T) {
 	imports, _, _ := packageImports(t, filepath.Join("..", "syncer"))
 	for _, imp := range imports {
-		if first, _, _ := strings.Cut(imp, "/"); strings.Contains(first, ".") {
-			t.Errorf("pkg/syncer imports %q, want the standard library only", imp)
+		if first, _, _ := strings.Cut(imp, "/"); strings.Contains(first, ".") && imp != module+"pkg/remote" {
+			t.Errorf("pkg/syncer imports %q, want the standard library and pkg/remote only", imp)
 		}
 	}
 }
