@@ -119,7 +119,7 @@ func TestImportRule(t *testing.T) {
 		t.Error(v)
 	}
 
-	unwalked, err := archtest.Unwalked(".")
+	unwalked, err := archtest.Unwalked(".", false)
 	if err != nil {
 		t.Fatal(err)
 	}

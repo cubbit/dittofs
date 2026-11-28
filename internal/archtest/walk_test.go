@@ -117,16 +117,22 @@ func TestCheckTestLibs(t *testing.T) {
 }
 
 // Unwalked skips what go list ignores, a directory whose name starts with _
-// or ., but not the directory it is given, even when that is ".".
+// or ., but not the directory it is given, even when that is ".". A tagged
+// test file is reported only for a walk with tests, the one that reads it.
 func TestUnwalkedSkipsIgnoredDirectories(t *testing.T) {
 	t.Chdir("testdata/unwalked")
 
-	got, err := Unwalked(".")
-	if err != nil {
-		t.Fatalf("Unwalked over testdata/unwalked: %v", err)
-	}
+	for tests, want := range map[bool][]string{
+		false: {"tagged.go is built for no platform the walk lists"},
+		true:  {"tagged.go is built for no platform the walk lists", "tagged_test.go is built for no platform the walk lists"},
+	} {
+		got, err := Unwalked(".", tests)
+		if err != nil {
+			t.Fatalf("Unwalked over testdata/unwalked, tests %v: %v", tests, err)
+		}
 
-	if want := []string{"tagged.go is built for no platform the walk lists"}; !slices.Equal(got, want) {
-		t.Errorf("unwalked files: got %q, want %q", got, want)
+		if !slices.Equal(got, want) {
+			t.Errorf("unwalked files, tests %v: got %q, want %q", tests, got, want)
+		}
 	}
 }
