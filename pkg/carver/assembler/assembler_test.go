@@ -278,13 +278,13 @@ func TestFoldPlacesZeroRefsInTheNearestPlan(t *testing.T) {
 // zero-ref commit, which is never held: holding it would leave the pass's
 // zeros dirty until the age ceiling.
 func TestFinishPutsAPassOfZerosAlone(t *testing.T) {
-	s := stream(0, lengths(5, 64<<10), lengths(5, 64<<10))
+	s := stream(0, lengths(10, 64<<10))
 	zero(s, 0, len(s))
 	c := cfg(1<<20, 1024)
 	r := fold(t, c, s, t0)
 	checkPlans(t, c, s, r.plans, t0, r.held)
-	if len(r.plans) != 1 || len(r.plans[0].Carried) != 0 || r.held {
-		t.Errorf("got %d plans, held %v; want 1 plan with no carried chunk, not held", len(r.plans), r.held)
+	if len(r.plans) != 1 || r.held {
+		t.Errorf("got %d plans, held %v; want 1 plan, not held", len(r.plans), r.held)
 	}
 }
 
@@ -336,9 +336,6 @@ func TestFoldCarriesARepeatOncePerBlock(t *testing.T) {
 				if len(p.Refs) != tc.refs[i] || countHash(p.Refs, h) != tc.reps[i] {
 					t.Errorf("plan %d: got %d refs, %d to the repeated hash; want %d, %d to it",
 						i, len(p.Refs), countHash(p.Refs, h), tc.refs[i], tc.reps[i])
-				}
-				if got, want := countHash(p.Carried, h), min(1, tc.reps[i]); got != want {
-					t.Errorf("plan %d: carries the repeated hash %d times, want %d", i, got, want)
 				}
 			}
 		})

@@ -82,13 +82,6 @@ func (f *Fold) Add(c carver.ChunkInfo) ([]carver.BlockPlan, carver.Disposition) 
 	if f.finished {
 		panic("assembler: Add after Finish: a fold serves one pass")
 	}
-	if c.Zero {
-		if f.open == nil {
-			f.open = &carver.BlockPlan{}
-		}
-		f.open.Refs = append(f.open.Refs, c)
-		return nil, carver.ZeroRef
-	}
 	var closed []carver.BlockPlan
 	// decision: a full plan is closed only when the next carried chunk
 	// arrives, never when it fills, so the zero refs after it join its commit:
@@ -98,7 +91,7 @@ func (f *Fold) Add(c carver.ChunkInfo) ([]carver.BlockPlan, carver.Disposition) 
 	// even when it repeats one of the plan's chunks, so a repeat past the
 	// block's end is carried again. The choice moves only which commit a zero
 	// ref rides in, never a block's bytes, so it can change with no migration.
-	if f.open != nil && f.full() {
+	if !c.Zero && f.open != nil && f.full() {
 		closed = []carver.BlockPlan{*f.open}
 		f.open, f.carried = nil, 0
 		clear(f.hashes)
@@ -107,6 +100,9 @@ func (f *Fold) Add(c carver.ChunkInfo) ([]carver.BlockPlan, carver.Disposition) 
 		f.open = &carver.BlockPlan{}
 	}
 	f.open.Refs = append(f.open.Refs, c)
+	if c.Zero {
+		return closed, carver.ZeroRef
+	}
 	if _, repeat := f.hashes[c.Hash]; !repeat {
 		f.hashes[c.Hash] = struct{}{}
 		f.open.Carried = append(f.open.Carried, c)
@@ -120,13 +116,17 @@ func (f *Fold) Add(c carver.ChunkInfo) ([]carver.BlockPlan, carver.Disposition) 
 // back: the caller puts none of it, reports none of its extents and leaves them
 // dirty for the next pass. A short plan is put once its oldest ref, zero refs
 // counted, is at least MaxAge old at now; an Oldest after now reads as young.
-// A plan with no carried chunk, the zero-ref commit, has no put to spare and is
-// never held. After Finish, Add and Finish panic.
+// A plan with no carried chunk, the zero-ref commit, is never held. After
+// Finish, Add and Finish panic.
 func (f *Fold) Finish(now time.Time) (last *carver.BlockPlan, held bool) {
 	if f.finished {
 		panic("assembler: Finish after Finish: a fold serves one pass")
 	}
 	f.finished = true
+	// decision: a plan with no carried chunk is never held, however young:
+	// holding back exists to spare a short put (RFC 2 §5.4) and this plan has
+	// no block to put, and the pass reports its all-zero extents in the same
+	// pass (RFC 8 §6.3). Withdraw it if a zero-ref commit ever gains a put.
 	if f.open == nil || len(f.open.Carried) == 0 || f.full() {
 		return f.open, false
 	}
