@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -120,10 +119,6 @@ func (s *store) refuseClosed(op opKind) error {
 
 // The calls below are not served yet: each refuses with remote.ErrInvalid
 // and sends nothing.
-
-func (s *store) Get(context.Context, remote.Name, remote.Range) (io.ReadCloser, remote.StoredSum, error) {
-	return nil, remote.StoredSum{}, unserved(opGet)
-}
 
 func (s *store) Delete(_ context.Context, names []remote.Name) []error {
 	errs := make([]error, len(names))
