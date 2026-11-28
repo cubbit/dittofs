@@ -15,7 +15,29 @@ var (
 	// again, so a retry is answered the same way until the node is restarted.
 	errStartFailed = &refusal{code: apiv1.CodeUnavailable, detail: "the node's start failed; it serves no call until it is restarted", wait: -1}
 	errBusy        = &refusal{code: apiv1.CodeUnavailable, detail: "the node runs as many API calls as it may"}
+	errStopping    = &refusal{code: apiv1.CodeUnavailable, detail: "the node is stopping"}
 )
+
+// accept admits a call on rt while the server takes calls and returns what
+// marks it answered, which Close waits for. Once Close ran, a call on a row
+// that answers before ready is still admitted, untracked, so the health and
+// version rows answer a stopping node, and a failed start's, until Stop
+// closes the listeners; every other call is refused, as a failed start's
+// calls are refused before it.
+func (s *Server) accept(rt *route) (done func(), err error) {
+	s.closing.RLock()
+	defer s.closing.RUnlock()
+	switch {
+	case !s.closed:
+		s.running.Add(1)
+		return s.running.Done, nil
+	case rt != nil && rt.beforeReady:
+		return func() {}, nil
+	case s.d.Served != nil && !s.d.Served():
+		return nil, errStartFailed
+	}
+	return nil, errStopping
+}
 
 // enter admits a call on rt into one of the 64 slots and returns what gives it back once.
 //
@@ -26,9 +48,9 @@ var (
 // decision: a call is refused only on a row that does not answer before
 // ready, and only while the node is starting or has never been ready since it
 // started: a failed start leaves the store open but nothing that applies a
-// record. Draining, and not_ready after ready, do not refuse. A draining node's
-// calls run to their answer and its listener stops taking new ones, and a
-// node not ready after it was ready answers each call by what failed, a store
+// record. Draining, and not_ready after ready, do not refuse here. A draining
+// node's calls run to their answer until its stop reaches the API, where
+// accept refuses new ones, and a node not ready after it was ready answers each call by what failed, a store
 // unreachable among them. Overturned if a call answered on a node not ready
 // can do harm a refusal would have prevented.
 func (s *Server) enter(rt *route) (release func(), err error) {

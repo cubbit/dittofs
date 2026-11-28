@@ -85,7 +85,7 @@ func credentialIn(
 		return nil, err
 	}
 
-	ref, err := refFrom(s.Value)
+	ref, err := refFrom(s)
 	if err != nil {
 		return nil, err
 	}
@@ -438,7 +438,7 @@ func patchStore(ctx context.Context, rq request[storeDoc], in storePatch, tx ent
 		if err != nil {
 			return apiv1.Store{}, rq.ID, err
 		}
-		if puts[k], err = mergeValue(old.Value, v); err != nil {
+		if puts[k], err = mergeValue(old, v); err != nil {
 			return apiv1.Store{}, rq.ID, err
 		}
 	}
@@ -479,15 +479,17 @@ func patchStore(ctx context.Context, rq request[storeDoc], in storePatch, tx ent
 	return apiv1.Store{ID: idString(rq.ID), Generation: gen, Spec: out}, rq.ID, err
 }
 
-// mergeValue is old, a setting's stored value, nil for none, with patch
-// merged into it as RFC 7396 merges a member's value.
-func mergeValue(old, patch json.RawMessage) (json.RawMessage, error) {
-	if old == nil {
-		old = json.RawMessage("null")
+// mergeValue is old's stored value, nil for none, with patch merged into
+// it as RFC 7396 merges a member's value; a stored value that is no JSON is
+// corrupt.
+func mergeValue(old entity.Setting, patch json.RawMessage) (json.RawMessage, error) {
+	v := old.Value
+	if v == nil {
+		v = json.RawMessage("null")
 	}
-	o, err := decodeAny(old)
+	o, err := decodeAny(v)
 	if err != nil {
-		return nil, fmt.Errorf("api: a stored setting: %w", err)
+		return nil, &componentError{field: old.Key, detail: "the stored value is not JSON", err: vfserr.ErrCorrupt}
 	}
 	p, err := decodeAny(patch)
 	if err != nil {

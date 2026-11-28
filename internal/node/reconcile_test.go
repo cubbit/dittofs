@@ -73,7 +73,7 @@ func createShares(t testing.TB, h *nodetest.Harness, store [16]byte, names ...st
 // configure gives store a setting, which makes it a configured remote store.
 func configure(t testing.TB, h *nodetest.Harness, store [16]byte) {
 	t.Helper()
-	s := entity.Setting{Scope: entity.SettingScope{Kind: entity.ScopeRemote, ID: store}, Key: "endpoint", Value: []byte("https://store.invalid")}
+	s := entity.Setting{Scope: entity.SettingScope{Kind: entity.ScopeRemote, ID: store}, Key: "endpoint", Value: []byte(`"https://store.invalid"`)}
 	if _, err := h.Store().ControlPlane().PutSetting(t.Context(), s, 0); err != nil {
 		t.Fatalf("configure the remote store: %v", err)
 	}

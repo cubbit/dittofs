@@ -396,6 +396,10 @@ func TestOnlineJoinUnitUnderTheBase(t *testing.T) {
 			t.Errorf("%s: answered %d %s, want 400 naming %s", tc.name, r.status, r.body, tc.field)
 		}
 	}
+	d.putSetting(t, installation, "identity.directory.base", `DC=ad,DC=example`)
+	if r := d.do(t, http.MethodPost, joinPath, onlineJoin(`,"ou":"OU=Servers,DC=ad,DC=example"`, user, pw)); r.status != http.StatusInternalServerError || r.problem(t).Code != "corrupt" || r.problem(t).Field != "identity.directory.base" {
+		t.Errorf("an OU under a stored base that is no JSON string: answered %d %s, want 500 corrupt naming identity.directory.base", r.status, r.body)
+	}
 	d.putSetting(t, installation, "identity.directory.base", `"DC=ad,DC=example"`)
 	if r := d.do(t, http.MethodPost, joinPath, onlineJoin(`,"ou":"DC=AD, DC=example"`, user, pw)); r.status != http.StatusBadRequest || r.problem(t).Field != "spec.ou" {
 		t.Errorf("the base itself: answered %d %s, want 400 naming spec.ou", r.status, r.body)

@@ -486,13 +486,9 @@ func sealSetting(
 	step.fresh = true
 
 	if held {
-		stored, err := refFrom(row.Value)
+		stored, err := refFrom(row)
 		if err != nil {
-			return settingStep{}, &componentError{
-				field:  rq.Sub,
-				detail: "the stored value is not a secret reference",
-				err:    vfserr.ErrCorrupt,
-			}
+			return settingStep{}, err
 		}
 
 		ref, step.fresh = stored, false
@@ -576,7 +572,7 @@ func putSettingDoc(
 	case ok == in.fresh:
 		return apiv1.Setting{}, rq.ID, staleSeal(rq.Sub)
 	case ok:
-		if r, err := refFrom(row.Value); err != nil || r != in.secret.ID {
+		if r, err := refFrom(row); err != nil || r != in.secret.ID {
 			return apiv1.Setting{}, rq.ID, staleSeal(rq.Sub)
 		}
 	}
@@ -661,13 +657,9 @@ func settingRead(scope func([16]byte) entity.SettingScope) watching[apiv1.Settin
 // refused rather than answered, so a broken reference never reads as an
 // empty secret.
 func secretRefValue(ctx context.Context, d Deps, s entity.Setting) ([]byte, error) {
-	ref, err := refFrom(s.Value)
+	ref, err := refFrom(s)
 	if err != nil {
-		return nil, &componentError{
-			field:  s.Key,
-			detail: "the stored value is not a secret reference",
-			err:    vfserr.ErrCorrupt,
-		}
+		return nil, err
 	}
 
 	sec, err := d.Store.Secret(ctx, ref, 0)

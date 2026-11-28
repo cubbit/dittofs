@@ -562,3 +562,41 @@ func TestCredentialSetRunsTheCapabilityCheck(t *testing.T) {
 		}
 	})
 }
+
+// A stored value the node cannot read answers 500 corrupt, counted as a
+// mapped error: a setting's value that is no JSON, at a setting's read and
+// a store's, a credential row that names no secret reference, at a store's
+// read and its credential's delete, and an ID range that is no range, at a
+// user's create. Only a store written around the API holds such a value.
+func TestUnreadableStoredValueAnswersCorrupt(t *testing.T) {
+	s := serve(t, as(entity.RoleAdmin, false))
+	s.putSetting(t, installation, "gc.schedule", `weekly`)
+	s.putSetting(t, installation, entity.IDRangeSetting, `{"first":`)
+	bare := s.remoteStore(t)
+	s.putSetting(t, entity.SettingScope{Kind: entity.ScopeRemote, ID: bare}, "remote.endpoint", `https://s3.example`)
+	noRef := s.remoteStore(t)
+	s.putSetting(t, entity.SettingScope{Kind: entity.ScopeRemote, ID: noRef}, "remote.credential", `"a-name"`)
+	for _, tc := range []struct {
+		name, method, path, body string
+		hdr                      []string
+		field                    string
+	}{
+		{"a setting's read", http.MethodGet, "/api/v1/settings/gc.schedule", "", nil, ""},
+		{"a store's read, its endpoint no JSON", http.MethodGet, "/api/v1/stores/" + bare.String(), "", nil, ""},
+		{"a store's read, its credential no reference", http.MethodGet, "/api/v1/stores/" + noRef.String(), "", nil, "remote.credential"},
+		{"a store's credential delete", http.MethodDelete, "/api/v1/stores/" + noRef.String() + "/credential", "", []string{"If-Match", `"1"`, "Idempotency-Key", "delete"}, "remote.credential"},
+		{"a user's create", http.MethodPost, "/api/v1/users", `{"spec":{"name":"carol"}}`, []string{"Idempotency-Key", "create"}, entity.IDRangeSetting},
+	} {
+		r := s.do(t, tc.method, tc.path, tc.body, tc.hdr...)
+		if r.status != http.StatusInternalServerError {
+			t.Errorf("%s: answered %d %s, want 500 corrupt", tc.name, r.status, r.body)
+			continue
+		}
+		if p := r.problem(t); p.Code != "corrupt" || p.Field != tc.field {
+			t.Errorf("%s: answered %s, want corrupt naming field %q", tc.name, r.body, tc.field)
+		}
+	}
+	if got := sample(t, s.reg, "dittofs_api_unmapped_errors_total", nil); got != 0 {
+		t.Errorf("dittofs_api_unmapped_errors_total: got %v, want 0, every unreadable value answered corrupt", got)
+	}
+}

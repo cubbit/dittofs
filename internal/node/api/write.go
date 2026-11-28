@@ -20,6 +20,7 @@ import (
 	"github.com/cubbit/dittofs/internal/node/api/auth"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // maxKey bounds an Idempotency-Key, in bytes.
@@ -293,7 +294,7 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 			}
 			rq.Expect = tag
 			if r.Method == http.MethodPatch {
-				b, err := json.Marshal(doc)
+				b, err := encode(doc)
 				if err != nil {
 					return err
 				}
@@ -440,7 +441,7 @@ func (s *Server) replayed(err error) (answer, error) {
 	s.replays.Inc()
 	var rc recorded
 	if err := json.Unmarshal(replay.Answer, &rc); err != nil {
-		return answer{}, err
+		return answer{}, fmt.Errorf("%w: the stored answer of an idempotent write: %w", vfserr.ErrCorrupt, err)
 	}
 	return answer{status: rc.Status, header: rc.Header, body: rc.Body}, nil
 }
@@ -595,7 +596,7 @@ func change(old, new any, as string, secret func(path string) bool, set bool) ([
 }
 
 func asJSON(v any) (any, error) {
-	b, err := json.Marshal(v)
+	b, err := encode(v)
 	if err != nil {
 		return nil, err
 	}

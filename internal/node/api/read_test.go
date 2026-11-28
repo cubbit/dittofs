@@ -745,3 +745,36 @@ func TestListingReadsNodeStatusesOncePerPage(t *testing.T) {
 		}
 	}
 }
+
+// Close answers a parked poll its last read at once, without the clock
+// moving, returns once it has, and refuses a call after it 503 while the
+// listener stays open.
+func TestCloseReleasesParkedPollsAndRefusesCalls(t *testing.T) {
+	var srv *api.Server
+	s := serveWith(t, as(entity.RoleViewer, false), func(x *api.Server) { srv = x })
+	id := uuid.NewString()
+	g := s.putKnob(t, id, "a", 0)
+	base := s.clock.Pending()
+
+	ch := s.poll(t.Context(), knobAt(id)+"?wait=60s")
+	eventually(t, "the poll parks", func() bool { return s.clock.Pending() == base+1 })
+	closed := make(chan error, 1)
+	go func() { closed <- srv.Close(t.Context()) }()
+
+	want := fmt.Sprintf(`{"generation":%d,"spec":{"value":"a"}}`, g)
+	if p := answered(t, "the parked poll once Close ran", ch); p.err != nil || p.status != http.StatusOK || string(p.body) != want {
+		t.Errorf("the parked poll once Close ran: answered %d %s err %v, want 200 %s", p.status, p.body, p.err, want)
+	}
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close: not returned within 10 s of its only call answering")
+	}
+	r := s.do(t, http.MethodGet, knobAt(id), "")
+	if r.status != http.StatusServiceUnavailable || r.problem(t).Code != apiv1.CodeUnavailable {
+		t.Errorf("a read after Close: answered %d %s, want 503 unavailable", r.status, r.body)
+	}
+}

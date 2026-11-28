@@ -326,6 +326,7 @@ func TestAnAdapterListensOnlyFromTheAdaptersStep(t *testing.T) {
 		{"identity", false},
 		{"filesystem", false},
 		{"runner", false},
+		{"api", false},
 		{"first reconcile", false},
 		{"adapters", true},
 		{"reconcile", true},
@@ -490,7 +491,7 @@ func TestADrainPastItsBoundLeavesTheFilesystemOpen(t *testing.T) {
 			t.Errorf("Stop with SMB's drain held: got %v, want it to say %q", err, want)
 		}
 	}
-	if got, want := stopsIn(s.reported()), []string{"stop reconcile", "stop runner", "stop listeners"}; !slices.Equal(got, want) {
+	if got, want := stopsIn(s.reported()), []string{"stop reconcile", "stop api", "stop runner", "stop listeners"}; !slices.Equal(got, want) {
 		t.Errorf("parts stopped with SMB's drain held: got %v, want %v", got, want)
 	}
 
@@ -560,7 +561,7 @@ func TestTheAdaptersDrainUntilTheDeadline(t *testing.T) {
 	if err := answered(t, stopped); err != nil {
 		t.Errorf("Stop with SMB draining until the deadline: got %v, want nil", err)
 	}
-	want := []string{"stop reconcile", "stop adapters", "stop runner", "stop filesystem", "stop budgets", "stop identity", "stop engine", "stop listeners", "stop store"}
+	want := []string{"stop reconcile", "stop adapters", "stop api", "stop runner", "stop filesystem", "stop budgets", "stop identity", "stop engine", "stop listeners", "stop store"}
 	if got := stopsIn(s.reported()); !slices.Equal(got, want) {
 		t.Errorf("parts stopped: got %v, want %v", got, want)
 	}

@@ -176,7 +176,7 @@ func TestARestartBetweenTheDropAndTheForgetRecordEndsSucceeded(t *testing.T) {
 func TestADeletionOfAShareRefusedAtStartForgetsItsTag(t *testing.T) {
 	h := nodetest.New(t, nodetest.Watch())
 	remote := entity.SettingScope{Kind: entity.ScopeRemote, ID: storeA}
-	gen, err := h.Store().ControlPlane().PutSetting(t.Context(), entity.Setting{Scope: remote, Key: "endpoint", Value: []byte("https://store.invalid")}, 0)
+	gen, err := h.Store().ControlPlane().PutSetting(t.Context(), entity.Setting{Scope: remote, Key: "endpoint", Value: []byte(`"https://store.invalid"`)}, 0)
 	if err != nil {
 		t.Fatalf("configure the remote store: %v", err)
 	}

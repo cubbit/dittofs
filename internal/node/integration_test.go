@@ -94,28 +94,30 @@ func TestWiredShareCreateWithItsCommitFaulted(t *testing.T) {
 }
 
 // §2.2 order, its API clause: an operation readable before Stop reads
-// through the API once reconcile stopped, once the adapters stopped, while
-// the runner's stop, step 3's, is waited on, and once the runner stopped,
-// step 3's end. Catches an API that stops before the drain it reports.
-func TestWiredOperationReadableUntilStopStep3(t *testing.T) {
+// through the API once reconcile stopped, once the adapters stopped and
+// while the API's own stop is waited on; once the API stopped, step 3's
+// first half, the same read is refused 503 while the runner's and
+// identity's stops are waited on, so no call reaches either once it has
+// stopped, and the health row still answers. Catches an API that stops
+// before the drain it reports, or after the parts its calls reach.
+func TestWiredAPIStopsAcceptingCallsAtStopStep3(t *testing.T) {
 	onBackends(t, func(t *testing.T, memory bool) {
+		type probed struct{ op, health int }
 		var (
 			mu    sync.Mutex
-			read  = map[string]int{}
-			probe func() int
+			read  = map[string]probed{}
+			probe func() probed
 		)
+		steps := []string{"stop reconcile", "stop adapters", "wait api", "stop api", "wait runner", "wait identity"}
 		stepped := func(_ *node.Node, step string) {
 			mu.Lock()
 			p := probe
 			mu.Unlock()
-			switch step {
-			case "stop reconcile", "stop adapters", "wait runner", "stop runner":
-				if p != nil {
-					status := p()
-					mu.Lock()
-					read[step] = status
-					mu.Unlock()
-				}
+			if p != nil && slices.Contains(steps, step) {
+				got := p()
+				mu.Lock()
+				read[step] = got
+				mu.Unlock()
 			}
 		}
 		w := newWired(t, memory, node.NewStepping(stepped))
@@ -128,23 +130,34 @@ func TestWiredOperationReadableUntilStopStep3(t *testing.T) {
 		if r := w.send(t, http.MethodGet, path, w.viewer.token, nil); r.status != http.StatusOK {
 			t.Fatalf("GET the operation before Stop: answered %d %s, want 200", r.status, r.body)
 		}
-		mu.Lock()
-		probe = func() int {
+		status := func(path string) int {
 			r, err := w.try(t.Context(), http.MethodGet, path, w.viewer.token, nil)
 			if err != nil {
 				return 0
 			}
 			return r.status
 		}
+		mu.Lock()
+		probe = func() probed { return probed{status(path), status("/api/v1/health")} }
 		mu.Unlock()
 		if err := w.h.Node().Stop(t.Context()); err != nil {
 			t.Fatalf("Stop: %v", err)
 		}
 		mu.Lock()
 		defer mu.Unlock()
-		for _, step := range []string{"stop reconcile", "stop adapters", "wait runner", "stop runner"} {
-			if got := read[step]; got != http.StatusOK {
-				t.Errorf("GET the operation at %s: answered %d, want 200 until step 3 ends", step, got)
+		for i, step := range steps {
+			want := http.StatusOK
+			if i >= slices.Index(steps, "stop api") {
+				want = http.StatusServiceUnavailable
+			}
+			got, ok := read[step]
+			switch {
+			case !ok:
+				t.Errorf("no probe at %s, want one", step)
+			case got.op != want:
+				t.Errorf("GET the operation at %s: answered %d, want %d", step, got.op, want)
+			case got.health != http.StatusOK:
+				t.Errorf("GET /api/v1/health at %s: answered %d, want 200 until the listeners close", step, got.health)
 			}
 		}
 	})

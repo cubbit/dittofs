@@ -33,6 +33,7 @@ const (
 	stepEngine     = "engine"
 	stepFilesystem = "filesystem"
 	stepRunner     = "runner"
+	stepAPI        = "api"
 )
 
 // stopBound is how long Stop waits for one part to stop, on the node's clock,
@@ -175,20 +176,13 @@ func (n *Node) Start(ctx context.Context) error {
 		{stepIdentity, n.startIdentity},
 		{stepFilesystem, n.startFilesystem},
 		{stepRunner, n.startRunner},
-		// ponytail: the management API's calls are served from the
-		// listeners' step, refused 503 starting until readiness turns
-		// ready after the first status write rather than from here, and
-		// they stop with the listeners, after the engine, rather than
-		// before the runner. The API writes only to the store, which
-		// outlives every part, and reads stopped parts only through their
-		// statistics, so a call taken while the node stops commits a
-		// record this node applies at its next start, and a write's wait
-		// for this node to apply it runs out its bound. A failed start
-		// leaves the listeners open for health, so the API refuses every call
-		// but the rows that answer before ready (health and the version) on a
-		// node never ready since it started (Served), with no retry. Make the calls'
-		// acceptance a part started here, apart from the health listener,
-		// once a call reaches a part the stop closes first.
+		// The management API's calls are served from the listeners' step,
+		// refused 503 starting until readiness turns ready after the first
+		// status write. They stop being accepted at the API's part,
+		// recorded here after the runner's, so Stop closes it after the
+		// adapters and before the runner (RFC 23 §2.2's stop step 3), while
+		// the health probes answer until the listeners close.
+		{stepAPI, n.acceptCalls},
 		{stepFirstReconcile, n.firstReconcile},
 		{stepAdapters, n.startAdapters},
 		{stepReconcile, n.startReconcile},
@@ -471,6 +465,15 @@ func (n *Node) startRunner(context.Context) error {
 		<-done
 		return nil
 	})
+	return nil
+}
+
+// acceptCalls records the API's acceptance of calls as a part, whose stop
+// refuses every call but the health and version rows and waits for the
+// calls in flight, which reach the runner and identity: one that misses its
+// bound leaves both open.
+func (n *Node) acceptCalls(context.Context) error {
+	n.started(stepAPI, n.api.Close, stepRunner, stepIdentity)
 	return nil
 }
 
