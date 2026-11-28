@@ -382,6 +382,13 @@ func (s faultState) noEffect(op string, file int) bool {
 		return s.gone[file] && s.owed[file]
 	case "commit":
 		return s.armed || s.gone[file] || s.owed[file]
+	case "commit_existence":
+		// A released file serves nothing to check: one released at once has
+		// nothing pending and answers success, and one whose release is owed
+		// waits for its guard as any owed file does. An owed file runs, with a
+		// deadline that has passed, while the store fails or not; any other
+		// waits for its context while the store fails.
+		return s.gone[file] || (s.armed && !s.owed[file])
 	case "crash", "crash_keeping", "crash_torn", "crash_reordered", "fail_updates_after":
 		// A host loss and a store fault always run.
 		return false
@@ -757,6 +764,23 @@ func (a commitAnswer) String() string {
 	return fmt.Sprintf("ok loss=%d", a.lossSeq)
 }
 
+// existenceAnswer is what an existence commit answered, and, after a success,
+// how many changes of its file the journal still yields above what the store
+// has applied: what the next start would replay.
+type existenceAnswer struct {
+	step int
+	err  error
+	left int
+}
+
+func (a existenceAnswer) String() string {
+	if a.err != nil {
+		return errorClass(a.err)
+	}
+
+	return fmt.Sprintf("ok, left to replay %d", a.left)
+}
+
 // readAnswer is what a read answered, its bytes starting at off.
 type readAnswer struct {
 	off  int64
@@ -909,6 +933,36 @@ func engineCommit(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
 		verifier: verifier,
 		lossSeq:  lossSeq,
 	}
+}
+
+// engineCommitExistence commits a file's pending existence and, once it
+// returns success, counts what the journal still holds of the file above what
+// the store has applied.
+func engineCommitExistence(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
+	file := a.Int("file")
+	ctx := env.T.Context()
+
+	if w.faults.owed[file] {
+		// The call waits for the owed removal's guard until its context ends,
+		// and no step ends it: a deadline already passed ends it at once.
+		var cancel context.CancelFunc
+
+		ctx, cancel = context.WithDeadline(ctx, time.Unix(0, 0))
+		defer cancel()
+	}
+
+	err := w.fix.E.CommitExistence(ctx, w.fix.Share.ID, w.files[file])
+
+	answer := existenceAnswer{step: env.Step, err: err}
+	if err != nil {
+		return answer
+	}
+
+	w.faults.synced(file, env.Step)
+	left, err := w.leftToReplay(env.T.Context())
+	answer.left, answer.err = left[file], err
+
+	return answer
 }
 
 func engineRead(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
@@ -1314,6 +1368,41 @@ func modelCommit(m engineModel, a fuzz.Args, got fuzz.Result) ([]engineModel, er
 	}
 
 	return one(m.sawVerifier(answer.verifier))
+}
+
+// modelCommitExistence allows a file whose removal is owed only retry later:
+// the removal's phase 1 has not committed, and the call waits for it. Any other
+// file must commit, leaving the journal nothing of it above what the store has
+// applied, and its writes are then synced, as the batch syncs the file.
+func modelCommitExistence(m engineModel, a fuzz.Args, got fuzz.Result) ([]engineModel, error) {
+	answer := got.(existenceAnswer)
+	file := a.Int("file")
+
+	switch {
+	case answer.err == nil && (answer.left != 0 || m.faults.owed[file]):
+		return nil, fmt.Errorf(
+			"file %d committed its existence, and the journal still holds %d changes "+
+				"of it above applied, which the next start would replay",
+			file,
+			answer.left,
+		)
+	case m.faults.owed[file]:
+		if errorClass(answer.err) != "retry later" {
+			return nil, fmt.Errorf(
+				"file %d owes a removal, and its existence commit answered %s, want retry later",
+				file,
+				answer,
+			)
+		}
+
+		return []engineModel{m}, nil
+	case answer.err != nil:
+		return nil, fmt.Errorf("the existence commit failed, and nothing allows it: %w", answer.err)
+	}
+
+	m.faults.synced(file, answer.step)
+
+	return []engineModel{m.syncedFile(file)}, nil
 }
 
 func modelRead(m engineModel, a fuzz.Args, got fuzz.Result) ([]engineModel, error) {
@@ -1732,6 +1821,13 @@ func engineTarget() fuzz.Target[*engineWorld, engineModel] {
 				Model:  modelUnless("commit", modelCommit),
 			},
 			{
+				Name:   "commit_existence",
+				Weight: 2,
+				Params: []fuzz.Param{file},
+				Real:   realUnless("commit_existence", engineCommitExistence),
+				Model:  modelUnless("commit_existence", modelCommitExistence),
+			},
+			{
 				Name:   "read",
 				Weight: 4,
 				Params: []fuzz.Param{file, off, length},
@@ -2082,6 +2178,27 @@ var engineSeeds = []struct {
 		},
 	},
 	{
+		// The owed truncate keeps its file's existence uncommitted, the store
+		// failing or not, while the other file of its stream commits its own and
+		// leaves the journal nothing of it to replay.
+		name: "an existence commit beside an owed removal",
+		calls: []string{
+			"write(file=0, off=0, len=8192)",
+			"restart()",
+			"fail_updates_after(n=0)",
+			"truncate(file=0, size=0)",
+			"commit_existence(file=0)",
+			"fail_updates_after(n=-1)",
+			"commit_existence(file=0)",
+			"write(file=1, off=0, len=512)",
+			"write(file=1, off=4096, len=512)",
+			"commit_existence(file=1)",
+			"crash()",
+			"read(file=0, off=0, len=8192)",
+			"read(file=1, off=0, len=8192)",
+		},
+	},
+	{
 		// A failed window drops the unsynced write as a loss record: the read
 		// serves what it superseded, the loss the arm step's own read consumes
 		// breaks the verifier chain for every answer that follows, and the
@@ -2414,6 +2531,61 @@ func TestModelRefusesAStartThatLeftExistenceUncommitted(t *testing.T) {
 			answer.sizes[0] = 0
 			if _, err := start.model(before, fuzz.Args{}, answer); err == nil {
 				t.Fatal("a committed size of 0 under 3 bytes read is allowed")
+			}
+		})
+	}
+}
+
+// TestModelRefusesACommittedExistenceTheJournalStillHolds holds an existence
+// commit to leaving its file nothing to replay, and a file whose removal is
+// owed to retry later.
+func TestModelRefusesACommittedExistenceTheJournalStillHolds(t *testing.T) {
+	retry := &vfserr.Delay{Cause: vfserr.DelayCommit}
+	cases := []struct {
+		name   string
+		owed   bool
+		answer existenceAnswer
+		allows bool
+	}{
+		{
+			name:   "committed, nothing left",
+			answer: existenceAnswer{},
+			allows: true,
+		},
+		{
+			name:   "committed, one change left",
+			answer: existenceAnswer{left: 1},
+		},
+		{
+			name:   "failed",
+			answer: existenceAnswer{err: retry},
+		},
+		{
+			name:   "owed, retry later",
+			owed:   true,
+			answer: existenceAnswer{err: retry},
+			allows: true,
+		},
+		{
+			name:   "owed, another error",
+			owed:   true,
+			answer: existenceAnswer{err: vfserr.ErrInvalid},
+		},
+		{
+			name:   "owed, committed",
+			owed:   true,
+			answer: existenceAnswer{},
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := newEngineModel()
+			m.faults.owed[0] = c.owed
+
+			_, err := modelCommitExistence(m, parsed(t, "commit_existence(file=0)"), c.answer)
+			if got := err == nil; got != c.allows {
+				t.Fatalf("the model answered %v for %s, want allowed %v", err, c.answer, c.allows)
 			}
 		})
 	}
