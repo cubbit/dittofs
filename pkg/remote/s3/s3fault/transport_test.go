@@ -119,6 +119,39 @@ func TestATornPutSendsOnlyTheBytesBeforeTheCut(t *testing.T) {
 	}
 }
 
+// A reply body shorter than TruncateReply's cut reads whole and ends with
+// io.EOF, rather than reading nothing forever once the body has ended.
+func TestATruncatedReplyShorterThanTheCutEnds(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("short"))
+	}))
+	t.Cleanup(srv.Close)
+	tr := New(http.DefaultTransport, nil)
+	tr.Inject(Rule{Op: "GetObject"}, TruncateReply(10))
+	out, err := rawClient(srv.URL, tr).GetObject(t.Context(), &s3.GetObjectInput{Bucket: aws.String("bucket"), Key: aws.String("key")})
+	if err != nil {
+		t.Fatalf("GetObject under TruncateReply(10): %v", err)
+	}
+	t.Cleanup(func() { _ = out.Body.Close() })
+	type read struct {
+		b   []byte
+		err error
+	}
+	done := make(chan read, 1)
+	go func() {
+		b, err := io.ReadAll(out.Body)
+		done <- read{b, err}
+	}()
+	select {
+	case r := <-done:
+		if string(r.b) != "short" || r.err != nil {
+			t.Errorf("reading a 5-byte body under TruncateReply(10): %q, %v, want \"short\" ending in io.EOF", r.b, r.err)
+		}
+	case <-time.After(30 * time.Second): // a backstop: the read ends once the 5-byte body has
+		t.Fatal("reading a 5-byte body under TruncateReply(10) never ended")
+	}
+}
+
 // Thirty-two concurrent puts under one Answer of Times 1: exactly one is
 // answered, and the other 31 reach the service.
 func TestConcurrentRequestsShareOneAnswer(t *testing.T) {

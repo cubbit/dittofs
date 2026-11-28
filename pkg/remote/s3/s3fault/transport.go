@@ -198,8 +198,9 @@ func (b *cut) Read(p []byte) (int, error) {
 	}
 	n, err := b.ReadCloser.Read(p)
 	b.left -= int64(n)
-	if err == io.EOF && b.left > 0 {
-		err = nil // a body that ends before the cut still ends with end
+	if err == io.EOF {
+		b.left = 0 // a body that ends before the cut still ends with end
+		err = b.end
 	}
 	return n, err
 }
