@@ -5,7 +5,6 @@ package s3
 import (
 	"bytes"
 	"errors"
-	"io"
 	"net/http"
 	"slices"
 	"testing"
@@ -32,32 +31,36 @@ func openForHealth(t *testing.T, r *openRig) remote.Store {
 	return s
 }
 
-// healthProbe makes one probe of d and checks it sent exactly one request, of op on
-// the health object, and recorded exactly one call, as health with result;
-// it returns the probe's error.
-func healthProbe(t *testing.T, r *openRig, s remote.Store, d remote.Direction, op, result string) error {
+// probeOp is the one SDK operation each probe direction sends.
+var probeOp = map[remote.Direction]string{remote.DirPut: "PutObject", remote.DirGet: "GetObject"}
+
+// healthProbe makes one probe of d and checks it sent exactly one request, of
+// d's op on the health object, and recorded exactly one call, as health with
+// result and, when ok, the health body's bytes; it returns the probe's error.
+func healthProbe(t *testing.T, r *openRig, s remote.Store, d remote.Direction, result string) error {
 	t.Helper()
 
 	reqs, recs := len(r.tr.Requests()), len(r.rec.all())
 	err := s.Health(t.Context(), d)
 
-	if got := r.tr.Requests()[reqs:]; len(got) != 1 || got[0].Op != op || got[0].Key != healthKey {
-		t.Errorf("Health(%s) sent %+v, want one %s of %s", directionName(d), got, op, healthKey)
+	if got := r.tr.Requests()[reqs:]; len(got) != 1 || got[0].Op != probeOp[d] || got[0].Key != healthKey {
+		sent := make([]string, len(got))
+		for i, q := range got {
+			sent[i] = q.Op + " " + q.Key
+		}
+		t.Errorf("Health(%s) sent %v, want one %s of %s", probeOp[d], sent, probeOp[d], healthKey)
 	}
 
-	if got := r.rec.all()[recs:]; len(got) != 1 || got[0].op != "health" || got[0].result != result {
-		t.Errorf("Health(%s) recorded %+v, want one health call, %s", directionName(d), got, result)
+	var bytes int64
+	if result == "ok" {
+		bytes = int64(len(healthBody))
+	}
+
+	if got := r.rec.all()[recs:]; len(got) != 1 || got[0] != (recordedCall{"health", result, "", bytes}) {
+		t.Errorf("Health(%s) recorded %+v, want one health call, %s, of %d bytes", probeOp[d], got, result, bytes)
 	}
 
 	return err
-}
-
-func directionName(d remote.Direction) string {
-	if d == remote.DirPut {
-		return "DirPut"
-	}
-
-	return "DirGet"
 }
 
 // On a store fresh from its open, holding no block and never probed for a
@@ -68,22 +71,16 @@ func TestHealthProbesTheHealthObject(t *testing.T) {
 	r := newOpenRig(t, nil)
 	s := openForHealth(t, r)
 
-	if err := healthProbe(t, r, s, remote.DirGet, "GetObject", "ok"); err != nil {
+	if err := healthProbe(t, r, s, remote.DirGet, "ok"); err != nil {
 		t.Errorf("Health(DirGet) before any put probe: %v, want nil", err)
 	}
 
-	if err := healthProbe(t, r, s, remote.DirPut, "PutObject", "ok"); err != nil {
+	if err := healthProbe(t, r, s, remote.DirPut, "ok"); err != nil {
 		t.Errorf("Health(DirPut): %v, want nil", err)
 	}
 
-	out, err := r.admin.GetObject(t.Context(), &s3.GetObjectInput{Bucket: &r.bucket, Key: new(healthKey)})
-	if err != nil {
-		t.Fatalf("GetObject of the health object: %v", err)
-	}
-	got, err := io.ReadAll(out.Body)
-	_ = out.Body.Close()
-	if err != nil || !bytes.Equal(got, healthBody) {
-		t.Errorf("the health object holds %q (%v), want %q", got, err, healthBody)
+	if b, ok := r.stored(t, healthKey); !ok || !bytes.Equal(b, healthBody) {
+		t.Errorf("the health object holds %q (held %v), want %q", b, ok, healthBody)
 	}
 
 	if keys := r.rawKeys(t, openNS); !slices.Equal(keys, []string{healthKey}) {
@@ -99,38 +96,20 @@ func TestHealthProbesTheHealthObject(t *testing.T) {
 		{http.StatusServiceUnavailable, "SlowDown", "throttled", remote.ErrThrottled},
 		{http.StatusInternalServerError, "InternalError", "transient", remote.ErrTransient},
 	} {
-		for d, op := range map[remote.Direction]string{remote.DirPut: "PutObject", remote.DirGet: "GetObject"} {
+		for d, op := range probeOp {
 			remove := r.tr.Inject(s3fault.Rule{Op: op, KeyPrefix: healthKey}, s3fault.Answer(tc.status, tc.code, nil))
-			if err := healthProbe(t, r, s, d, op, tc.result); !errors.Is(err, tc.want) {
-				t.Errorf("Health(%s) answered %d %s: %v, want %v", directionName(d), tc.status, tc.code, err, tc.want)
+			if err := healthProbe(t, r, s, d, tc.result); !errors.Is(err, tc.want) {
+				t.Errorf("Health(%s) answered %d %s: %v, want %v", op, tc.status, tc.code, err, tc.want)
 			}
 			remove()
 		}
 	}
-}
 
-// While every put under the prefix is refused, the put probe fails, denied
-// for access, and the get probe passes; once the refusal is removed the next
-// put probe passes, so no status was kept between calls.
-func TestHealthWhileReadOnly(t *testing.T) {
-	r := newOpenRig(t, nil)
-	s := openForHealth(t, r)
-
-	remove := r.tr.Inject(s3fault.Rule{Op: "PutObject", KeyPrefix: openNS}, s3fault.Answer(http.StatusForbidden, "AccessDenied", nil))
-
-	var de *remote.DeniedError
-	if err := healthProbe(t, r, s, remote.DirPut, "PutObject", "denied"); !errors.As(err, &de) || de.Cause != remote.CauseAccess {
-		t.Errorf("Health(DirPut) while read-only: %v, want ErrDenied of cause access", err)
-	}
-
-	if err := healthProbe(t, r, s, remote.DirGet, "GetObject", "ok"); err != nil {
-		t.Errorf("Health(DirGet) while read-only: %v, want nil", err)
-	}
-
-	remove()
-
-	if err := healthProbe(t, r, s, remote.DirPut, "PutObject", "ok"); err != nil {
-		t.Errorf("Health(DirPut) once write access returned: %v, want nil", err)
+	// Nothing is logged per probe, a failed one included.
+	for _, level := range []string{"WARN", "ERROR"} {
+		if l := r.lines(t, level); len(l) != 0 {
+			t.Errorf("%s lines %v after the probes, want none", level, l)
+		}
 	}
 }
 
@@ -144,7 +123,7 @@ func TestHealthAfterTheObjectIsDeleted(t *testing.T) {
 		t.Fatalf("DeleteObject of the health object: %v", err)
 	}
 
-	if err := healthProbe(t, r, s, remote.DirGet, "GetObject", "not_found"); !errors.Is(err, remote.ErrNotFound) {
+	if err := healthProbe(t, r, s, remote.DirGet, "not_found"); !errors.Is(err, remote.ErrNotFound) {
 		t.Errorf("Health(DirGet) with the health object deleted: %v, want ErrNotFound", err)
 	}
 
@@ -158,7 +137,7 @@ func TestHealthAfterTheObjectIsDeleted(t *testing.T) {
 	t.Cleanup(func() { _ = again.Close() })
 
 	for name, st := range map[string]remote.Store{"the reopened store": again, "the first store": s} {
-		if err := healthProbe(t, r, st, remote.DirGet, "GetObject", "ok"); err != nil {
+		if err := healthProbe(t, r, st, remote.DirGet, "ok"); err != nil {
 			t.Errorf("Health(DirGet) on %s after the reopen: %v, want nil", name, err)
 		}
 	}

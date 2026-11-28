@@ -10,8 +10,7 @@ import (
 )
 
 // A probe of no direction, of one outside the two, or on a closed store is
-// ErrInvalid with no request, recorded once as health; a probe the service
-// answers is recorded once as health, never as the control call it rides on.
+// ErrInvalid with no request, recorded once as health.
 func TestHealthRecordsOnceAsHealth(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	srv, n := counting(t, md5ETag)
@@ -45,19 +44,4 @@ func TestHealthRecordsOnceAsHealth(t *testing.T) {
 		t.Errorf("the refused probes sent %d requests, want 0", got)
 	}
 
-	s, rec := storeOn(t, srv, crc, nil)
-	for _, d := range []remote.Direction{remote.DirPut, remote.DirGet} {
-		if err := s.Health(t.Context(), d); err != nil {
-			t.Errorf("Health(%d) answered 200 = %v, want nil", d, err)
-		}
-	}
-
-	want := []recordedCall{{"health", "ok", "", int64(len(healthBody))}, {"health", "ok", "", 0}}
-	if got := rec.all(); !slices.Equal(got, want) {
-		t.Errorf("the two probes recorded %+v, want %+v, each once as health", got, want)
-	}
-
-	if got := n.Load(); got != 2 {
-		t.Errorf("the two probes sent %d requests, want 2", got)
-	}
 }

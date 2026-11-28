@@ -16,6 +16,12 @@ import (
 // control call's is mapped, keeps nothing, and is recorded once, as op health
 // and never as a control call. Any other direction is remote.ErrInvalid with
 // no request.
+//
+// decision: the probe's bound is the caller's ctx, as every other call's is;
+// the client bounds only the dial and the TLS handshake, so a service that
+// accepts and then stalls holds a probe until ctx ends. The syncer probes on
+// its interval under a deadline (RFC 3 §2.8). Give the probe a fixed timeout
+// of its own if a caller is ever seen probing without one.
 func (s *store) Health(ctx context.Context, d remote.Direction) error {
 	switch d {
 	case remote.DirPut:

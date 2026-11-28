@@ -27,7 +27,7 @@ const (
 	opList                         // a ListObjectsV2 page
 	opDeleteKey                    // one key's error inside a DeleteObjects reply
 	opSetting                      // a bucket-setting read of the capability check
-	opHealth                       // a probe of the health object, either direction
+	opHealth                       // a probe, recorded only: it is judged as the control put or get it rides on
 )
 
 func (o opKind) String() string {
