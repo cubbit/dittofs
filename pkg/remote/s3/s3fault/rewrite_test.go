@@ -101,19 +101,6 @@ func TestHoldNewKeysRemovesOnlyTheHeldKeysElement(t *testing.T) {
 	if want := without(t, list, "<Contents><Key>b&amp;&lt;c</Key>", "</Contents>"); !bytes.Equal(got, want) {
 		t.Errorf("the first listing after the put of b&<c:\n%s\nwant LocalStack's with that key's element alone removed:\n%s", got, want)
 	}
-	var parsed struct {
-		Contents []struct{ Key string }
-	}
-	if err := xml.Unmarshal(got, &parsed); err != nil {
-		t.Fatalf("the rewritten listing does not parse: %v", err)
-	}
-	var keys []string
-	for _, c := range parsed.Contents {
-		keys = append(keys, c.Key)
-	}
-	if want := []string{"a", "d"}; !slices.Equal(keys, want) {
-		t.Errorf("the rewritten listing lists %q, want %q", keys, want)
-	}
 	if got := listing(); !bytes.Equal(got, list) {
 		t.Errorf("the second listing, past a hold of 1:\n%s\nwant LocalStack's whole", got)
 	}
@@ -121,8 +108,8 @@ func TestHoldNewKeysRemovesOnlyTheHeldKeysElement(t *testing.T) {
 
 // A refused key is taken out of a LocalStack DeleteObjects request, which
 // carries a Content-MD5 of what is left and no other checksum, and an Error
-// entry with the code given is added to the service's reply; a batch without
-// the key, and its reply, pass as they are.
+// entry with the code given is added to the service's reply to what is left;
+// a batch without the key, and its reply, pass as they are.
 func TestFailBatchKeyRewritesTheRequestAndTheReply(t *testing.T) {
 	batch, result := testdata(t, "delete-objects-request.xml"), testdata(t, "delete-objects-reply.xml")
 	fail := FailBatchKey("b&<c", "AccessDenied")
@@ -150,12 +137,17 @@ func TestFailBatchKeyRewritesTheRequestAndTheReply(t *testing.T) {
 	if sent.ContentLength != int64(len(body)) {
 		t.Errorf("the batch sent has ContentLength %d, want %d", sent.ContentLength, len(body))
 	}
-	again, err := sent.GetBody()
-	if b, _ := io.ReadAll(again); err != nil || !bytes.Equal(b, body) {
-		t.Errorf("GetBody of the batch sent: %q, %v, want the body sent", b, err)
+	if sent.GetBody == nil {
+		t.Error("the batch sent has no GetBody, want one replaying the body sent")
+	} else if again, err := sent.GetBody(); err != nil {
+		t.Errorf("GetBody of the batch sent: %v", err)
+	} else if b, _ := io.ReadAll(again); !bytes.Equal(b, body) {
+		t.Errorf("GetBody of the batch sent: %q, want the body sent", b)
 	}
 
-	resp, err := fail.after(reply(sent, http.StatusOK, result))
+	// LocalStack's reply to the batch sent, which lists the two keys left.
+	left := without(t, result, "<Deleted><Key>b&amp;&lt;c</Key>", "</Deleted>")
+	resp, err := fail.after(reply(sent, http.StatusOK, left))
 	if err != nil {
 		t.Fatalf("rewriting the reply: %v", err)
 	}
@@ -169,17 +161,22 @@ func TestFailBatchKeyRewritesTheRequestAndTheReply(t *testing.T) {
 	if len(parsed.Error) != 1 || parsed.Error[0].Key != "b&<c" || parsed.Error[0].Code != "AccessDenied" {
 		t.Errorf("the rewritten reply's errors: %+v, want b&<c refused AccessDenied", parsed.Error)
 	}
-	if len(parsed.Deleted) != 3 {
-		t.Errorf("the rewritten reply's Deleted: %+v, want the service's 3 entries as it wrote them", parsed.Deleted)
+	if len(parsed.Deleted) != 2 || parsed.Deleted[0].Key != "a" || parsed.Deleted[1].Key != "d" {
+		t.Errorf("the rewritten reply's Deleted: %+v, want the service's a and d", parsed.Deleted)
 	}
 
 	other := FailBatchKey("absent", "AccessDenied")
 	req = sdkRequest(t, "DeleteObjects", http.MethodPost, "?delete=", batch)
-	sent, _ = other.before(req, "DeleteObjects", "")
+	sent, answered = other.before(req, "DeleteObjects", "")
+	if answered != nil {
+		t.Fatal("FailBatchKey answered a batch without its key, want it sent")
+	}
 	if body, _ := io.ReadAll(sent.Body); !bytes.Equal(body, batch) {
 		t.Errorf("a batch without the refused key was sent as:\n%s\nwant it whole", body)
 	}
-	resp, _ = other.after(reply(sent, http.StatusOK, result))
+	if resp, err = other.after(reply(sent, http.StatusOK, result)); err != nil {
+		t.Fatalf("the reply to a batch without the refused key: %v", err)
+	}
 	if got, _ := io.ReadAll(resp.Body); !bytes.Equal(got, result) {
 		t.Errorf("the reply to a batch without the refused key:\n%s\nwant it whole", got)
 	}

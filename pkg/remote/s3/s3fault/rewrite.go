@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,9 +20,13 @@ import (
 // HoldNewKeys holds each key put through the transport out of the first
 // listings ListObjectsV2 replies that list it, as a service whose listings
 // lag its writes would. Each key is counted on its own, from its first
-// successful put; every other key stays in the reply, in its place. The rule
-// it is injected under must select the puts as well as the listings, as the
-// zero Rule does: a listing's key is "", which no KeyPrefix matches.
+// successful put; every other key stays in the reply, in its place.
+//
+// decision: the effect learns a key only from a put its rule selects, so it
+// is injected under the zero Rule, which selects the puts and the listings
+// alike. Under Rule{Op: "ListObjectsV2"} it holds nothing, and a KeyPrefix
+// selects no listing, whose key is "". A hold of the first keys a listing
+// shows, needing no puts, is the upgrade if a row must scope it.
 func HoldNewKeys(listings int) Effect {
 	return &holdNewKeys{listings: listings, left: map[string]int{}}
 }
@@ -40,9 +44,6 @@ func (*holdNewKeys) before(req *http.Request, _, _ string) (*http.Request, *http
 
 func (h *holdNewKeys) after(resp *http.Response) (*http.Response, error) {
 	req := resp.Request
-	if req == nil {
-		return resp, nil
-	}
 	switch op := awsmiddleware.GetOperationName(req.Context()); {
 	case op == "PutObject" && resp.StatusCode/100 == 2:
 		key := keyOf(req.URL.Path)
@@ -53,26 +54,19 @@ func (h *holdNewKeys) after(resp *http.Response) (*http.Response, error) {
 		h.mu.Unlock()
 		return resp, nil
 	case op == "ListObjectsV2" && resp.StatusCode == http.StatusOK:
-		urlKeys := req.URL.Query().Get("encoding-type") == "url"
 		// ponytail: the reply's KeyCount still counts the keys held out,
 		// which the store never reads. Re-encode the reply through
 		// encoding/xml once a consumer reads KeyCount.
 		return rewriteBody(resp, func(body []byte) ([]byte, error) {
 			h.mu.Lock()
 			defer h.mu.Unlock()
-			out, _, err := dropElements(body, "Contents", func(key string) bool {
-				if urlKeys {
-					if k, err := url.QueryUnescape(key); err == nil {
-						key = k
-					}
-				}
-				if h.left[key] <= 0 {
+			return dropElements(body, "Contents", func(key string) bool {
+				if h.left[key] == 0 {
 					return false
 				}
 				h.left[key]--
 				return true
 			})
-			return out, err
 		})
 	}
 	return resp, nil
@@ -100,11 +94,17 @@ func (f *failBatchKey) before(req *http.Request, op, _ string) (*http.Request, *
 	}
 	body, err := io.ReadAll(req.Body)
 	_ = req.Body.Close()
-	keys := 0
 	var rest []byte
-	var refused int
+	keys, refused := 0, 0
 	if err == nil {
-		rest, refused, err = dropElements(body, "Object", func(k string) bool { keys++; return k == f.key })
+		rest, err = dropElements(body, "Object", func(k string) bool {
+			keys++
+			if k != f.key {
+				return false
+			}
+			refused++
+			return true
+		})
 	}
 	switch {
 	case err != nil:
@@ -118,7 +118,7 @@ func (f *failBatchKey) before(req *http.Request, op, _ string) (*http.Request, *
 	// against the body it gets; one Content-MD5 of the new body replaces it.
 	sent := withBody(context.WithValue(req.Context(), f, true), req, rest)
 	for name := range sent.Header {
-		if strings.HasPrefix(name, "X-Amz-Checksum-") || name == "X-Amz-Sdk-Checksum-Algorithm" {
+		if strings.HasPrefix(name, "X-Amz-Checksum-") {
 			sent.Header.Del(name)
 		}
 	}
@@ -128,7 +128,7 @@ func (f *failBatchKey) before(req *http.Request, op, _ string) (*http.Request, *
 }
 
 func (f *failBatchKey) after(resp *http.Response) (*http.Response, error) {
-	if resp.Request == nil || resp.Request.Context().Value(f) == nil || resp.StatusCode != http.StatusOK {
+	if resp.Request.Context().Value(f) == nil || resp.StatusCode != http.StatusOK {
 		return resp, nil
 	}
 	return rewriteBody(resp, func(body []byte) ([]byte, error) {
@@ -136,20 +136,17 @@ func (f *failBatchKey) after(resp *http.Response) (*http.Response, error) {
 		if end < 0 {
 			return nil, fmt.Errorf("s3fault: FailBatchKey: the DeleteObjects reply holds no DeleteResult: %.200q", body)
 		}
-		var entry bytes.Buffer
-		entry.WriteString("<Error><Key>")
-		_ = xml.EscapeText(&entry, []byte(f.key))
-		entry.WriteString("</Key><Code>")
-		_ = xml.EscapeText(&entry, []byte(f.code))
-		entry.WriteString("</Code><Message>refused by s3fault</Message></Error>")
-		return bytes.Join([][]byte{body[:end], entry.Bytes(), body[end:]}, nil), nil
+		entry, err := xml.Marshal(struct {
+			XMLName            xml.Name `xml:"Error"`
+			Key, Code, Message string
+		}{Key: f.key, Code: f.code, Message: "refused by s3fault"})
+		return slices.Concat(body[:end], entry, body[end:]), err
 	})
 }
 
 // dropElements returns body less each element named name directly under its
-// root whose Key drop reports true for, with every other byte as it
-// was, and how many it dropped.
-func dropElements(body []byte, name string, drop func(key string) bool) (out []byte, dropped int, err error) {
+// root whose Key drop reports true for, with every other byte as it was.
+func dropElements(body []byte, name string, drop func(key string) bool) (out []byte, err error) {
 	d := xml.NewDecoder(bytes.NewReader(body))
 	var last int64
 	depth := 0
@@ -157,10 +154,10 @@ func dropElements(body []byte, name string, drop func(key string) bool) (out []b
 		start := d.InputOffset()
 		tok, err := d.Token()
 		if err == io.EOF {
-			return append(out, body[last:]...), dropped, nil
+			return append(out, body[last:]...), nil
 		}
 		if err != nil {
-			return nil, 0, err
+			return nil, err
 		}
 		switch t := tok.(type) {
 		case xml.StartElement:
@@ -170,12 +167,11 @@ func dropElements(body []byte, name string, drop func(key string) bool) (out []b
 			}
 			var el struct{ Key string }
 			if err := d.DecodeElement(&el, &t); err != nil {
-				return nil, 0, err
+				return nil, err
 			}
 			if drop(el.Key) {
 				out = append(out, body[last:start]...)
 				last = d.InputOffset()
-				dropped++
 			}
 		case xml.EndElement:
 			depth--

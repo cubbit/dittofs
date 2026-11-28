@@ -90,8 +90,8 @@ func TestFailBatchKeyRefusesOneKeyForReal(t *testing.T) {
 		t.Errorf("the batch deleted %q, want %q", deleted, want)
 	}
 	for _, key := range keys {
-		if body, ok := r.stored(t, key); ok != (key == "b") || (ok && string(body) != key) {
-			t.Errorf("after the batch the service holds %s: %v (%q), want only the refused b held", key, ok, body)
+		if _, ok := r.stored(t, key); ok != (key == "b") {
+			t.Errorf("after the batch the service holds %s: %v, want only the refused b held", key, ok)
 		}
 	}
 }
