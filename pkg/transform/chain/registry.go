@@ -89,7 +89,8 @@ type decodeSet struct {
 // provider m, holding the registry's lock, so a factory must not call
 // Register. It refuses a transform whose factory fails, whose ID is not the
 // one it registered under (the envelope and the census would name the wrong
-// transform), or whose stage is not one of the three (RFC 5 §2.3).
+// transform), or whose stage is not one of the three (RFC 5 §2.3), returning
+// its name with the error.
 //
 // decision: a registered transform that fails to build for decoding fails the
 // whole build, so the store does not open, although no configuration uses it.
@@ -99,7 +100,7 @@ type decodeSet struct {
 // no transform's default build reach material. Withdraw it if a shipped
 // transform's default build ever needs material a store that does not use the
 // transform lacks.
-func (r *registry) build(ctx context.Context, m keys.Provider) (*decodeSet, error) {
+func (r *registry) build(ctx context.Context, m keys.Provider) (*decodeSet, string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s := &decodeSet{byID: make(map[transform.ID]transform.Transform, len(r.byID))}
@@ -107,22 +108,22 @@ func (r *registry) build(ctx context.Context, m keys.Provider) (*decodeSet, erro
 		reg := r.byID[id]
 		t, err := reg.factory(ctx, map[string]any{}, m)
 		if err != nil {
-			return nil, fmt.Errorf("chain: building transform %q for decoding: %w", reg.name, err)
+			return nil, reg.name, fmt.Errorf("chain: building transform %q for decoding: %w", reg.name, err)
 		}
 		if t == nil {
-			return nil, fmt.Errorf("chain: transform %q's factory returned no transform", reg.name)
+			return nil, reg.name, fmt.Errorf("chain: transform %q's factory returned no transform", reg.name)
 		}
 		if got := t.ID(); got != id {
-			return nil, fmt.Errorf("chain: transform %q registered as ID %#04x reports ID %#04x", reg.name, id, got)
+			return nil, reg.name, fmt.Errorf("chain: transform %q registered as ID %#04x reports ID %#04x", reg.name, id, got)
 		}
 		st := t.Stage()
 		if st < transform.StageCompress || st > transform.StageRedundancy {
-			return nil, fmt.Errorf("chain: transform %q declares stage %d, not one of the three", reg.name, st)
+			return nil, reg.name, fmt.Errorf("chain: transform %q declares stage %d, not one of the three", reg.name, st)
 		}
 		s.byID[id] = t
 		s.stages[st-transform.StageCompress] = append(s.stages[st-transform.StageCompress], t)
 	}
-	return s, nil
+	return s, "", nil
 }
 
 // envelopeMax is the envelope of a body through all three stages: its version

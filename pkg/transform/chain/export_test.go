@@ -32,7 +32,7 @@ func (r Registry) MaxDecodeLen(ctx context.Context, m keys.Provider, n int) (int
 // MaxDecodeLens builds one decode set for provider m and returns its bound of
 // each of ns, in order.
 func (r Registry) MaxDecodeLens(ctx context.Context, m keys.Provider, ns ...int) ([]int, error) {
-	s, err := r.r.build(ctx, m)
+	s, _, err := r.r.build(ctx, m)
 	if err != nil {
 		return nil, err
 	}
@@ -41,4 +41,9 @@ func (r Registry) MaxDecodeLens(ctx context.Context, m keys.Provider, ns ...int)
 		got[i] = s.maxDecodeLen(n)
 	}
 	return got, nil
+}
+
+// NewChain is NewChain over this registry.
+func (r Registry) NewChain(ctx context.Context, cfg []transform.Config, m keys.Provider, deps Deps) (transform.Chain, error) {
+	return r.r.newChain(ctx, cfg, m, deps)
 }
