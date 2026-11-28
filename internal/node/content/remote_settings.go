@@ -31,9 +31,8 @@ func (r remoteSettings) Validate() error {
 	if err := r.Settings.Validate(); err != nil {
 		return err
 	}
-	if r.BlockTarget.Uint64() < carver.MinBlockTarget || r.BlockTarget.Uint64() > carver.MaxBlockTarget {
-		return fmt.Errorf("block_target: %s is outside %s to %s",
-			r.BlockTarget, bytesize.ByteSize(carver.MinBlockTarget), bytesize.ByteSize(carver.MaxBlockTarget))
+	if n := r.BlockTarget.Uint64(); n < carver.MinBlockTarget || n > carver.MaxBlockTarget {
+		return fmt.Errorf("block_target: %d bytes is outside %d to %d bytes", n, carver.MinBlockTarget, carver.MaxBlockTarget)
 	}
 	return nil
 }
@@ -44,7 +43,9 @@ type formatVersion struct {
 	Version uint8 `json:"version" class:"next write"`
 }
 
-// Validate refuses a version the codec does not know.
+// Validate refuses a version the codec does not know. It runs before the
+// format version gate, so a version past the node's range is refused here
+// first, as ErrInvalid.
 func (f formatVersion) Validate() error {
 	if _, ok := codec.MaxHeaderLen(f.Version); !ok {
 		return fmt.Errorf("block format version %d is not one this binary's codec knows", f.Version)

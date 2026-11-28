@@ -373,18 +373,25 @@ var (
 	probeNamespace = entity.SettingScope{Kind: entity.ScopeNamespace, ID: [16]byte{0xa9, 15: 3}}
 )
 
+// seedCredential is the remote credential secret the seeded
+// remote.credential row names, so a probe of any other key is judged beside a
+// reference that holds.
+var seedCredential = entity.Secret{
+	ID: entity.SecretRef{0xc9, 15: 1}, Kind: entity.SecretRemoteCredential, Version: 1, KeyID: "probe",
+	Owner: entity.SecretOwner{Scope: probeRemote, Key: "remote.credential"}, Value: []byte("sealed"),
+}
+
 // sectionSeeds is the smallest set of rows under which Read accepts every
-// section of the node's table and of the remote tier's sections whose
-// defaults alone it refuses, one with a required key, which has no default,
-// and under which each section at a scope holding one value per instance
-// holds one instance: a row of each of its required keys, or of its one key.
-// A table that declares no section of a row's key skips the row.
+// section, of the node's table and the remote tier's, whose defaults alone it
+// refuses (one with a required key), and holds one instance of each section
+// with one value per instance: its required keys, or its one key. A table
+// declaring no section of a row's key skips the row.
 var sectionSeeds = []entity.Setting{
 	{Scope: entity.SettingScope{Kind: entity.ScopeInstallation},
 		Key: "identity.directory.address", Value: []byte(`"ldaps://dc.example.test"`)},
 	{Scope: probeRemote, Key: "remote.endpoint", Value: []byte(`"https://s3.example.test"`)},
 	{Scope: probeRemote, Key: "remote.bucket", Value: []byte(`"probe"`)},
-	{Scope: probeRemote, Key: "remote.credential", Value: []byte(`[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]`)},
+	{Scope: probeRemote, Key: "remote.credential", Value: []byte(`[201,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1]`)},
 	{Scope: probeNamespace, Key: "remote.prefix", Value: []byte(`"probe/"`)},
 	{Scope: probeNamespace, Key: "remote.block_format_version", Value: []byte(`1`)},
 }
@@ -433,6 +440,12 @@ type tableKey struct {
 // if a section is declared that no seed row can stand up.
 func tableKeys(t *testing.T, st *kvstore.Store, tb settings.Table) []tableKey {
 	t.Helper()
+	err := st.ControlPlane().Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+		return tx.PutSecret(seedCredential, 0)
+	})
+	if err != nil {
+		t.Fatalf("put the seeded credential's secret: %v", err)
+	}
 	for _, row := range sectionSeeds {
 		putBeneathCheck(t, st, row)
 	}
@@ -813,8 +826,8 @@ var refMarkerForms = []string{
 //
 // decision: the table exports no list of its reference fields, so a key is
 // one when Check refuses an admin's put of refMarker, as a string or as a
-// 16-byte array, with ErrSecretRef naming the key, the refusal it gives a
-// reference field only once the value decodes into it; the row is then written beneath Check
+// 16-byte array, with ErrSecretRef, the refusal it gives a reference field
+// only once the value decodes into it; the row is then written beneath Check
 // and Read runs Validate on it. A reference field of another type would not
 // be found: add a Table export of the reference fields if a section declares
 // one. Only the refusal refusing gives each section is searched, so a
@@ -865,9 +878,7 @@ func refLeaks(t *testing.T, tb settings.Table, refusing []entity.Setting) (refs 
 			err := cp.Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
 				return tb.Check(tx, entity.RoleAdmin, settings.Put(row), nil)
 			})
-			// A refusal naming another key is a stored reference judged
-			// beside this write, not this key's.
-			if !errors.Is(err, settings.ErrSecretRef) || !strings.Contains(err.Error(), " "+k.Key+": ") {
+			if !errors.Is(err, settings.ErrSecretRef) {
 				continue
 			}
 			putBeneathCheck(t, st, row)
