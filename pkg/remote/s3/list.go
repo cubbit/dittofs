@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
@@ -27,6 +28,7 @@ func (s *store) List(ctx context.Context, after remote.Cursor, n int) ([]remote.
 	page, next, done, foreign, err := s.list(ctx, after, n)
 	s.record(opList, err, time.Since(start), 0)
 
+	// A foreign key has no block name, so the line names the key itself.
 	for _, k := range foreign {
 		s.c.rec.ForeignKey()
 		s.c.log.Warn("remote list skipped a key that is not a block name", "key", k)
@@ -64,19 +66,21 @@ func (s *store) list(ctx context.Context, after remote.Cursor, n int) ([]remote.
 		return nil, after, false, nil, err
 	}
 
-	truncated := out.IsTruncated != nil && *out.IsTruncated
-
-	return s.readPage(ctx, after, n, out.Contents, truncated)
+	return s.readPage(ctx, after, n, out.Contents, out.IsTruncated)
 }
 
 // readPage reads one ListObjectsV2 reply: the blocks among its keys, the
 // cursor of its last key, whether the walk is done, and the keys that are not
-// block names. A reply of more than n keys is read as its first n, truncated.
+// block names. A reply of more than n keys is read as its first n, truncated,
+// and one that leaves out IsTruncated is read as truncated when it holds n
+// keys, so a service that omits the field costs one more page, never a block.
 // A page marked truncated that holds no key cannot advance, and a key outside
-// the request's prefix or not sorting past the one before it is a reply the
-// walk cannot trust: each is remote.ErrTransient. ctx is checked before each
+// the request's prefix or not sorting past the one before it, and a block
+// without its size or time, are a reply the walk cannot trust: each is
+// remote.ErrTransient. ctx is checked before each
 // key, so a context ended mid-page ends the call with its error.
-func (s *store) readPage(ctx context.Context, after remote.Cursor, n int, contents []types.Object, truncated bool) ([]remote.Info, remote.Cursor, bool, []string, error) {
+func (s *store) readPage(ctx context.Context, after remote.Cursor, n int, contents []types.Object, isTruncated *bool) ([]remote.Info, remote.Cursor, bool, []string, error) {
+	truncated := aws.ToBool(isTruncated) || isTruncated == nil && len(contents) >= n
 	if len(contents) > n {
 		contents, truncated = contents[:n], true
 	}
@@ -100,13 +104,9 @@ func (s *store) readPage(ctx context.Context, after remote.Cursor, n int, conten
 			return nil, after, false, nil, err
 		}
 
-		k := ""
-		if o.Key != nil {
-			k = *o.Key
-		}
-
+		k := aws.ToString(o.Key)
 		if !strings.HasPrefix(k, blocks) || k <= prev {
-			return nil, after, false, nil, fmt.Errorf("remote/s3: list: a key outside %s or out of order: %w", blocks, remote.ErrTransient)
+			return nil, after, false, nil, fmt.Errorf("remote/s3: list: key %q after %q, outside %s or out of order: %w", k, prev, blocks, remote.ErrTransient)
 		}
 
 		prev = k
@@ -117,15 +117,11 @@ func (s *store) readPage(ctx context.Context, after remote.Cursor, n int, conten
 			continue
 		}
 
-		info := remote.Info{Name: name}
-		if o.Size != nil {
-			info.Size = *o.Size
-		}
-		if o.LastModified != nil {
-			info.ModTime = *o.LastModified
+		if o.Size == nil || o.LastModified == nil {
+			return nil, after, false, nil, fmt.Errorf("remote/s3: list: block key %q without its size or time: %w", k, remote.ErrTransient)
 		}
 
-		page = append(page, info)
+		page = append(page, remote.Info{Name: name, Size: *o.Size, ModTime: *o.LastModified})
 	}
 
 	return page, remote.Cursor(prev), !truncated, foreign, nil

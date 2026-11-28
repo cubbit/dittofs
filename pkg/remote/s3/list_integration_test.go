@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
 	"errors"
@@ -36,25 +35,19 @@ type listRig struct {
 	endpoint string
 	roots    *x509.CertPool
 	b        *s3fault.Bucket
-	admin    *s3.Client // the bucket's own client, on connections closed before the watch's check
 }
 
-// newListRig makes a fresh bucket, then watches the test for leaked
-// goroutines and descriptors.
+// newListRig watches the test for leaked goroutines and descriptors, then
+// makes a fresh bucket, whose cleanup closes its connections before the
+// watch's check.
 func newListRig(t *testing.T) *listRig {
 	t.Helper()
 
 	// Before the watch, for the reason newLSRig gives.
-	b := s3fault.FreshBucket(t)
 	endpoint, roots := s3fault.LocalStack(t)
 	prof.Watch(t, prof.Options{})
 
-	tr := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots}}
-	t.Cleanup(tr.CloseIdleConnections)
-
-	admin := s3.New(b.Admin.Options(), func(o *s3.Options) { o.HTTPClient = &http.Client{Transport: tr} })
-
-	return &listRig{endpoint: endpoint, roots: roots, b: b, admin: admin}
+	return &listRig{endpoint: endpoint, roots: roots, b: s3fault.FreshBucket(t)}
 }
 
 // replies is a pass-through wrapper that keeps the size of each reply body
@@ -75,6 +68,9 @@ func (r *replies) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	b, err := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
+	if err != nil {
+		return nil, err
+	}
 	resp.Body = io.NopCloser(bytes.NewReader(b))
 
 	r.mu.Lock()
@@ -85,7 +81,7 @@ func (r *replies) RoundTrip(req *http.Request) (*http.Response, error) {
 		r.onReply()
 	}
 
-	return resp, err
+	return resp, nil
 }
 
 func (r *replies) all() []int {
@@ -151,7 +147,7 @@ func (r *listRig) plant(t *testing.T, keys []string, body func(i int) []byte) {
 
 	for i, k := range keys {
 		g.Go(func() error {
-			_, err := r.admin.PutObject(ctx, &s3.PutObjectInput{Bucket: &r.b.Name, Key: &k, Body: bytes.NewReader(body(i))})
+			_, err := r.b.Admin.PutObject(ctx, &s3.PutObjectInput{Bucket: &r.b.Name, Key: &k, Body: bytes.NewReader(body(i))})
 			if err != nil {
 				return fmt.Errorf("PutObject %s: %w", k, err)
 			}
@@ -256,8 +252,14 @@ func TestListWalksResumably(t *testing.T) {
 		}
 	}
 
-	if c := rec.all(); len(c) != 2 || c[0] != (recordedCall{"list", "ok", "", 0}) {
-		t.Errorf("the first store recorded %+v, want two lists, ok", c)
+	c := rec.all()
+	if len(c) != 2 {
+		t.Errorf("the first store recorded %d calls, want two lists", len(c))
+	}
+	for i, call := range c {
+		if call != (recordedCall{"list", "ok", "", 0}) {
+			t.Errorf("the first store's call %d: %+v, want a list, ok", i, call)
+		}
 	}
 
 	// The walk at 500 a page, each reply within the small-body cap.
@@ -417,7 +419,7 @@ func TestListAllocatesFlat(t *testing.T) {
 	}
 
 	r := newListRig(t)
-	s, _, _, _ := r.openAt(t, freshPrefix(), nil)
+	s, tr, _, _ := r.openAt(t, freshPrefix(), nil)
 
 	keys := make([]string, 1000)
 	for i := range keys {
@@ -446,6 +448,14 @@ func TestListAllocatesFlat(t *testing.T) {
 
 	perPage := (after.TotalAlloc - before.TotalAlloc) / pages
 
+	// A retry would double a page's allocations: each page is one request.
+	if got := listsSent(tr.Requests()); got != pages+1 {
+		t.Fatalf("%d pages sent %d ListObjectsV2, want one each", pages+1, got)
+	}
+
+	// About 3 MiB was measured per page of 1,000 keys, the SDK's XML decoding
+	// most of it; twice that leaves room for the process's other allocations,
+	// and a page held as anything larger than its decoded reply exceeds it.
 	const bound = 6 << 20
 	if perPage > bound {
 		t.Errorf("a page of 1,000 keys allocates %d bytes, more than %d", perPage, bound)

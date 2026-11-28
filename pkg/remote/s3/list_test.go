@@ -11,6 +11,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
+	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/remote"
 )
 
@@ -31,12 +32,15 @@ func TestReadPage(t *testing.T) {
 		return types.Object{Key: new(key), Size: new(size), LastModified: new(stamp)}
 	}
 
+	upper := blocks + strings.ToUpper(hex.EncodeToString(a[:]))
+	yes, no := new(true), new(false)
+
 	tests := []struct {
 		name      string
 		after     remote.Cursor
 		n         int
 		contents  []types.Object
-		truncated bool
+		truncated *bool
 
 		want    []remote.Name
 		next    remote.Cursor
@@ -44,14 +48,18 @@ func TestReadPage(t *testing.T) {
 		foreign []string
 		err     error
 	}{
-		{name: "empty and truncated cannot advance", after: remote.Cursor(ka), n: 10, truncated: true, next: remote.Cursor(ka), err: remote.ErrTransient},
-		{name: "empty and not truncated is done at after", after: remote.Cursor(ka), n: 10, next: remote.Cursor(ka), done: true},
-		{name: "empty store from the start", n: 10, done: true},
-		{name: "ending on blocks/zz, not truncated", n: 10, contents: []types.Object{obj(ka, 1), obj(kb, 2), obj(zz, 3)}, want: []remote.Name{a, b}, next: remote.Cursor(zz), done: true, foreign: []string{zz}},
-		{name: "ending on blocks/zz, truncated", n: 10, contents: []types.Object{obj(ka, 1), obj(zz, 3)}, truncated: true, want: []remote.Name{a}, next: remote.Cursor(zz), foreign: []string{zz}},
-		{name: "only foreign keys still advance", n: 10, contents: []types.Object{obj(blocks+"0", 1), obj(blocks+"1", 1)}, truncated: true, next: remote.Cursor(blocks + "1"), foreign: []string{blocks + "0", blocks + "1"}},
-		{name: "an upper-case name is foreign", n: 10, contents: []types.Object{obj(blocks+strings.ToUpper(hex.EncodeToString(a[:])), 1)}, next: remote.Cursor(blocks + strings.ToUpper(hex.EncodeToString(a[:]))), done: true, foreign: []string{blocks + strings.ToUpper(hex.EncodeToString(a[:]))}},
-		{name: "more keys than n are read as the first n, truncated", n: 1, contents: []types.Object{obj(ka, 1), obj(kb, 2)}, want: []remote.Name{a}, next: remote.Cursor(ka)},
+		{name: "empty and truncated cannot advance", after: remote.Cursor(ka), n: 10, truncated: yes, next: remote.Cursor(ka), err: remote.ErrTransient},
+		{name: "empty and not truncated is done at after", after: remote.Cursor(ka), n: 10, truncated: no, next: remote.Cursor(ka), done: true},
+		{name: "empty store from the start", n: 10, truncated: no, done: true},
+		{name: "IsTruncated left out of a full page is truncated", n: 2, contents: []types.Object{obj(ka, 1), obj(kb, 2)}, want: []remote.Name{a, b}, next: remote.Cursor(kb)},
+		{name: "IsTruncated left out of a short page is done", n: 3, contents: []types.Object{obj(ka, 1), obj(kb, 2)}, want: []remote.Name{a, b}, next: remote.Cursor(kb), done: true},
+		{name: "a block without its size", n: 10, truncated: no, contents: []types.Object{{Key: new(ka), LastModified: new(stamp)}}, err: remote.ErrTransient},
+		{name: "a block without its time", n: 10, truncated: no, contents: []types.Object{{Key: new(ka), Size: new(int64(1))}}, err: remote.ErrTransient},
+		{name: "ending on blocks/zz, not truncated", n: 10, contents: []types.Object{obj(ka, 1), obj(kb, 2), obj(zz, 3)}, truncated: no, want: []remote.Name{a, b}, next: remote.Cursor(zz), done: true, foreign: []string{zz}},
+		{name: "ending on blocks/zz, truncated", n: 10, contents: []types.Object{obj(ka, 1), obj(zz, 3)}, truncated: yes, want: []remote.Name{a}, next: remote.Cursor(zz), foreign: []string{zz}},
+		{name: "only foreign keys still advance", n: 10, contents: []types.Object{obj(blocks+"0", 1), obj(blocks+"1", 1)}, truncated: yes, next: remote.Cursor(blocks + "1"), foreign: []string{blocks + "0", blocks + "1"}},
+		{name: "an upper-case name is foreign", n: 10, truncated: no, contents: []types.Object{obj(upper, 1)}, next: remote.Cursor(upper), done: true, foreign: []string{upper}},
+		{name: "more keys than n are read as the first n, truncated", n: 1, contents: []types.Object{obj(ka, 1), obj(kb, 2)}, truncated: no, want: []remote.Name{a}, next: remote.Cursor(ka)},
 		{name: "a key not past after", after: remote.Cursor(kb), n: 10, contents: []types.Object{obj(ka, 1)}, next: remote.Cursor(kb), err: remote.ErrTransient},
 		{name: "keys out of order", n: 10, contents: []types.Object{obj(kb, 1), obj(ka, 1)}, err: remote.ErrTransient},
 		{name: "a key decoded out of the prefix", n: 10, contents: []types.Object{obj("ns-ü//blocks/"+hex.EncodeToString(a[:]), 1)}, err: remote.ErrTransient},
@@ -78,8 +86,9 @@ func TestReadPage(t *testing.T) {
 			var names []remote.Name
 			for _, i := range page {
 				names = append(names, i.Name)
-				if i.Size == 0 || !i.ModTime.Equal(stamp) {
-					t.Errorf("block %x: size %d, time %v, want the reply's size and %v", i.Name[:1], i.Size, i.ModTime, stamp)
+				// Every row lists a with size 1 and b with size 2.
+				if want := map[remote.Name]int64{a: 1, b: 2}[i.Name]; i.Size != want || !i.ModTime.Equal(stamp) {
+					t.Errorf("block %x: size %d, time %v, want %d and %v", i.Name[:1], i.Size, i.ModTime, want, stamp)
 				}
 			}
 			if !slices.Equal(names, tt.want) {
@@ -90,11 +99,13 @@ func TestReadPage(t *testing.T) {
 }
 
 func TestReadPageChecksTheContextBeforeEachKey(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
 	s := &store{prefix: "ns/"}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	_, next, _, _, err := s.readPage(ctx, "", 10, []types.Object{{Key: new(s.blockKey(remote.Name{1}))}}, false)
+	_, next, _, _, err := s.readPage(ctx, "", 10, []types.Object{{Key: new(s.blockKey(remote.Name{1}))}}, new(false))
 	if !errors.Is(err, context.Canceled) || next != "" {
 		t.Errorf("readPage with a cancelled context = %v, next %q; want context.Canceled and next the cursor it was given", err, next)
 	}
@@ -103,6 +114,8 @@ func TestReadPageChecksTheContextBeforeEachKey(t *testing.T) {
 // TestListRefusesBeforeAnyRequest: a cursor outside the prefix's blocks/, an
 // n below 1 and a closed store send nothing.
 func TestListRefusesBeforeAnyRequest(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
 	srv, n := counting(t, md5ETag)
 	s, rec := storeOn(t, srv, choice{}, nil)
 
@@ -131,7 +144,13 @@ func TestListRefusesBeforeAnyRequest(t *testing.T) {
 	if got := n.Load(); got != 0 {
 		t.Errorf("%d requests reached the service, want none", got)
 	}
-	if got := rec.all(); len(got) != 6 || got[0] != (recordedCall{"list", "invalid", "", 0}) {
-		t.Errorf("recorded %+v, want six lists, invalid", got)
+	got := rec.all()
+	if len(got) != 6 {
+		t.Errorf("recorded %d calls, want six lists", len(got))
+	}
+	for i, c := range got {
+		if c != (recordedCall{"list", "invalid", "", 0}) {
+			t.Errorf("recorded call %d: %+v, want a list, invalid", i, c)
+		}
 	}
 }
