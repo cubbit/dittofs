@@ -2094,7 +2094,8 @@ result. Scaleway Object Storage (`fr-par`) and Cubbit DS3 (`s3.cubbit.eu`) were
 each tested in a disposable bucket, deleted afterwards; LocalStack ran in
 Docker. MinIO could not be pulled in this environment and was not measured. The
 bucket-setting rows of LocalStack 4.13.1 were run on 2026-11-28 (service/s3
-v1.116.0), each on a fresh bucket, and the integration suite pins them.
+v1.116.0), each on a fresh bucket, with the emulator's KMS service running
+for SSE-KMS, and the integration suite pins them.
 
 LocalStack 4.13.1's range rows, its signature row and its `DeleteObjects` row
 were measured on 2026-11-28 with service/s3 v1.116.0, by `s3fault`'s
@@ -2124,9 +2125,8 @@ validates no signature.
 | Versioning enabled, then two puts of one key | not measured | not measured | two versions, distinct version IDs | not measured | not measured | not measured |
 | Lifecycle rule expiring every object after 1 day | not measured | not measured | read back as written | not measured | not measured | not measured |
 | Intelligent-tiering configuration with an `ARCHIVE_ACCESS` tier | not measured | not measured | read back as written | not measured | not measured | not measured |
-| Default encryption of a new bucket, nothing applied | not measured | not measured | SSE-S3: every get reports `AES256` | not measured | not measured | not measured |
-| SSE-KMS default encryption applied | not measured | not measured | held only with `kms` among the container's services (else the put fails `500`): every get reports `aws:kms` and a key ID | not measured | not measured | not measured |
-| ETag of a single-part put under SSE-S3 or SSE-KMS default encryption | not measured | not measured | MD5 of the stored bytes under both, so a broken ETag proof cannot be shown here | not measured | not measured | not measured |
+| Default encryption of a new bucket, nothing applied | not measured | not measured | SSE-S3: a get reports `AES256`, ETag the MD5 of the stored bytes; no bucket is ever without a default | not measured | not measured | not measured |
+| SSE-KMS default encryption applied, then SSE-S3 over it | not measured | not measured | a get reports `aws:kms` and a key ID, then `AES256` and none; the ETag stays the MD5 under both, so a broken ETag proof cannot be shown here | not measured | not measured | not measured |
 | Put in `GLACIER` or `DEEP_ARCHIVE` | not measured | not measured | stored; get `403 InvalidObjectState`, head reports the class | not measured | not measured | not measured |
 | Get with `x-amz-checksum-mode: ENABLED` of a put sent with `x-amz-checksum-crc32c` | not measured | not measured | the stored CRC32C returned; none without the mode | not measured | not measured | not measured |
 | Compliance-mode put with a retain-until above a bucket-policy cap on `s3:object-lock-remaining-retention-days`, and how the cap's whole days round | provoked at every location record's creation ([§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)); lab run not yet made | same | same | same | same | same |

@@ -16,13 +16,13 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
+	smithyhttp "github.com/aws/smithy-go/transport/http"
 )
 
 // These tests pin which bucket settings LocalStack holds, each applied for
 // real to a fresh bucket and asserted where it changes what a request
 // returns; a setting the service only keeps as configuration is read back.
-// RFC 4 Appendix B's LocalStack column records the same results, so an
-// upgrade that changes one fails here first.
+// An upgrade of LocalStack that changes one fails here.
 
 var bucketBody = []byte("0123456789")
 
@@ -84,9 +84,10 @@ func TestExpiringLifecycleRuleHeld(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetBucketLifecycleConfiguration: %v", err)
 	}
-	if len(out.Rules) != 1 || out.Rules[0].Status != types.ExpirationStatusEnabled ||
-		out.Rules[0].Expiration == nil || aws.ToInt32(out.Rules[0].Expiration.Days) != 1 {
-		t.Fatalf("lifecycle read back: %+v, want one enabled rule expiring after 1 day", out.Rules)
+	if r := out.Rules; len(r) != 1 || aws.ToString(r[0].ID) != "expire" || r[0].Status != types.ExpirationStatusEnabled ||
+		r[0].Filter == nil || r[0].Filter.Prefix == nil || *r[0].Filter.Prefix != "" ||
+		r[0].Expiration == nil || aws.ToInt32(r[0].Expiration.Days) != 1 {
+		t.Fatalf("lifecycle read back: %+v, want rule expire, enabled, prefix \"\", expiring after 1 day", r)
 	}
 }
 
@@ -108,35 +109,43 @@ func TestArchiveTieringRuleHeld(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListBucketIntelligentTieringConfigurations: %v", err)
 	}
-	if l := out.IntelligentTieringConfigurationList; len(l) != 1 || len(l[0].Tierings) != 1 ||
-		l[0].Tierings[0].AccessTier != types.IntelligentTieringAccessTierArchiveAccess {
-		t.Fatalf("tiering read back: %+v, want one configuration with an ARCHIVE_ACCESS tier", l)
+	if l := out.IntelligentTieringConfigurationList; len(l) != 1 || aws.ToString(l[0].Id) != "archive" ||
+		l[0].Status != types.IntelligentTieringStatusEnabled || len(l[0].Tierings) != 1 ||
+		l[0].Tierings[0].AccessTier != types.IntelligentTieringAccessTierArchiveAccess || aws.ToInt32(l[0].Tierings[0].Days) != 90 {
+		t.Fatalf("tiering read back: %+v, want configuration archive, enabled, ARCHIVE_ACCESS after 90 days", l)
 	}
 }
 
 // Default encryption held. A fresh bucket already encrypts under SSE-S3, as
-// AWS does since 2023, so that case applies nothing and pins the service's
-// own default; SSE-KMS is applied. Either way an object put with no
-// encryption header comes back under the default, and its ETag stays the MD5
-// of its bytes, which AWS documents as untrue under SSE-KMS: LocalStack
-// cannot show the ETag proof broken, only the configuration a check reads.
+// AWS does since 2023, so the default case applies nothing and pins it;
+// SSE-KMS is applied, and SSE-S3 applied over it. Each time an object put
+// with no encryption header comes back under the default in force, and its
+// ETag stays the MD5 of its bytes, which AWS documents as untrue under
+// SSE-KMS: LocalStack cannot show the ETag proof broken, only the
+// configuration a check reads.
 func TestDefaultEncryptionHeld(t *testing.T) {
 	sum := md5.Sum(bucketBody)
 	md5hex := `"` + hex.EncodeToString(sum[:]) + `"`
+	kms, sse := types.ServerSideEncryptionAwsKms, types.ServerSideEncryptionAes256
 	for _, c := range []struct {
-		alg   types.ServerSideEncryption
-		apply bool
-	}{{types.ServerSideEncryptionAes256, false}, {types.ServerSideEncryptionAwsKms, true}} {
-		t.Run(string(c.alg), func(t *testing.T) {
+		name  string
+		apply []types.ServerSideEncryption
+		want  types.ServerSideEncryption
+	}{
+		{"default", nil, sse},
+		{"kms", []types.ServerSideEncryption{kms}, kms},
+		{"s3-over-kms", []types.ServerSideEncryption{kms, sse}, sse},
+	} {
+		t.Run(c.name, func(t *testing.T) {
 			b := FreshBucket(t)
-			if c.apply {
+			for _, alg := range c.apply {
 				if _, err := b.Admin.PutBucketEncryption(t.Context(), &s3.PutBucketEncryptionInput{
 					Bucket: &b.Name,
 					ServerSideEncryptionConfiguration: &types.ServerSideEncryptionConfiguration{Rules: []types.ServerSideEncryptionRule{{
-						ApplyServerSideEncryptionByDefault: &types.ServerSideEncryptionByDefault{SSEAlgorithm: c.alg},
+						ApplyServerSideEncryptionByDefault: &types.ServerSideEncryptionByDefault{SSEAlgorithm: alg},
 					}}},
 				}); err != nil {
-					t.Fatalf("PutBucketEncryption %s: %v", c.alg, err)
+					t.Fatalf("PutBucketEncryption %s: %v", alg, err)
 				}
 			}
 			putK(t, b, &s3.PutObjectInput{})
@@ -144,14 +153,14 @@ func TestDefaultEncryptionHeld(t *testing.T) {
 			if err != nil {
 				t.Fatalf("GetObject: %v", err)
 			}
-			if out.ServerSideEncryption != c.alg {
-				t.Errorf("get reports encryption %q, want the default %q", out.ServerSideEncryption, c.alg)
+			if out.ServerSideEncryption != c.want {
+				t.Errorf("get reports encryption %q, want the default %q", out.ServerSideEncryption, c.want)
 			}
-			if kms := aws.ToString(out.SSEKMSKeyId) != ""; kms != (c.alg == types.ServerSideEncryptionAwsKms) {
-				t.Errorf("get under %s reports KMS key %q", c.alg, aws.ToString(out.SSEKMSKeyId))
+			if hasKey := aws.ToString(out.SSEKMSKeyId) != ""; hasKey != (c.want == kms) {
+				t.Errorf("get under %s reports KMS key %q", c.want, aws.ToString(out.SSEKMSKeyId))
 			}
 			if aws.ToString(out.ETag) != md5hex {
-				t.Errorf("ETag %s under %s, want the MD5 %s, as LocalStack 4.13.1 gives", aws.ToString(out.ETag), c.alg, md5hex)
+				t.Errorf("ETag %s under %s, want the MD5 %s, as LocalStack 4.13.1 gives", aws.ToString(out.ETag), c.want, md5hex)
 			}
 		})
 	}
@@ -166,8 +175,9 @@ func TestArchiveStorageClassHeld(t *testing.T) {
 			putK(t, b, &s3.PutObjectInput{StorageClass: class})
 			_, err := getK(t, b, &s3.GetObjectInput{})
 			var api smithy.APIError
-			if !errors.As(err, &api) || api.ErrorCode() != "InvalidObjectState" {
-				t.Errorf("GetObject of a %s object: %v, want InvalidObjectState", class, err)
+			var resp *smithyhttp.ResponseError
+			if !errors.As(err, &api) || api.ErrorCode() != "InvalidObjectState" || !errors.As(err, &resp) || resp.HTTPStatusCode() != 403 {
+				t.Errorf("GetObject of a %s object: %v, want 403 InvalidObjectState", class, err)
 			}
 			head, err := b.Admin.HeadObject(t.Context(), &s3.HeadObjectInput{Bucket: &b.Name, Key: aws.String("k")})
 			if err != nil {
@@ -181,7 +191,8 @@ func TestArchiveStorageClassHeld(t *testing.T) {
 }
 
 // A stored checksum held: a get sent with x-amz-checksum-mode: ENABLED
-// returns the CRC32C the put sent, and a get without it returns none.
+// returns the CRC32C of the stored bytes, the one the put sent, and a get
+// without it returns none.
 func TestStoredChecksumReturnedOnGet(t *testing.T) {
 	b := FreshBucket(t)
 	var raw [4]byte
@@ -228,6 +239,7 @@ func TestFreshBucketsAreDistinctAndRemoved(t *testing.T) {
 	if len(names) != 2 || names[0] == names[1] {
 		t.Fatalf("two FreshBucket calls named %q, want two distinct buckets", names)
 	}
+	// A third bucket only lends its client; the two above are gone by now.
 	admin := FreshBucket(t).Admin
 	for _, name := range names {
 		_, err := admin.HeadBucket(t.Context(), &s3.HeadBucketInput{Bucket: aws.String(name)})

@@ -26,12 +26,14 @@ type Bucket struct {
 
 // FreshBucket creates a bucket of its own on LocalStack's HTTPS endpoint,
 // with only the service's defaults (SSE-S3 default encryption among them),
-// and at cleanup deletes every version and delete
-// marker in it, then the bucket. It skips or fails as LocalStack does when
-// the endpoint is unset.
+// and at cleanup deletes every version and delete marker, then the bucket.
+// It aborts no multipart upload, since nothing that uses it starts one. It
+// skips or fails as LocalStack does when the endpoint is unset.
 func FreshBucket(tb testing.TB) *Bucket {
 	tb.Helper()
 	endpoint, roots := LocalStack(tb)
+	tr := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots}}
+	tb.Cleanup(tr.CloseIdleConnections) // runs after the bucket's removal
 	b := &Bucket{
 		// rand.Text is base32, so lowered it is a valid bucket name.
 		Name: "s3fault-" + strings.ToLower(rand.Text()),
@@ -44,9 +46,7 @@ func FreshBucket(tb testing.TB) *Bucket {
 			// The checksums a test sends are its own, as the store's are.
 			RequestChecksumCalculation: aws.RequestChecksumCalculationWhenRequired,
 			ResponseChecksumValidation: aws.ResponseChecksumValidationWhenRequired,
-			HTTPClient: &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{RootCAs: roots},
-			}},
+			HTTPClient:                 &http.Client{Timeout: 30 * time.Second, Transport: tr},
 		}),
 	}
 	if _, err := b.Admin.CreateBucket(tb.Context(), &s3.CreateBucketInput{Bucket: &b.Name}); err != nil {
@@ -86,7 +86,7 @@ func (b *Bucket) remove(ctx context.Context) error {
 		}
 		if len(out.Errors) > 0 {
 			e := out.Errors[0]
-			return fmt.Errorf("deleting %s: %s %s", aws.ToString(e.Key), aws.ToString(e.Code), aws.ToString(e.Message))
+			return fmt.Errorf("%d keys not deleted, first %s: %s %s", len(out.Errors), aws.ToString(e.Key), aws.ToString(e.Code), aws.ToString(e.Message))
 		}
 	}
 	_, err := b.Admin.DeleteBucket(ctx, &s3.DeleteBucketInput{Bucket: &b.Name})

@@ -98,7 +98,8 @@ docker_pull() {
 }
 
 svc_localstack_up() {
-    if container_running "$LOCALSTACK_NAME"; then info "localstack already running"; return; fi
+    # A container started without kms is recreated, not reused.
+    if container_running "$LOCALSTACK_NAME" && localstack_ready; then info "localstack already running"; return; fi
     docker rm -f "$LOCALSTACK_NAME" >/dev/null 2>&1 || true
     if dockerhost_port_busy 4566; then die "port 4566 is taken by something else"; fi
     docker_pull "$LOCALSTACK_IMAGE"
@@ -107,7 +108,7 @@ svc_localstack_up() {
         -e DISABLE_CORS_CHECKS=1 -e DISABLE_CUSTOM_CORS_S3=1 -e DEBUG=0 -e LOCALSTACK_HOST=localhost:4566 \
         "$LOCALSTACK_IMAGE" >/dev/null
     wait_for "localstack" 60 localstack_ready
-    info "localstack S3 on http://127.0.0.1:4566"
+    info "localstack S3 and KMS on http://127.0.0.1:4566"
 }
 localstack_ready() {
     local h; h=$(curl -s http://127.0.0.1:4566/_localstack/health)
