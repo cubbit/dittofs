@@ -2,7 +2,6 @@ package chain
 
 import (
 	"context"
-	"errors"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/transform"
@@ -32,14 +31,16 @@ func (c *chain) Pin(ctx context.Context, ns entity.NamespaceID) (transform.Attem
 			material[i][j] = m
 		}
 	}
-	return &attempt{id: chainID(c.steps, material), c: c, material: material}, nil
+	return &attempt{id: chainID(c.steps, material), c: c, ns: ns, material: material}, nil
 }
 
-// attempt is one pinned chain: its chain, each configured step's pinned
-// material in the order of its Kinds, and the chain ID they give.
+// attempt is one pinned chain: its chain, the namespace it was pinned for,
+// each configured step's pinned material in the order of its Kinds, and the
+// chain ID they give.
 type attempt struct {
 	id       [32]byte
 	c        *chain
+	ns       entity.NamespaceID
 	material [][]keys.MaterialID
 }
 
@@ -69,14 +70,6 @@ func (a *attempt) LengthOf(n int) (int, bool) {
 		}
 	}
 	return n + 2 + 2*len(a.c.steps), true
-}
-
-// ponytail: Encode fails every call with errors.ErrUnsupported, so an attempt
-// cannot yet write a body. Replace it with the envelope's encode.
-
-// Encode fails every call with errors.ErrUnsupported.
-func (a *attempt) Encode(context.Context, []byte, [32]byte, []byte) ([]byte, []transform.Encoded, error) {
-	return nil, nil, errors.ErrUnsupported
 }
 
 // Release does nothing.

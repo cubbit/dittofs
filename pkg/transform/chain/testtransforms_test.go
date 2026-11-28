@@ -2,7 +2,6 @@ package chain_test
 
 import (
 	"context"
-	"errors"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/transform"
@@ -44,13 +43,44 @@ func (p pad) Kinds() []string                                 { return p.kinds }
 func (p pad) MaxEncodedLen(n int, _ []keys.MaterialID) int    { return n + p.extra(n) }
 func (p pad) LengthOf(n int, _ []keys.MaterialID) (int, bool) { return n + p.extra(n), true }
 
-// The encoding half lands with the chain's encode and decode, and its tests.
 func (p pad) LengthKey() []byte { return nil }
-func (p pad) Encode(context.Context, entity.NamespaceID, []keys.MaterialID, []byte, [32]byte, []byte) (transform.Encoded, error) {
-	return transform.Encoded{}, errors.ErrUnsupported
+
+// padByte fills pad's padding, which Decode checks.
+const padByte = 0xa5
+
+// Encode appends extra(n) padding bytes to plain.
+func (p pad) Encode(_ context.Context, _ entity.NamespaceID, _ []keys.MaterialID, dst []byte, _ [32]byte, plain []byte) (transform.Encoded, error) {
+	body := append(dst[:0], plain...)
+	for range p.extra(len(plain)) {
+		body = append(body, padByte)
+	}
+	return transform.Encoded{Body: body, Applied: true, Version: p.Version()}, nil
 }
-func (p pad) Decode(context.Context, entity.NamespaceID, []byte, [32]byte, []byte, int, keys.Provider) ([]byte, error) {
-	return nil, errors.ErrUnsupported
+
+// Decode finds the n with n + extra(n) = len(body), checks the padding, and
+// returns the first n bytes.
+func (p pad) Decode(_ context.Context, _ entity.NamespaceID, dst []byte, _ [32]byte, body []byte, limit int, _ keys.Provider) ([]byte, error) {
+	l := len(body) - p.fixed
+	if l < 0 {
+		return nil, transform.ErrMalformed
+	}
+	n := l
+	if p.half {
+		// n + n/2 is 3k for n = 2k and 3k+1 for n = 2k+1, never 3k+2.
+		if l%3 == 2 {
+			return nil, transform.ErrMalformed
+		}
+		n = l/3*2 + l%3
+	}
+	for _, b := range body[n:] {
+		if b != padByte {
+			return nil, transform.ErrMalformed
+		}
+	}
+	if n > limit {
+		return nil, transform.ErrTooLarge
+	}
+	return append(dst, body[:n]...), nil
 }
 
 // factory builds p, whatever the settings.

@@ -2,12 +2,10 @@ package chain
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math"
 	"slices"
 
-	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/transform"
 	"github.com/cubbit/dittofs/pkg/transform/keys"
 )
@@ -147,11 +145,3 @@ func (r *registry) assemble(ctx context.Context, cfg []transform.Config, m keys.
 // transforms, so a body written under a transform since removed from the
 // chain is still admitted (RFC 5 §3.1).
 func (c *chain) MaxDecodeLen(n int) int { return c.decode.maxDecodeLen(n) }
-
-// ponytail: Decode fails every call with errors.ErrUnsupported, so a chain
-// that builds cannot yet decode. Replace it with the envelope's decode.
-
-// Decode fails every call with errors.ErrUnsupported.
-func (c *chain) Decode(context.Context, entity.NamespaceID, []byte, [32]byte, []byte, int, []transform.Encoded) ([]byte, error) {
-	return nil, errors.ErrUnsupported
-}
