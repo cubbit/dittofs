@@ -44,12 +44,16 @@ type entry struct {
 type Memory struct {
 	calls atomic.Uint64
 
-	mu      sync.Mutex
-	entries map[slot]*entry
-	current map[current]slot
+	mu        sync.Mutex
+	entries   map[slot]*entry
+	current   map[current]slot
+	destroyed []keys.MaterialID // in the order Destroy marked them, for DestroyedSince
 }
 
-var _ keys.Provider = (*Memory)(nil)
+var (
+	_ keys.Provider        = (*Memory)(nil)
+	_ keys.DestroyedNotice = (*Memory)(nil)
+)
 
 // NewMemory returns a Memory holding no material.
 func NewMemory() *Memory {
@@ -148,13 +152,45 @@ func (m *Memory) Replace(id keys.MaterialID, material []byte) {
 	m.entry(id).content = slices.Clone(material)
 }
 
-// Destroy marks id lost for good, so it is ErrMaterialDestroyed from then on.
-// It panics on an ID never given, a mistake in the test.
+// Destroy marks id lost for good, so it is ErrMaterialDestroyed from then on,
+// and lists it for DestroyedSince unless it is destroyed already. It panics
+// on an ID never given, a mistake in the test.
 func (m *Memory) Destroy(id keys.MaterialID) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	m.entry(id).destroyed = true
+	e := m.entry(id)
+	if e.destroyed {
+		return
+	}
+	e.destroyed = true
+	m.destroyed = append(m.destroyed, keys.MaterialID{Namespace: id.Namespace, Kind: id.Kind, ID: id.ID, Fingerprint: e.fingerprint})
+}
+
+// memoryIncarnation is Memory's notice incarnation, fixed, and not 0, so a
+// caller that reads a cursor as a count fails against Memory as it would
+// against a provider.
+const memoryIncarnation = 1
+
+// memoryBatch is the most IDs one DestroyedSince returns, the provider's bound.
+const memoryBatch = 256
+
+// DestroyedSince returns, at most 256 at a time, the IDs Destroy marked after
+// cursor, each once, and the cursor to pass next, with the cursor a provider
+// gives: an incarnation in its high 32 bits and an index into the list in its
+// low 32 bits. A cursor of another incarnation, or past the list's end, reads
+// from the start.
+func (m *Memory) DestroyedSince(_ context.Context, cursor uint64) ([]keys.MaterialID, uint64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	i := uint64(0)
+	if cursor>>32 == memoryIncarnation && uint32(cursor) <= uint32(len(m.destroyed)) {
+		i = uint64(uint32(cursor))
+	}
+	j := min(i+memoryBatch, uint64(len(m.destroyed)))
+
+	return slices.Clone(m.destroyed[i:j]), memoryIncarnation<<32 | j, nil
 }
 
 // entry returns id's entry, panicking on an ID never given. m.mu must be held.

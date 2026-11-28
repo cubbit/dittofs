@@ -24,7 +24,9 @@ import (
 // harness adapts the provider to keystest.Harness over the in-memory view.
 // Give, Replace and Destroy write rows as another writer of the metadata
 // store would, then reload the provider, so one provider serves the whole
-// run and Calls is its own.
+// run and Calls is its own. Destroy also opens the namespace, which a reload
+// re-opens only once held, so the row it marks reaches DestroyedSince as an
+// Open finds it.
 type harness struct {
 	*Provider
 	t       *testing.T
@@ -109,7 +111,8 @@ func (h harness) Replace(id keys.MaterialID, material []byte) {
 	})
 }
 
-// Destroy marks id's record destroyed, keeping only its fingerprint.
+// Destroy marks id's record destroyed, keeping only its fingerprint, and
+// opens its namespace.
 func (h harness) Destroy(id keys.MaterialID) {
 	h.write(id.Namespace, func(rows []Row) []Row {
 		r := h.row(rows, id)
@@ -119,6 +122,8 @@ func (h harness) Destroy(id keys.MaterialID) {
 		}
 		return []Row{{Kind: r.Kind, ID: r.ID, State: stateDestroyed, Record: h.record(old.fingerprint, nil, nil)}}
 	})
+	// An Open refused for other material is left for the row's reads to see.
+	_ = h.Open(context.Background(), id.Namespace)
 }
 
 // The provider passes the provider suite every keys.Provider is held to.
