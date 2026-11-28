@@ -135,7 +135,7 @@ func sealStore(ctx context.Context, rq request[storeDoc]) (sealedStore, error) {
 	// refusal for its reference or its version clears it too.
 	defer clear(c.Value)
 
-	if err := credentialValue(c); err != nil {
+	if err := credentialValue(rq.d, c); err != nil {
 		return sealedStore{}, err
 	}
 
@@ -160,15 +160,15 @@ func sealStore(ctx context.Context, rq request[storeDoc]) (sealedStore, error) {
 }
 
 // credentialValue refuses a store's credential a create or a patch states
-// by anything but a value.
-func credentialValue(c *apiv1.StoreCredential) error {
+// by anything but a value, or by a value the client could not use.
+func credentialValue(d Deps, c *apiv1.StoreCredential) error {
 	switch {
 	case c.Ref != "" || c.Version != 0:
 		return &fieldError{field: "spec.credential", detail: "a write states its value, never its reference or version"}
 	case len(c.Value) == 0:
 		return &fieldError{field: "spec.credential.value", detail: "a credential states its value"}
 	}
-	return nil
+	return remoteCredential(d, c.Value, "spec.credential.value")
 }
 
 // createStore is POST /stores: a new remote store, its settings written at
@@ -375,7 +375,7 @@ func prepareStorePatch(ctx context.Context, rq request[storeDoc]) (storePatch, e
 	}
 	out := storePatch{settings: spec.Settings, had: had}
 	if c := spec.Credential; c != nil {
-		if err := credentialValue(c); err != nil {
+		if err := credentialValue(rq.d, c); err != nil {
 			return storePatch{}, err
 		}
 		in, err := storeCredentials.seal(ctx, request[apiv1.Credential]{ID: rq.ID, d: rq.d, Body: apiv1.Credential{Spec: apiv1.CredentialSpec{Value: c.Value}}})

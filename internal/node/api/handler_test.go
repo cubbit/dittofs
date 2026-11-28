@@ -16,6 +16,7 @@ import (
 
 	"github.com/cubbit/dittofs/internal/node/api"
 	"github.com/cubbit/dittofs/internal/node/api/auth"
+	"github.com/cubbit/dittofs/internal/node/content"
 	"github.com/cubbit/dittofs/internal/node/nodetest"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
@@ -88,6 +89,11 @@ func serveWith(t *testing.T, authenticate func(*http.Request) (auth.Caller, erro
 		Clock:        s.clock,
 		Node:         testNode,
 		Tracer:       sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(s.spans)).Tracer("api"),
+		// The node's own check, as it wires it.
+		CheckCredential: func(v []byte) error {
+			_, _, err := content.ParseCredential(v)
+			return err
+		},
 	}
 	for _, e := range edit {
 		e(&d)

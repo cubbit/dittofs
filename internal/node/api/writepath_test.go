@@ -173,7 +173,7 @@ func (s *served) apiStore(t *testing.T, settings string) string {
 func (s *served) apiCredentialStore(t *testing.T, settings string) string {
 	t.Helper()
 
-	body := `{"spec":{"settings":` + settings + `,"credential":{"value":"czMtc2VjcmV0"}}}`
+	body := `{"spec":{"settings":` + settings + `,"credential":{"value":"eyJhY2Nlc3Nfa2V5X2lkIjoiQUtJREZBS0UiLCJzZWNyZXRfYWNjZXNzX2tleSI6InMzLXNlY3JldCJ9"}}}`
 
 	return s.createStore(t, body)
 }
@@ -452,7 +452,7 @@ func TestStoreCreateRefusesAnIdempotencyKey(t *testing.T) {
 	}
 
 	spec := `{"settings":{"remote.endpoint":"https://s3.example"},` +
-		`"credential":{"value":"czMtc2VjcmV0"}}`
+		`"credential":{"value":"eyJhY2Nlc3Nfa2V5X2lkIjoiQUtJREZBS0UiLCJzZWNyZXRfYWNjZXNzX2tleSI6InMzLXNlY3JldCJ9"}}`
 	r := s.do(t, http.MethodPost, "/api/v1/stores", `{"spec":`+spec+`}`, "Idempotency-Key", "k1")
 
 	if p := r.problem(t); r.status != http.StatusBadRequest || p.Field != "Idempotency-Key" {
@@ -492,13 +492,13 @@ func TestStoreCreateRefusedBeforeItsWrite(t *testing.T) {
 	}{
 		{
 			"a credential naming a reference",
-			`{"credential":{"ref":"se_1","value":"czMtc2VjcmV0"}}`,
+			`{"credential":{"ref":"se_1","value":"eyJhY2Nlc3Nfa2V5X2lkIjoiQUtJREZBS0UiLCJzZWNyZXRfYWNjZXNzX2tleSI6InMzLXNlY3JldCJ9"}}`,
 			http.StatusBadRequest,
 			"spec.credential",
 		},
 		{
 			"a credential naming a version",
-			`{"credential":{"version":1,"value":"czMtc2VjcmV0"}}`,
+			`{"credential":{"version":1,"value":"eyJhY2Nlc3Nfa2V5X2lkIjoiQUtJREZBS0UiLCJzZWNyZXRfYWNjZXNzX2tleSI6InMzLXNlY3JldCJ9"}}`,
 			http.StatusBadRequest,
 			"spec.credential",
 		},
@@ -510,7 +510,7 @@ func TestStoreCreateRefusedBeforeItsWrite(t *testing.T) {
 		},
 		{
 			"a value with no sealer",
-			`{"credential":{"value":"czMtc2VjcmV0"}}`,
+			`{"credential":{"value":"eyJhY2Nlc3Nfa2V5X2lkIjoiQUtJREZBS0UiLCJzZWNyZXRfYWNjZXNzX2tleSI6InMzLXNlY3JldCJ9"}}`,
 			http.StatusServiceUnavailable,
 			"",
 		},
@@ -764,7 +764,7 @@ func TestNamespaceBoundEmptySet(t *testing.T) {
 func TestStoreCreatedWithItsCredential(t *testing.T) {
 	s := writeServe(t)
 	spec := `{"settings":{"remote.endpoint":"https://s3.example","remote.bucket":"b1"},` +
-		`"credential":{"value":"czMtc2VjcmV0"}}`
+		`"credential":{"value":"eyJhY2Nlc3Nfa2V5X2lkIjoiQUtJREZBS0UiLCJzZWNyZXRfYWNjZXNzX2tleSI6InMzLXNlY3JldCJ9"}}`
 
 	r := s.do(t, http.MethodPost, "/api/v1/stores", `{"spec":`+spec+`}`)
 	if r.status != http.StatusCreated {
@@ -824,7 +824,7 @@ func TestStoreCreatedWithItsCredential(t *testing.T) {
 
 	for name, body := range leaked {
 		if bytes.Contains(body, []byte("s3-secret")) ||
-			bytes.Contains(body, []byte("czMtc2VjcmV0")) {
+			bytes.Contains(body, []byte("eyJhY2Nlc3Nfa2V5X2lkIjoiQUtJREZBS0UiLCJzZWNyZXRfYWNjZXNzX2tleSI6InMzLXNlY3JldCJ9")) {
 			t.Errorf("the create holds the credential's value in %s", name)
 		}
 	}
@@ -880,7 +880,7 @@ func TestStoreCredentialValueNeverAnswered(t *testing.T) {
 	s := writeServe(t)
 
 	create := `{"spec":{"settings":{"remote.endpoint":"https://s3.example","remote.bucket":"b1"},` +
-		`"credential":{"value":"czMtc2VjcmV0"}}}`
+		`"credential":{"value":"eyJhY2Nlc3Nfa2V5X2lkIjoiQUtJREZBS0UiLCJzZWNyZXRfYWNjZXNzX2tleSI6InMzLXNlY3JldCJ9"}}}`
 
 	r := s.do(t, http.MethodPost, "/api/v1/stores", create)
 	if r.status != http.StatusCreated {
@@ -922,7 +922,7 @@ func TestStoreCredentialValueNeverAnswered(t *testing.T) {
 		}
 
 		if bytes.Contains(body.body, []byte("s3-secret")) ||
-			bytes.Contains(body.body, []byte("czMtc2VjcmV0")) {
+			bytes.Contains(body.body, []byte("eyJhY2Nlc3Nfa2V5X2lkIjoiQUtJREZBS0UiLCJzZWNyZXRfYWNjZXNzX2tleSI6InMzLXNlY3JldCJ9")) {
 			t.Errorf("%s answers the credential's value: %s", body.name, body.body)
 		}
 
@@ -967,7 +967,7 @@ func TestStoreCredentialValueNeverAnswered(t *testing.T) {
 	}
 
 	if bytes.Contains(change, []byte("s3-secret")) ||
-		bytes.Contains(change, []byte("czMtc2VjcmV0")) {
+		bytes.Contains(change, []byte("eyJhY2Nlc3Nfa2V5X2lkIjoiQUtJREZBS0UiLCJzZWNyZXRfYWNjZXNzX2tleSI6InMzLXNlY3JldCJ9")) {
 		t.Errorf("the create's audit change %s holds the credential's value", change)
 	}
 }

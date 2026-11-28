@@ -6,10 +6,15 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"log/slog"
 	"math/big"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+
+	"github.com/cubbit/dittofs/pkg/remote"
 )
 
 // testCert is a PEM CERTIFICATE block of a self-signed certificate, built
@@ -188,5 +193,72 @@ func TestNamespaceSettingsValidate(t *testing.T) {
 				t.Errorf("Validate() with prefix %q = %v, want an error naming %q", c.prefix, err, c.want)
 			}
 		})
+	}
+}
+
+// The control plane and the client judge an endpoint by the same rule: each
+// value Validate refuses NewClient refuses, and each it accepts NewClient
+// accepts.
+func TestEndpointRuleSharedWithNewClient(t *testing.T) {
+	d := Deps{Logger: slog.New(slog.DiscardHandler), Recorder: &sink{}}
+	for _, endpoint := range []string{
+		"https://s3.example.com", "https://s3.example.com:9000/x", "http://s3.example.com", "s3.example.com", "https://",
+		"https://:443", "https://user:pw@s3.example.com", "https://s3.example.com/?a=b", "https://s3.example.com?",
+		"https://s3.example.com/#f", "https://s3.example.com#", "https://exa mple.com\x7f", "",
+	} {
+		s := good()
+		s.Endpoint = endpoint
+		verr := s.Validate()
+		c, cerr := NewClient(ClientConfig{Endpoint: endpoint, Bucket: "b", AccessKeyID: "AKIDFAKE", SecretAccessKey: "fake-secret", Limit: 1, MaxBlockSize: 1}, d)
+		if c != nil {
+			_ = c.Close()
+		}
+		if (verr == nil) != (cerr == nil) {
+			t.Errorf("endpoint %q: Validate = %v, NewClient = %v, want both to accept or both to refuse", endpoint, verr, cerr)
+		}
+	}
+}
+
+// The control plane and the open judge a prefix by the same rule.
+func TestPrefixRuleSharedWithOpen(t *testing.T) {
+	c, err := NewClient(ClientConfig{Endpoint: "https://127.0.0.1:1", Bucket: "b", AccessKeyID: "AKIDFAKE", SecretAccessKey: "fake-secret", Limit: 1, MaxBlockSize: 1},
+		Deps{Logger: slog.New(slog.DiscardHandler), Recorder: &sink{}})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+
+	for _, prefix := range []string{"", "ns", "ns/", "\xffns/", "n\x00s/", "n\ns/", "a\x7f/", "café/", "a/b/"} {
+		verr := NamespaceSettings{Prefix: prefix}.Validate()
+		_, oerr := open(c, prefix, remote.Mutable, choice{})
+		if (verr == nil) != (oerr == nil) {
+			t.Errorf("prefix %q: Validate = %v, open = %v, want both to accept or both to refuse", prefix, verr, oerr)
+		}
+	}
+}
+
+// The control plane and the capability check judge a storage class by the
+// same list: a class Validate accepts the check accepts when the service
+// reports it, and one Validate refuses the check refuses. An empty class is
+// the one divergence, on purpose: Validate refuses it written, while the
+// check reads a class the service does not report as STANDARD.
+func TestStorageClassRuleSharedWithJudgeClass(t *testing.T) {
+	for _, class := range []string{"STANDARD", "REDUCED_REDUNDANCY", "STANDARD_IA", "ONEZONE_IA",
+		"INTELLIGENT_TIERING", "GLACIER_IR", "EXPRESS_ONEZONE", "GLACIER", "DEEP_ARCHIVE", "OUTPOSTS", "standard"} {
+		s := good()
+		s.StorageClass = class
+		verr := s.Validate()
+		if judged := judgeClass(types.StorageClass(class), class); (verr == nil) != judged {
+			t.Errorf("storage class %q: Validate = %v, judgeClass = %v, want both to accept or both to refuse", class, verr, judged)
+		}
+	}
+
+	s := good()
+	s.StorageClass = ""
+	if err := s.Validate(); err == nil {
+		t.Errorf("Validate with an empty storage class = nil, want a refusal")
+	}
+	if !judgeClass("", "STANDARD") {
+		t.Errorf("judgeClass with no reported class, pinned STANDARD = false, want true: an unreported class is STANDARD")
 	}
 }

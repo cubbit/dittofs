@@ -118,6 +118,11 @@ type Deps struct {
 	// interface, must not be handed in: it is not nil here, and its Seal
 	// would be called.
 	Sealer sealer
+	// CheckCredential refuses a remote store's credential value the S3
+	// client could not use, before any seal of it; nil, every write of one
+	// answers 503, failing closed as a nil Sealer does. Its error is shown to
+	// the caller and so must not hold the value.
+	CheckCredential func(value []byte) error
 	// Directory is identity's directory, asked the user SID a Kerberos name
 	// links for before the write that stores it; nil, a write giving a user
 	// a new Kerberos name answers 503.

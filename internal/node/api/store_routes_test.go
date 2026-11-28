@@ -169,7 +169,7 @@ func TestAdapterListListsEveryProtocol(t *testing.T) {
 // store; every refusal writes nothing and is audited refused on the store,
 // with no part of a credential's value.
 func TestStorePatchAppliesTheSettingClasses(t *testing.T) {
-	const value = "aHVudGVyMi1zM2NyM3Q=" // "hunter2-s3cr3t"
+	const value = "eyJhY2Nlc3Nfa2V5X2lkIjoiQUtJREZBS0UiLCJzZWNyZXRfYWNjZXNzX2tleSI6Imh1bnRlcjItczNjcjN0In0=" // the credential's JSON around the secret hunter2-s3cr3t
 	for _, tc := range []struct {
 		name  string
 		setup func(t *testing.T, s *served, id uuid.UUID)

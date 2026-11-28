@@ -239,7 +239,25 @@ var storeCredentials = secretSetting{
 	kind:    entity.SecretRemoteCredential,
 	auditAs: "credential",
 	record:  storeEndpoint,
-	check:   capabilityCheck,
+	check: func(ctx context.Context, d Deps, v []byte) (func(entity.ControlPlaneTx) error, error) {
+		if err := remoteCredential(d, v, "spec.value"); err != nil {
+			return nil, err
+		}
+		return capabilityCheck(ctx, d, v)
+	},
+}
+
+// remoteCredential refuses a remote store's credential value the client
+// could not use, as a field error on field, so a value the capability check
+// would refuse 409 is refused 400 first; with no CheckCredential, 503.
+func remoteCredential(d Deps, v []byte, field string) error {
+	if d.CheckCredential == nil {
+		return errNoCredentialCheck
+	}
+	if err := d.CheckCredential(v); err != nil {
+		return &fieldError{field: field, detail: err.Error()}
+	}
+	return nil
 }
 
 // capabilityCheck is a remote store's capability check, run on every set of
