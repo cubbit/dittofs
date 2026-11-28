@@ -78,13 +78,19 @@ func BenchmarkWriteCostNull(b *testing.B) {
 				}
 				null := kit.NewNullFS(dir)
 				h := wcOpen(b, dir, c.s, null)
-				per := (b.N + c.w - 1) / c.w
+				// b.N split exactly: the first b.N%w writers take one more,
+				// so the run makes b.N writes and ns/op divides by them.
+				per := make([]int, c.w)
 				took := make([][]time.Duration, c.w)
 				bufs := make([][]byte, c.w)
 				ids := make([]journal.FileID, c.w)
 				for w := range c.w {
+					per[w] = b.N / c.w
+					if w < b.N%c.w {
+						per[w]++
+					}
 					ids[w] = journaltest.File(w)
-					took[w] = make([]time.Duration, 0, per)
+					took[w] = make([]time.Duration, 0, per[w])
 					bufs[w] = make([]byte, blk.n)
 				}
 				b.SetBytes(int64(blk.n))
@@ -94,7 +100,7 @@ func BenchmarkWriteCostNull(b *testing.B) {
 				b.ResetTimer()
 				for w := range c.w {
 					wg.Go(func() {
-						for i := range per {
+						for i := range per[w] {
 							start := time.Now()
 							err := journaltest.RetrySpare(func() error {
 								_, err := h.WriteAt(b.Context(), ids[w], int64(i*blk.n), bufs[w], 0)
@@ -117,7 +123,7 @@ func BenchmarkWriteCostNull(b *testing.B) {
 				}
 				// The probe must fire: a write that reached the platform measured
 				// the platform.
-				if got, want := null.Nulled(), int64(per*c.w*blk.n); got < want {
+				if got, want := null.Nulled(), int64(b.N*blk.n); got < want {
 					b.Fatalf("nulled %d bytes, want at least %d: writes bypassed the null file", got, want)
 				}
 				flat := slices.Concat(took...)

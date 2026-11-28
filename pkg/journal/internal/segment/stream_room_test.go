@@ -93,8 +93,17 @@ func TestStreamRoomFollowsTheSegmentsLife(t *testing.T) {
 		t.Fatalf("after the seal, Room = %d, want 0", got)
 	}
 
+	// The roll the next append makes installs a segment before the append
+	// relocks for its reservation: Room read in that gap is the empty
+	// segment's own figure, which only the install stores.
+	installed := int64(-1)
+	e.s.SetRolledHook(func() { installed = e.s.Room() })
 	h, body = streamWriteHeader(fid, 1000, make([]byte, 1000), 0, core.Version{Counter: 2})
 	second := streamAppendWrite(t, e, h, body)
+	e.s.SetRolledHook(nil)
+	if want := streamRoomOf(streamCap, format.SegmentHeaderSize, 1); installed != want {
+		t.Fatalf("after the roll installed a segment, before its first reservation, Room = %d, want %d", installed, want)
+	}
 	if second.Loc.Segment == first.Loc.Segment {
 		t.Fatalf("the append after the seal landed in the sealed segment %d", first.Loc.Segment)
 	}
