@@ -2,9 +2,8 @@
 // the chunk ID and the block name. It keeps nothing between calls and
 // declares no interface. Only the node's content wiring imports it.
 //
-// Cut, ChunkID and BlockName are stubs behind their final signatures: a
-// function with an error returns errors.ErrUnsupported, one without returns
-// its zero value.
+// Cut and ChunkID are stubs behind their final signatures: a function with
+// an error returns errors.ErrUnsupported, one without returns its zero value.
 package carve
 
 import (
@@ -36,11 +35,4 @@ func Cut(r io.Reader, base int64, s carver.Settings, buf []byte, realEnd bool,
 // that skipped NewSettings holds.
 func ChunkID(s carver.Settings, p []byte) entity.ChunkHash {
 	return entity.ChunkHash{}
-}
-
-// BlockName is the name of a block holding ids, in block order, under scope,
-// for the put attempt that drew nonce, with the chain ID chain (RFC 2 §4.2).
-// It draws no nonce itself.
-func BlockName(scope entity.NamespaceID, nonce [16]byte, chain [32]byte, ids []entity.ChunkHash) entity.BlockName {
-	return entity.BlockName{}
 }
