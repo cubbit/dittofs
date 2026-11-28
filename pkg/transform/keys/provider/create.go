@@ -26,10 +26,11 @@ const firstExportGeneration uint64 = 1
 // before any wrap, until the master key's escrow check has passed.
 //
 // It is idempotent: a namespace that already holds key records keeps them and
-// CreateKeys writes nothing, whatever encrypts says. Every wrap is made, and
-// the wrap count raised once by their number, before the records are written,
-// so a creation that fails or loses a race only overcounts, and no wrap is in
-// use without its committed record.
+// CreateKeys writes nothing, returning nil when they are of the kinds encrypts
+// asks for and an error otherwise. Keys and IDs are drawn first, then the
+// wrap count is raised once by the number of wrapped keys and every wrap made,
+// all before the records are written, so a creation that fails or loses a race
+// only overcounts, and no wrap is in use without its committed record.
 func (p *Provider) CreateKeys(ctx context.Context, ns entity.NamespaceID, encrypts bool) error {
 	if encrypts {
 		if err := p.checkEscrow(); err != nil {
@@ -61,7 +62,7 @@ func (p *Provider) CreateKeys(ctx context.Context, ns entity.NamespaceID, encryp
 		}
 		id := u[:]
 		if kind == kindExportKey {
-			id = append(binary.BigEndian.AppendUint64(make([]byte, 0, 24), firstExportGeneration), u[:]...)
+			id = append(binary.BigEndian.AppendUint64(nil, firstExportGeneration), u[:]...)
 		}
 		rows[i] = Row{Kind: kind, ID: string(id), State: stateCurrent}
 
@@ -69,8 +70,8 @@ func (p *Provider) CreateKeys(ctx context.Context, ns entity.NamespaceID, encryp
 		// clear, with no master key ID (RFC 5 Appendix B.2): its bodies are
 		// plaintext, so a keyed ID hides nothing from a bucket reader, and a
 		// wrap would only add a way to lose every chunk's identity with the
-		// host. Wrap it only if non-encrypting namespaces must ever hide
-		// content from a bucket reader, which needs encryption anyway.
+		// host. Wrap it if a non-encrypting namespace's chunk IDs must ever
+		// stop telling a bucket reader which chunks hold equal content.
 		if kind == keys.KindChunkIDKey && !encrypts {
 			rows[i].Record = p.record(fingerprint(made[i]), nil, made[i])
 			continue
@@ -93,10 +94,34 @@ func (p *Provider) CreateKeys(ctx context.Context, ns entity.NamespaceID, encryp
 	if p.beforeCreate != nil {
 		p.beforeCreate()
 	}
-	return p.update(ctx, ns, func(existing []Row) ([]Row, error) {
-		if len(existing) > 0 {
-			return nil, nil
+	err = p.update(ctx, ns, func(existing []Row) ([]Row, error) {
+		if len(existing) == 0 {
+			return rows, nil
 		}
-		return rows, nil
+		// decision: a namespace that already holds key records keeps them, so
+		// a chunk-ID key is never replaced; a repeated creation asking for the
+		// kinds it holds succeeds, and one asking for others, as a namespace
+		// created non-encrypting and then asked to encrypt, is refused rather
+		// than reported created without the keys it asked for. Withdraw the
+		// refusal if a namespace may ever gain encryption after creation, by
+		// adding its data and chunking keys here.
+		held := make(map[string]bool, len(kinds))
+		for _, row := range existing {
+			held[row.Kind] = true
+		}
+		for _, kind := range kinds {
+			if !held[kind] {
+				return nil, fmt.Errorf("provider: namespace %s already holds keys without a %s; a namespace's keys are given only at its creation", ns, kind)
+			}
+			delete(held, kind)
+		}
+		for kind := range held {
+			return nil, fmt.Errorf("provider: namespace %s already holds a %s, which a namespace created with encrypts %v has not", ns, kind, encrypts)
+		}
+		return nil, nil
 	})
+	if err != nil {
+		return fmt.Errorf("provider: write the keys of namespace %s: %w", ns, err)
+	}
+	return nil
 }

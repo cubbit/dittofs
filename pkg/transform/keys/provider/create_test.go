@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	mrand "math/rand/v2"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -21,6 +23,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/sim"
 	"github.com/cubbit/dittofs/pkg/transform/keys"
 	"github.com/cubbit/dittofs/pkg/transform/keystest"
 )
@@ -110,9 +113,9 @@ func loadRows(t *testing.T, records KeyRecords, ns entity.NamespaceID) []Row {
 // An encrypting namespace gets four current keys, all wrapped; a
 // non-encrypting one gets two, its chunk-ID key in the clear with no master
 // key ID, and no chunking or data key. Each is served by Current and Get, and
-// the count rises once by the number of wrapped keys. A missing or extra
-// kind, a wrapped clear key, a clear wrapped one or an uncounted wrap fails
-// here.
+// the count is raised once, by the number of wrapped keys. A missing or extra
+// kind, a wrapped clear key, a clear wrapped one, or an uncounted or
+// piecemeal raise fails here.
 func TestCreateKeysGivesTheKeyTable(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -128,7 +131,8 @@ func TestCreateKeysGivesTheKeyTable(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			records := keystest.NewRecords()
-			p := newOver(t, escrowedConfig(t), records)
+			view := &raises{KeyRecords: records}
+			p := newOver(t, escrowedConfig(t), view)
 			ns := entity.NewNamespaceID()
 
 			if err := p.CreateKeys(ctx, ns, tc.encrypts); err != nil {
@@ -158,8 +162,11 @@ func TestCreateKeysGivesTheKeyTable(t *testing.T) {
 					}
 				}
 			}
-			if !sameKinds(kinds, tc.kinds) {
+			if !slices.Equal(slices.Sorted(slices.Values(kinds)), slices.Sorted(slices.Values(tc.kinds))) {
 				t.Errorf("rows of kinds %v, want %v", kinds, tc.kinds)
+			}
+			if !slices.Equal(view.ns, []uint64{wrappedKeys}) {
+				t.Errorf("CreateKeys raised the wrap count by %v, want one raise by %d, the wrapped keys", view.ns, wrappedKeys)
 			}
 			if got := wrapCount(t, records, p.masterKeyID[:]); got != wrappedKeys {
 				t.Errorf("wrap count after CreateKeys = %d, want %d, one per wrapped key", got, wrappedKeys)
@@ -178,8 +185,42 @@ func TestCreateKeysGivesTheKeyTable(t *testing.T) {
 	}
 }
 
-func sameKinds(got, want []string) bool {
-	return slices.Equal(slices.Sorted(slices.Values(got)), slices.Sorted(slices.Values(want)))
+// raises passes every call through to a KeyRecords and keeps the n of each
+// RaiseWrapCount, so a test can see a creation's one raise.
+type raises struct {
+	KeyRecords
+	ns []uint64
+}
+
+func (r *raises) RaiseWrapCount(ctx context.Context, masterKeyID []byte, n, limit uint64) (bool, error) {
+	r.ns = append(r.ns, n)
+	return r.KeyRecords.RaiseWrapCount(ctx, masterKeyID, n, limit)
+}
+
+// Two providers over one key file, one seeded random source and one clock
+// write the same records: every key, ID and nonce comes from Deps.Rand. A key
+// or ID drawn from another source fails here.
+func TestCreateKeysDrawsFromDepsRand(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	cfg := escrowedConfig(t)
+	ns := entity.NewNamespaceID()
+	at := time.Unix(1_700_000_000, 0)
+	var sets [][]Row
+	for range 2 {
+		records := keystest.NewRecords()
+		p, err := New(context.Background(), cfg, Deps{Records: records, Rand: mrand.NewChaCha8([32]byte{7}), Now: func() time.Time { return at }})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		if err := p.CreateKeys(context.Background(), ns, true); err != nil {
+			t.Fatalf("CreateKeys: %v", err)
+		}
+		sets = append(sets, loadRows(t, records, ns))
+	}
+	if !sameRows(sets[0], sets[1]) {
+		t.Errorf("two creations from one seed wrote %s and %s, want the same records", rowNames(sets[0]), rowNames(sets[1]))
+	}
 }
 
 // Every key ID is a random UUID's 16 bytes; the export key's is 24, its
@@ -235,6 +276,24 @@ func TestCreateKeysIsIdempotent(t *testing.T) {
 	if got := currentIDs(t, p, ns, encryptingKinds); !maps.Equal(got, ids) {
 		t.Errorf("IDs after the second CreateKeys = %x, want %x", got, ids)
 	}
+
+	// A repeat asking for other kinds is refused, and changes nothing.
+	plain := entity.NewNamespaceID()
+	if err := p.CreateKeys(ctx, plain, false); err != nil {
+		t.Fatalf("CreateKeys of a non-encrypting namespace: %v", err)
+	}
+	for _, tc := range []struct {
+		ns       entity.NamespaceID
+		encrypts bool
+	}{{ns, false}, {plain, true}} {
+		before := loadRows(t, records, tc.ns)
+		if err := p.CreateKeys(ctx, tc.ns, tc.encrypts); err == nil {
+			t.Errorf("CreateKeys with encrypts %v of a namespace created with %v = nil, want a refusal", tc.encrypts, !tc.encrypts)
+		}
+		if after := loadRows(t, records, tc.ns); !sameRows(before, after) {
+			t.Errorf("rows after the refused CreateKeys with encrypts %v = %s, want them unchanged from %s", tc.encrypts, rowNames(after), rowNames(before))
+		}
+	}
 }
 
 // rowNames names rows by kind, ID in hex and state, for a failure message.
@@ -248,7 +307,7 @@ func rowNames(rows []Row) []string {
 
 func sameRows(a, b []Row) bool {
 	key := func(r Row) string { return r.Kind + "\x00" + r.ID }
-	cmp := func(x, y Row) int { return bytes.Compare([]byte(key(x)), []byte(key(y))) }
+	cmp := func(x, y Row) int { return strings.Compare(key(x), key(y)) }
 	a, b = slices.SortedFunc(slices.Values(a), cmp), slices.SortedFunc(slices.Values(b), cmp)
 	return slices.EqualFunc(a, b, func(x, y Row) bool {
 		return x.Kind == y.Kind && x.ID == y.ID && x.State == y.State && bytes.Equal(x.Record, y.Record)
@@ -257,8 +316,8 @@ func sameRows(a, b []Row) bool {
 
 // Eight creations of one namespace, over two providers sharing the records,
 // each paused after its wraps until all eight have wrapped: one set of rows
-// results, and every caller then reads its IDs. A creation outside the
-// view's guard fails here.
+// results, and both providers, so every caller, then read its IDs. A creation
+// outside the view's guard fails here.
 func TestConcurrentCreateKeysLeaveOneSet(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -319,17 +378,6 @@ func TestConcurrentCreateKeysLeaveOneSet(t *testing.T) {
 // errCommit is the fault failSets injects.
 var errCommit = errors.New("injected commit failure")
 
-// failSets fails every write whose key, as keys.Describe renders it, starts
-// with prefix, so the transaction making it commits nothing.
-type failSets struct{ prefix string }
-
-func (f failSets) At(op string, key []byte) (time.Duration, int, error) {
-	if op == kvtest.OpSet && bytes.HasPrefix(key, []byte(f.prefix)) {
-		return 0, 0, errCommit
-	}
-	return 0, 0, nil
-}
-
 // openBadger opens a Badger store under dir, closed when the test ends.
 func openBadger(t *testing.T, dir string) kv.KV {
 	t.Helper()
@@ -363,10 +411,7 @@ func TestCreateKeysFailedAndCommittedOnTheStore(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	cfg := escrowedConfig(t)
-	inner, err := badgerkv.Open(badgerkv.Options{Dir: dir})
-	if err != nil {
-		t.Fatalf("open Badger: %v", err)
-	}
+	inner := openBadger(t, dir)
 	db := kvtest.NewFaultKV(inner)
 	if err := kvstore.Init(ctx, db, uuid.New()); err != nil {
 		t.Fatalf("kvstore.Init: %v", err)
@@ -375,16 +420,23 @@ func TestCreateKeysFailedAndCommittedOnTheStore(t *testing.T) {
 	p := newOver(t, cfg, records)
 	ns := entity.NewNamespaceID()
 
-	db.SetFault(failSets{prefix: "NS‖"})
+	// Every write of a key record, NS‖ns‖key‖…, fails, so the records'
+	// transaction commits nothing.
+	failRecords, err := sim.NewSchedule(0, nil, sim.Rule{Op: kvtest.OpSet, Key: "NS‖*", Action: sim.FaultAction{Err: errCommit}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetFault(failRecords)
 	if err := p.CreateKeys(ctx, ns, true); !errors.Is(err, errCommit) {
 		t.Fatalf("CreateKeys whose commit fails = %v, want the injected failure", err)
 	}
 	db.SetFault(nil)
 
-	fresh := newOver(t, cfg, records)
-	for _, kind := range encryptingKinds {
-		if _, err := fresh.Current(ctx, ns, kind); !isOnly(err, keys.ErrUnknownMaterial) {
-			t.Errorf("Current of %s after the failed creation = %v, want ErrUnknownMaterial alone", kind, err)
+	for name, q := range map[string]*Provider{"the creating provider": p, "a fresh provider": newOver(t, cfg, records)} {
+		for _, kind := range encryptingKinds {
+			if _, err := q.Current(ctx, ns, kind); !isOnly(err, keys.ErrUnknownMaterial) {
+				t.Errorf("Current of %s on %s after the failed creation = %v, want ErrUnknownMaterial alone", kind, name, err)
+			}
 		}
 	}
 	if got := wrapCount(t, records, p.masterKeyID[:]); got != uint64(len(encryptingKinds)) {
@@ -463,23 +515,67 @@ func TestCreateKeysChunkIDKeysDiffer(t *testing.T) {
 
 	ctx := context.Background()
 	p := newOver(t, escrowedConfig(t), keystest.NewRecords())
-	var got [][]byte
+	var got [][32]byte
 	for range 2 {
 		ns := entity.NewNamespaceID()
 		if err := p.CreateKeys(ctx, ns, false); err != nil {
 			t.Fatalf("CreateKeys: %v", err)
 		}
+		// Current's fingerprint is the served key's, as currentIDs checks.
 		mid, err := p.Current(ctx, ns, keys.KindChunkIDKey)
 		if err != nil {
 			t.Fatalf("Current: %v", err)
 		}
-		key, err := p.Get(ctx, mid)
-		if err != nil {
-			t.Fatalf("Get: %v", err)
-		}
-		got = append(got, key)
+		got = append(got, mid.Fingerprint)
 	}
-	if bytes.Equal(got[0], got[1]) {
-		t.Errorf("two non-encrypting namespaces share chunk-ID key %x, want different keys", got[0])
+	if got[0] == got[1] {
+		t.Errorf("two non-encrypting namespaces share the chunk-ID key of fingerprint %x, want different keys", got[0])
+	}
+}
+
+// errLostAnswer is the fault lostAnswer injects.
+var errLostAnswer = errors.New("injected lost answer")
+
+// lostAnswer wraps a KeyRecords and, while lose is set, reports an error for
+// an Update that committed, as a store whose answer is lost does.
+type lostAnswer struct {
+	KeyRecords
+	lose bool
+}
+
+func (l *lostAnswer) Update(ctx context.Context, ns entity.NamespaceID, fn func([]Row) ([]Row, error)) error {
+	if err := l.KeyRecords.Update(ctx, ns, fn); err != nil || !l.lose {
+		return err
+	}
+	return errLostAnswer
+}
+
+// A creation whose records commit but whose answer is lost reports the error;
+// the creating provider and a fresh one then serve the committed set, and a
+// repeated creation keeps it. A cache kept from the rows the lost commit
+// wrote over, or a set replaced on the retry, fails here.
+func TestCreateKeysWhoseCommitAnswerIsLost(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	ctx := context.Background()
+	cfg := escrowedConfig(t)
+	view := &lostAnswer{KeyRecords: keystest.NewRecords(), lose: true}
+	p := newOver(t, cfg, view)
+	ns := entity.NewNamespaceID()
+
+	if err := p.CreateKeys(ctx, ns, true); !errors.Is(err, errLostAnswer) {
+		t.Fatalf("CreateKeys whose answer is lost = %v, want the injected error", err)
+	}
+	view.lose = false
+
+	ids := currentIDs(t, newOver(t, cfg, view), ns, encryptingKinds)
+	if got := currentIDs(t, p, ns, encryptingKinds); !maps.Equal(got, ids) {
+		t.Errorf("the creating provider reads IDs %x, want the committed %x", got, ids)
+	}
+	if err := p.CreateKeys(ctx, ns, true); err != nil {
+		t.Fatalf("CreateKeys after the lost answer: %v", err)
+	}
+	if got := currentIDs(t, newOver(t, cfg, view), ns, encryptingKinds); !maps.Equal(got, ids) {
+		t.Errorf("IDs after the repeated creation = %x, want the committed %x", got, ids)
 	}
 }
