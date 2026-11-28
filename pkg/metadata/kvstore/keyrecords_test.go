@@ -2,6 +2,8 @@ package kvstore_test
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/google/uuid"
@@ -16,9 +18,9 @@ import (
 	"github.com/cubbit/dittofs/pkg/transform/keystest"
 )
 
-// keyRecordsOn opens a store over the backend open builds and returns its
-// key-record view, and the backend beneath it.
-func keyRecordsOn(t *testing.T, open kvstoretest.Opener) (kvstore.KeyRecords, kv.KV) {
+// storeOn opens a store over the backend open builds and returns it, and
+// the backend beneath it.
+func storeOn(t *testing.T, open kvstoretest.Opener) (*kvstore.Store, kv.KV) {
 	t.Helper()
 
 	db := open(t)
@@ -31,13 +33,33 @@ func keyRecordsOn(t *testing.T, open kvstoretest.Opener) (kvstore.KeyRecords, kv
 		t.Fatalf("Open: %v", err)
 	}
 
+	return s, db
+}
+
+// keyRecordsOn opens a store over the backend open builds and returns its
+// key-record view, and the backend beneath it.
+func keyRecordsOn(t *testing.T, open kvstoretest.Opener) (kvstore.KeyRecords, kv.KV) {
+	t.Helper()
+
+	s, db := storeOn(t, open)
+
 	return s.KeyRecords(), db
 }
 
+// runKeyRecords runs the view suite on the store's view, each view a fresh
+// one from the store, and each namespace created as the control plane
+// creates one, its record and its key in the store index together.
 func runKeyRecords(t *testing.T, open kvstoretest.Opener) {
-	keystest.RunKeyRecords(t, func(t *testing.T) kvstore.KeyRecords {
-		v, _ := keyRecordsOn(t, open)
-		return v
+	keystest.RunKeyRecords(t, func(t *testing.T) keystest.RecordStore[kvstore.KeyRecords] {
+		s, _ := storeOn(t, open)
+
+		return keystest.RecordStore[kvstore.KeyRecords]{
+			View: s.KeyRecords,
+			AddNamespace: func(ctx context.Context, ns entity.NamespaceID, store [16]byte) error {
+				_, err := s.ControlPlane().PutNamespace(ctx, entity.Namespace{ID: ns, Store: store}, 0)
+				return err
+			},
+		}
 	})
 }
 
@@ -77,8 +99,8 @@ func TestKeyRecordStateIsReadableWithoutTheRecord(t *testing.T) {
 	// A record no codec decodes, and holding a zero byte.
 	opaque := []byte{0xff, 0x00, 0x01}
 
-	err := v.Update(t.Context(), ns, func([]keyRow) ([]keyRow, error) {
-		return []keyRow{
+	err := v.Update(t.Context(), ns, func(seq uint64, _ []keyRow) (uint64, []keyRow, error) {
+		return seq, []keyRow{
 			{"data-key", "d\x00", "destroyed", opaque},
 			{"chunk-id-key", "c", "current", nil},
 			{"chunking-key", "k", "retired", nil},
@@ -141,13 +163,39 @@ func TestKeyRecordsRefuseUnknownStoredValues(t *testing.T) {
 				t.Errorf("Load over %s = %q, want an error", c.name, rows)
 			}
 
-			err := v.Update(t.Context(), entity.NamespaceID{15: 1}, func(rows []keyRow) ([]keyRow, error) {
+			err := v.Update(t.Context(), entity.NamespaceID{15: 1}, func(seq uint64, rows []keyRow) (uint64, []keyRow, error) {
 				t.Errorf("Update over %s ran fn on %q, want it refused before", c.name, rows)
-				return nil, nil
+				return seq, nil, nil
 			})
 			if err == nil {
 				t.Errorf("Update over %s succeeded, want an error", c.name)
 			}
 		})
+	}
+}
+
+// Update refuses a stored sequence it cannot decode before running fn, and
+// Namespaces refuses a store-index key that does not end in one namespace
+// ID, rather than read either as some other value.
+func TestKeyRecordsRefuseMalformedLockAndIndex(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	ns, store := entity.NamespaceID{15: 1}, [16]byte{0: 's'}
+
+	v, db := keyRecordsOn(t, badger(badgerkv.Options{}))
+	set(t, db, keys.String(append(keys.ID([]byte{keys.KindNS}, ns[:]), keys.NSKeyseq), nil), []byte{1, 0, 0})
+
+	err := v.Update(t.Context(), ns, func(seq uint64, rows []keyRow) (uint64, []keyRow, error) {
+		t.Errorf("Update over a malformed sequence ran fn on sequence %d, want it refused before", seq)
+		return seq, nil, nil
+	})
+	if err == nil {
+		t.Errorf("Update over a malformed sequence succeeded, want an error")
+	}
+
+	set(t, db, append(keys.ID([]byte{keys.KindNSR}, store[:]), 1, 2, 3), nil)
+
+	if got, err := v.Namespaces(t.Context(), store); !errors.Is(err, keys.ErrMalformed) {
+		t.Errorf("Namespaces over a short store-index key = %v, %v; want keys.ErrMalformed", got, err)
 	}
 }

@@ -39,39 +39,71 @@ func checkNames(r record) error {
 // recordSlot names one key record within its namespace.
 type recordSlot struct{ kind, id string }
 
-// recordSet is one namespace's key records and the number of commits that
-// have written them, which a commit checks against the number its snapshot
-// saw.
+// recordSet is one namespace's key records, the last sequence recorded for
+// its keys object, and the number of commits that have written either, which
+// a commit checks against the number its snapshot saw.
 type recordSet struct {
 	version uint64
+	seq     uint64
 	rows    map[recordSlot]record
 }
 
 // Records is a key-record view held in memory, verified by RunKeyRecords as
 // the metadata store's is. It behaves as a transactional store does: Update
 // runs fn on a snapshot outside any lock and commits only if no other write
-// of the namespace's records committed since, running fn again otherwise.
-// Its methods are safe for concurrent use.
+// of the namespace's records or sequence committed since, running fn again
+// otherwise. Its methods are safe for concurrent use.
 type Records struct {
 	mu     sync.Mutex
 	sets   map[entity.NamespaceID]*recordSet
 	counts map[string]uint64
+	stores map[entity.NamespaceID][16]byte // the remote store each namespace's record names
 }
 
-// NewRecords returns a Records holding no key record and no wrap count.
+// NewRecords returns a Records holding no key record, no wrap count and no
+// namespace.
 func NewRecords() *Records {
-	return &Records{sets: make(map[entity.NamespaceID]*recordSet), counts: make(map[string]uint64)}
+	return &Records{
+		sets:   make(map[entity.NamespaceID]*recordSet),
+		counts: make(map[string]uint64),
+		stores: make(map[entity.NamespaceID][16]byte),
+	}
 }
 
-// snapshot returns a copy of ns's rows, in no order, and the version they
-// were read at.
-func (r *Records) snapshot(ns entity.NamespaceID) ([]record, uint64) {
+// AddNamespace records ns as a namespace whose record names the remote store,
+// as creating its namespace record does in the metadata store.
+func (r *Records) AddNamespace(ns entity.NamespaceID, store [16]byte) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.stores[ns] = store
+}
+
+// Namespaces returns every namespace added under the remote store, in no
+// order a caller may rely on.
+func (r *Records) Namespaces(_ context.Context, store [16]byte) ([]entity.NamespaceID, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	var out []entity.NamespaceID
+	for ns, s := range r.stores {
+		if s == store {
+			out = append(out, ns)
+		}
+	}
+
+	return out, nil
+}
+
+// snapshot returns a copy of ns's rows, in no order, the version they were
+// read at, and ns's sequence.
+func (r *Records) snapshot(ns entity.NamespaceID) ([]record, uint64, uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	set := r.sets[ns]
 	if set == nil {
-		return nil, 0
+		return nil, 0, 0
 	}
 
 	rows := make([]record, 0, len(set.rows))
@@ -80,30 +112,31 @@ func (r *Records) snapshot(ns entity.NamespaceID) ([]record, uint64) {
 		rows = append(rows, row)
 	}
 
-	return rows, set.version
+	return rows, set.version, set.seq
 }
 
 // Load returns every key record of ns, in no order a caller may rely on.
 func (r *Records) Load(_ context.Context, ns entity.NamespaceID) ([]record, error) {
-	rows, _ := r.snapshot(ns)
+	rows, _, _ := r.snapshot(ns)
 	return rows, nil
 }
 
-// Update runs fn on ns's key records and writes the rows fn returns, each
-// replacing the record of its kind and ID; it deletes nothing. A write of
-// ns's records committed between the snapshot fn saw and this commit makes
-// it run fn again on a fresh snapshot, as a conflicting transaction is
-// retried. A row whose kind or state RFC 5 does not name fails the call and
-// writes nothing.
-func (r *Records) Update(ctx context.Context, ns entity.NamespaceID, fn func(rows []record) ([]record, error)) error {
+// Update runs fn on ns's key records and on the last sequence recorded for
+// ns's keys object, 0 if none was, and writes the rows fn returns, each
+// replacing the record of its kind and ID, and the sequence it returns; it
+// deletes nothing. A write of ns's records or sequence committed between the
+// snapshot fn saw and this commit makes it run fn again on a fresh snapshot,
+// as a conflicting transaction is retried. A row whose kind or state RFC 5
+// does not name fails the call and writes nothing.
+func (r *Records) Update(ctx context.Context, ns entity.NamespaceID, fn func(seq uint64, rows []record) (uint64, []record, error)) error {
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 
-		rows, seen := r.snapshot(ns)
+		rows, seen, seq := r.snapshot(ns)
 
-		out, err := fn(rows)
+		next, out, err := fn(seq, rows)
 		if err != nil {
 			return err
 		}
@@ -114,18 +147,24 @@ func (r *Records) Update(ctx context.Context, ns entity.NamespaceID, fn func(row
 			}
 		}
 
-		if r.commit(ns, seen, out) {
+		if r.commit(ns, seen, next, out) {
 			return nil
 		}
 	}
 }
 
-// commit writes out over ns's records if their version is still seen, and
-// reports whether it did.
-func (r *Records) commit(ns entity.NamespaceID, seen uint64, out []record) bool {
+// commit writes out and seq over ns's records and sequence if their version
+// is still seen, and reports whether it did.
+func (r *Records) commit(ns entity.NamespaceID, seen, seq uint64, out []record) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	return r.commitLocked(ns, seen, seq, out)
+}
+
+// commitLocked is commit with r.mu held, for a broken view in the tests that
+// commits more than Records does under the same lock.
+func (r *Records) commitLocked(ns entity.NamespaceID, seen, seq uint64, out []record) bool {
 	set := r.sets[ns]
 	if set == nil {
 		set = &recordSet{rows: make(map[recordSlot]record)}
@@ -136,7 +175,7 @@ func (r *Records) commit(ns entity.NamespaceID, seen uint64, out []record) bool 
 		return false
 	}
 
-	if len(out) == 0 {
+	if len(out) == 0 && seq == set.seq {
 		return true
 	}
 
@@ -145,6 +184,7 @@ func (r *Records) commit(ns entity.NamespaceID, seen uint64, out []record) bool 
 		set.rows[recordSlot{row.Kind, row.ID}] = row
 	}
 
+	set.seq = seq
 	set.version++
 
 	return true

@@ -18,9 +18,9 @@ func TestRecordsPassesTheSuite(t *testing.T) {
 
 	var built []string
 
-	RunKeyRecords(t, func(t *testing.T) *Records {
+	RunKeyRecords(t, func(t *testing.T) RecordStore[*Records] {
 		built = append(built, t.Name())
-		return NewRecords()
+		return storeOf(NewRecords())
 	})
 
 	var want []string
@@ -33,13 +33,31 @@ func TestRecordsPassesTheSuite(t *testing.T) {
 	}
 }
 
+// storeOf is the store a Records is: every view over it is the Records itself.
+func storeOf(r *Records) RecordStore[*Records] {
+	return RecordStore[*Records]{
+		View: func() *Records { return r },
+		AddNamespace: func(_ context.Context, ns entity.NamespaceID, store [16]byte) error {
+			r.AddNamespace(ns, store)
+			return nil
+		},
+	}
+}
+
+// brokenStore is the store under a broken view: wrap wraps the Records the
+// namespaces are added to, each call a fresh view.
+func brokenStore(wrap func(*Records) view) RecordStore[view] {
+	r := NewRecords()
+	return RecordStore[view]{View: func() view { return wrap(r) }, AddNamespace: storeOf(r).AddNamespace}
+}
+
 // noConflict commits each Update over whatever committed since its snapshot.
 type noConflict struct{ *Records }
 
-func (v noConflict) Update(_ context.Context, ns entity.NamespaceID, fn func([]record) ([]record, error)) error {
-	rows, _ := v.snapshot(ns)
+func (v noConflict) Update(_ context.Context, ns entity.NamespaceID, fn func(uint64, []record) (uint64, []record, error)) error {
+	rows, _, seq := v.snapshot(ns)
 
-	out, err := fn(rows)
+	next, out, err := fn(seq, rows)
 	if err != nil {
 		return err
 	}
@@ -51,7 +69,7 @@ func (v noConflict) Update(_ context.Context, ns entity.NamespaceID, fn func([]r
 	}
 
 	for {
-		if _, now := v.snapshot(ns); v.commit(ns, now, out) {
+		if _, now, _ := v.snapshot(ns); v.commit(ns, now, next, out) {
 			return nil
 		}
 	}
@@ -61,13 +79,16 @@ func (v noConflict) Update(_ context.Context, ns entity.NamespaceID, fn func([]r
 // that the write did not return.
 type onePerKind struct{ *Records }
 
-func (v onePerKind) Update(ctx context.Context, ns entity.NamespaceID, fn func([]record) ([]record, error)) error {
+func (v onePerKind) Update(ctx context.Context, ns entity.NamespaceID, fn func(uint64, []record) (uint64, []record, error)) error {
 	var out []record
 
-	err := v.Records.Update(ctx, ns, func(rows []record) ([]record, error) {
-		var err error
-		out, err = fn(rows)
-		return out, err
+	err := v.Records.Update(ctx, ns, func(seq uint64, rows []record) (uint64, []record, error) {
+		var (
+			next uint64
+			err  error
+		)
+		next, out, err = fn(seq, rows)
+		return next, out, err
 	})
 	if err != nil {
 		return err
@@ -116,7 +137,7 @@ func (v oneNamespace) Load(ctx context.Context, _ entity.NamespaceID) ([]record,
 	return v.Records.Load(ctx, entity.NamespaceID{})
 }
 
-func (v oneNamespace) Update(ctx context.Context, _ entity.NamespaceID, fn func([]record) ([]record, error)) error {
+func (v oneNamespace) Update(ctx context.Context, _ entity.NamespaceID, fn func(uint64, []record) (uint64, []record, error)) error {
 	return v.Records.Update(ctx, entity.NamespaceID{}, fn)
 }
 
@@ -140,16 +161,201 @@ func (v loadsAll) Load(context.Context, entity.NamespaceID) ([]record, error) {
 // anyName writes rows of any kind and state.
 type anyName struct{ *Records }
 
-func (v anyName) Update(_ context.Context, ns entity.NamespaceID, fn func([]record) ([]record, error)) error {
+func (v anyName) Update(_ context.Context, ns entity.NamespaceID, fn func(uint64, []record) (uint64, []record, error)) error {
 	for {
-		rows, seen := v.snapshot(ns)
+		rows, seen, seq := v.snapshot(ns)
 
-		out, err := fn(rows)
+		next, out, err := fn(seq, rows)
 		if err != nil {
 			return err
 		}
 
-		if v.commit(ns, seen, out) {
+		if v.commit(ns, seen, next, out) {
+			return nil
+		}
+	}
+}
+
+// seqOutside reads the sequence once, before the transaction, and writes it
+// after the commit, so the conflict covers the records but not the sequence.
+type seqOutside struct{ *Records }
+
+func (v seqOutside) Update(ctx context.Context, ns entity.NamespaceID, fn func(uint64, []record) (uint64, []record, error)) error {
+	_, _, seq := v.snapshot(ns)
+
+	var next uint64
+
+	err := v.Records.Update(ctx, ns, func(stored uint64, rows []record) (uint64, []record, error) {
+		var (
+			out []record
+			err error
+		)
+		next, out, err = fn(seq, rows)
+		return stored, out, err
+	})
+	if err != nil {
+		return err
+	}
+
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	v.sets[ns].seq = next
+
+	return nil
+}
+
+// seqInView keeps each namespace's sequence in the view rather than the
+// store, committed with the records, so a fresh view reads every sequence as
+// 0.
+type seqInView struct {
+	*Records
+	seqs map[entity.NamespaceID]uint64 // under Records.mu
+}
+
+func newSeqInView(r *Records) view { return seqInView{r, make(map[entity.NamespaceID]uint64)} }
+
+func (v seqInView) Update(_ context.Context, ns entity.NamespaceID, fn func(uint64, []record) (uint64, []record, error)) error {
+	for {
+		rows, seen, _ := v.snapshot(ns)
+
+		v.mu.Lock()
+		seq := v.seqs[ns]
+		v.mu.Unlock()
+
+		next, out, err := fn(seq, rows)
+		if err != nil {
+			return err
+		}
+
+		for _, row := range out {
+			if err := checkNames(row); err != nil {
+				return err
+			}
+		}
+
+		v.mu.Lock()
+		ok := v.commitLocked(ns, seen, next, out)
+		if ok {
+			v.seqs[ns] = next
+		}
+		v.mu.Unlock()
+
+		if ok {
+			return nil
+		}
+	}
+}
+
+// listsLoaded lists only the namespaces of a store that an Update has
+// touched.
+type listsLoaded struct{ *Records }
+
+func (v listsLoaded) Namespaces(_ context.Context, store [16]byte) ([]entity.NamespaceID, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	var out []entity.NamespaceID
+	for ns := range v.sets {
+		if v.stores[ns] == store {
+			out = append(out, ns)
+		}
+	}
+
+	return out, nil
+}
+
+// anyStore lists every namespace added, whatever store it was added under.
+type anyStore struct{ *Records }
+
+func (v anyStore) Namespaces(context.Context, [16]byte) ([]entity.NamespaceID, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	var out []entity.NamespaceID
+	for ns := range v.stores {
+		out = append(out, ns)
+	}
+
+	return out, nil
+}
+
+// seqOnRefusal records the sequence fn returned even when the Update fails.
+type seqOnRefusal struct{ *Records }
+
+func (v seqOnRefusal) Update(ctx context.Context, ns entity.NamespaceID, fn func(uint64, []record) (uint64, []record, error)) error {
+	var next uint64
+
+	err := v.Records.Update(ctx, ns, func(seq uint64, rows []record) (uint64, []record, error) {
+		n, out, err := fn(seq, rows)
+		next = n
+		return n, out, err
+	})
+	if err != nil {
+		v.mu.Lock()
+		defer v.mu.Unlock()
+
+		if v.sets[ns] == nil {
+			v.sets[ns] = &recordSet{rows: make(map[recordSlot]record)}
+		}
+		v.sets[ns].seq = next
+	}
+
+	return err
+}
+
+// seqWritesOnly makes only a writer of the sequence conflict with another
+// write of it: a writer that leaves the sequence as it read it commits over
+// a raise made since its snapshot, as an untracked read of it would.
+type seqWritesOnly struct {
+	*Records
+	seqVersions map[entity.NamespaceID]uint64 // under Records.mu
+}
+
+func newSeqWritesOnly(r *Records) view { return seqWritesOnly{r, make(map[entity.NamespaceID]uint64)} }
+
+func (v seqWritesOnly) Update(_ context.Context, ns entity.NamespaceID, fn func(uint64, []record) (uint64, []record, error)) error {
+	for {
+		rows, seen, seq := v.snapshot(ns)
+
+		v.mu.Lock()
+		seenSeq := v.seqVersions[ns]
+		v.mu.Unlock()
+
+		next, out, err := fn(seq, rows)
+		if err != nil {
+			return err
+		}
+
+		for _, row := range out {
+			if err := checkNames(row); err != nil {
+				return err
+			}
+		}
+
+		v.mu.Lock()
+		set := v.sets[ns]
+		if set == nil {
+			set = &recordSet{rows: make(map[recordSlot]record)}
+			v.sets[ns] = set
+		}
+
+		ok := set.version == seen && (next == seq || v.seqVersions[ns] == seenSeq)
+		if ok {
+			for _, row := range out {
+				set.rows[recordSlot{row.Kind, row.ID}] = row
+			}
+			if len(out) > 0 {
+				set.version++
+			}
+			if next != seq {
+				set.seq = next
+				v.seqVersions[ns]++
+			}
+		}
+		v.mu.Unlock()
+
+		if ok {
 			return nil
 		}
 	}
@@ -163,22 +369,28 @@ func TestEachBrokenViewFailsItsRow(t *testing.T) {
 	covered := make(map[string]bool)
 
 	for _, c := range []struct {
-		name  string
-		build func() view
-		want  []string
+		name string
+		view func(*Records) view
+		want []string
 	}{
-		{"Records", func() view { return NewRecords() }, nil},
-		{"an Update without the conflict", func() view { return noConflict{NewRecords()} }, []string{"conflict"}},
-		{"an Update deleting a record it did not return", func() view { return onePerKind{NewRecords()} }, []string{"replace"}},
-		{"a raise past the limit", func() view { return raisesWhileBelow{NewRecords()} }, []string{"wrapcount"}},
-		{"records shared across namespaces", func() view { return oneNamespace{NewRecords()} }, []string{"namespaces"}},
-		{"a Load returning every namespace's records", func() view { return loadsAll{NewRecords()} }, []string{"namespaces"}},
-		{"any kind and state written", func() view { return anyName{NewRecords()} }, []string{"refusals"}},
+		{"Records", func(r *Records) view { return r }, nil},
+		{"an Update without the conflict", func(r *Records) view { return noConflict{r} }, []string{"conflict", "lock"}},
+		{"an Update deleting a record it did not return", func(r *Records) view { return onePerKind{r} }, []string{"replace"}},
+		{"a raise past the limit", func(r *Records) view { return raisesWhileBelow{r} }, []string{"wrapcount"}},
+		{"records shared across namespaces", func(r *Records) view { return oneNamespace{r} }, []string{"namespaces", "sequence", "listing"}},
+		{"a Load returning every namespace's records", func(r *Records) view { return loadsAll{r} }, []string{"namespaces", "listing"}},
+		{"any kind and state written", func(r *Records) view { return anyName{r} }, []string{"refusals"}},
+		{"a sequence read outside the transaction", func(r *Records) view { return seqOutside{r} }, []string{"lock"}},
+		{"a sequence kept in the view", newSeqInView, []string{"sequence"}},
+		{"a listing of the namespaces loaded", func(r *Records) view { return listsLoaded{r} }, []string{"listing"}},
+		{"a listing of every store's namespaces", func(r *Records) view { return anyStore{r} }, []string{"listing"}},
+		{"a sequence recorded by a refused Update", func(r *Records) view { return seqOnRefusal{r} }, []string{"refusals"}},
+		{"a sequence read untracked", newSeqWritesOnly, []string{"lock"}},
 	} {
 		var failed []string
 
 		for _, r := range recordRows {
-			if err := r.check(t.Context(), c.build()); err != nil {
+			if err := r.check(t.Context(), brokenStore(c.view)); err != nil {
 				failed = append(failed, r.name)
 				t.Logf("%s, row %s: %v", c.name, r.name, err)
 			}
@@ -207,19 +419,25 @@ func TestEachBrokenViewFailsOnItsCheck(t *testing.T) {
 
 	for _, c := range []struct {
 		name string
-		v    view
-		row  func(context.Context, view) error
+		view func(*Records) view
+		row  func(context.Context, RecordStore[view]) error
 		want string
 	}{
-		{"an Update without the conflict", noConflict{NewRecords()}, conflicting, "want exactly one of them"},
-		{"an Update deleting a record it did not return", onePerKind{NewRecords()}, replacing, "Load after rewriting"},
-		{"a raise past the limit", raisesWhileBelow{NewRecords()}, wrapCount, `RaiseWrapCount("\x00m\x00", 2, 3) = true, want false`},
-		{"records shared across namespaces", oneNamespace{NewRecords()}, namespacesApart, "want once each"},
-		{"a Load returning every namespace's records", loadsAll{NewRecords()}, namespacesApart, "want only"},
-		{"any kind and state written", anyName{NewRecords()}, refusals, "a kind RFC 5 does not name succeeded"},
+		{"an Update without the conflict", func(r *Records) view { return noConflict{r} }, onView(conflicting), "want exactly one of them"},
+		{"an Update deleting a record it did not return", func(r *Records) view { return onePerKind{r} }, onView(replacing), "Load after rewriting"},
+		{"a raise past the limit", func(r *Records) view { return raisesWhileBelow{r} }, onView(wrapCount), `RaiseWrapCount("\x00m\x00", 2, 3) = true, want false`},
+		{"records shared across namespaces", func(r *Records) view { return oneNamespace{r} }, onView(namespacesApart), "want once each"},
+		{"a Load returning every namespace's records", func(r *Records) view { return loadsAll{r} }, onView(namespacesApart), "want only"},
+		{"any kind and state written", func(r *Records) view { return anyName{r} }, onView(refusals), "a kind RFC 5 does not name succeeded"},
+		{"a sequence read outside the transaction", func(r *Records) view { return seqOutside{r} }, onView(locking), "both claimed one sequence"},
+		{"a sequence kept in the view", newSeqInView, sequenceKept, "want the 9223372041149743111 written"},
+		{"a listing of the namespaces loaded", func(r *Records) view { return listsLoaded{r} }, listing, "Namespaces(61000000000000000000000000000000)"},
+		{"a listing of every store's namespaces", func(r *Records) view { return anyStore{r} }, listing, "Namespaces(62000000000000000000000000000000)"},
+		{"a sequence recorded by a refused Update", func(r *Records) view { return seqOnRefusal{r} }, onView(refusals), "left the sequence at"},
+		{"a sequence read untracked", newSeqWritesOnly, onView(locking), "its read of the sequence was not tracked"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			err := c.row(t.Context(), c.v)
+			err := c.row(t.Context(), brokenStore(c.view))
 			if got := fmt.Sprint(err); err == nil || !strings.Contains(got, c.want) {
 				t.Errorf("%s: row error %q, want one containing %q", c.name, got, c.want)
 			}

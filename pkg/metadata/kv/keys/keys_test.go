@@ -57,7 +57,7 @@ func TestCodesUnique(t *testing.T) {
 		"F": {FAcl, FX, FS, FE, FT, FH, FRm, FOv, FRef, FHis, FFx, FFo, FRel, FOp, FDp, HisFile},
 		"S": {SInfo, SSt, SNsg, SG, SXp, SSnap, SCut, SLive, SSc, SHd, SHr, SUse, SRh, SOr, SUt, SPu,
 			SPj, SUd, SQt, SQx, SVf, SFnc, SVl, SShs, SPr, SRr, SDo, SGv},
-		"NS": {NSGc, NSClaim, NSPk, NSKey, NSBk, NSDrain, NSInfo, NSShare},
+		"NS": {NSGc, NSClaim, NSPk, NSKey, NSBk, NSDrain, NSKeyseq, NSInfo, NSShare},
 		"gc": {GcLease, GcRecheck, GcHold, GcSuspect, GcForward, GcPause, GcCursor},
 		"J":  {JOg, JSm},
 	} {

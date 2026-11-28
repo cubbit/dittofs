@@ -16,24 +16,36 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
 
-// view is a key-record view: the three calls the provider makes of the
-// metadata store's key records, in plain types, so any view that has them
-// satisfies it without importing anything of this package.
+// view is a key-record view: the calls the provider makes of the metadata
+// store's key records, in plain types, so any view that has them satisfies
+// it without importing anything of this package.
 type view = interface {
 	Load(ctx context.Context, ns entity.NamespaceID) ([]record, error)
-	Update(ctx context.Context, ns entity.NamespaceID, fn func(rows []record) ([]record, error)) error
+	Update(ctx context.Context, ns entity.NamespaceID, fn func(seq uint64, rows []record) (uint64, []record, error)) error
 	RaiseWrapCount(ctx context.Context, masterKeyID []byte, n, limit uint64) (bool, error)
+	Namespaces(ctx context.Context, store [16]byte) ([]entity.NamespaceID, error)
 }
 
-// RunKeyRecords holds the key-record view newView builds to RFC 5 Appendix
-// B.1's wrap count and Appendix B.2's key records, one subtest per row, each
-// on a fresh view holding no record and no count.
-func RunKeyRecords[V view](t *testing.T, newView func(t *testing.T) V) {
+// RecordStore is one store of key records as RunKeyRecords drives it.
+type RecordStore[V view] struct {
+	// View returns a view over the store, each call a fresh one that holds
+	// nothing a former view held.
+	View func() V
+	// AddNamespace creates ns's namespace record, naming the remote store.
+	AddNamespace func(ctx context.Context, ns entity.NamespaceID, store [16]byte) error
+}
+
+// RunKeyRecords holds the key-record view over the store newStore builds to
+// RFC 5 Appendix B.1's wrap count, Appendix B.2's key records and RFC 16
+// §4.2's key lock, one subtest per row, each on a fresh store holding no
+// record, no count, no sequence and no namespace.
+func RunKeyRecords[V view](t *testing.T, newStore func(t *testing.T) RecordStore[V]) {
 	t.Helper()
 
 	for _, r := range recordRows {
 		t.Run(r.name, func(t *testing.T) {
-			if err := r.check(t.Context(), newView(t)); err != nil {
+			s := newStore(t)
+			if err := r.check(t.Context(), RecordStore[view]{View: func() view { return s.View() }, AddNamespace: s.AddNamespace}); err != nil {
 				t.Error(err)
 			}
 		})
@@ -44,43 +56,55 @@ func RunKeyRecords[V view](t *testing.T, newView func(t *testing.T) V) {
 // it found wrong, or nil.
 type recordRow struct {
 	name  string
-	check func(ctx context.Context, v view) error
+	check func(ctx context.Context, s RecordStore[view]) error
+}
+
+// onView runs check on one view over the store.
+func onView(check func(ctx context.Context, v view) error) func(context.Context, RecordStore[view]) error {
+	return func(ctx context.Context, s RecordStore[view]) error { return check(ctx, s.View()) }
 }
 
 // recordRows is the view suite, in the order RunKeyRecords runs it.
 var recordRows = []recordRow{
-	{"conflict", conflicting},
-	{"namespaces", namespacesApart},
-	{"replace", replacing},
-	{"refusals", refusals},
-	{"wrapcount", wrapCount},
+	{"conflict", onView(conflicting)},
+	{"namespaces", onView(namespacesApart)},
+	{"replace", onView(replacing)},
+	{"refusals", onView(refusals)},
+	{"wrapcount", onView(wrapCount)},
+	{"lock", onView(locking)},
+	{"sequence", sequenceKept},
+	{"listing", listing},
 }
 
 // backstop bounds a wait on the other transaction of a pair, so a view that
 // runs one Update at a time fails the row rather than hanging it.
 const backstop = 30 * time.Second
 
+// update is an Update's fn that cannot fail.
+type update = func(seq uint64, rows []record) (uint64, []record)
+
 // pair runs a and b as two concurrent Updates, each holding its first run of
 // fn until both have taken their snapshot, and returns how many times each fn
 // ran.
-func pair(ctx context.Context, v view, a, b entity.NamespaceID, fa, fb func([]record) []record) (runsA, runsB int, err error) {
+func pair(ctx context.Context, v view, a, b entity.NamespaceID, fa, fb update) (runsA, runsB int, err error) {
 	var arrived sync.WaitGroup
 	arrived.Add(2)
 
 	both := make(chan struct{})
 	go func() { arrived.Wait(); close(both) }()
 
-	hold := func(runs *atomic.Int32, f func([]record) []record) func([]record) ([]record, error) {
-		return func(rows []record) ([]record, error) {
+	hold := func(runs *atomic.Int32, f update) func(uint64, []record) (uint64, []record, error) {
+		return func(seq uint64, rows []record) (uint64, []record, error) {
 			if runs.Add(1) == 1 {
 				arrived.Done()
 				select {
 				case <-both:
 				case <-time.After(backstop):
-					return nil, errors.New("the other Update never took its snapshot while this one held its own open")
+					return 0, nil, errors.New("the other Update never took its snapshot while this one held its own open")
 				}
 			}
-			return f(rows), nil
+			next, out := f(seq, rows)
+			return next, out, nil
 		}
 	}
 
@@ -110,14 +134,20 @@ func sameRows(got, want []record) bool {
 }
 
 // onlyIfNone returns fn for an Update that writes row only when it sees no
-// record.
-func onlyIfNone(row record) func([]record) []record {
-	return func(rows []record) []record {
+// record, and leaves the sequence as it found it.
+func onlyIfNone(row record) update {
+	return func(seq uint64, rows []record) (uint64, []record) {
 		if len(rows) > 0 {
-			return nil
+			return seq, nil
 		}
-		return []record{row}
+		return seq, []record{row}
 	}
+}
+
+// writing returns fn for an Update that writes rows and leaves the sequence
+// as it found it.
+func writing(rows ...record) func(uint64, []record) (uint64, []record, error) {
+	return func(seq uint64, _ []record) (uint64, []record, error) { return seq, rows, nil }
 }
 
 // Two Updates of one namespace, each writing a record only when it sees none,
@@ -191,7 +221,7 @@ func replacing(ctx context.Context, v view) error {
 		{"data-key", "y", "current", []byte("data")},
 	}
 
-	if err := v.Update(ctx, ns, func([]record) ([]record, error) { return first, nil }); err != nil {
+	if err := v.Update(ctx, ns, writing(first...)); err != nil {
 		return fmt.Errorf("Update writing %d records: %w", len(first), err)
 	}
 
@@ -208,9 +238,9 @@ func replacing(ctx context.Context, v view) error {
 
 	var seen []record
 
-	err = v.Update(ctx, ns, func(rows []record) ([]record, error) {
+	err = v.Update(ctx, ns, func(seq uint64, rows []record) (uint64, []record, error) {
 		seen = rows
-		return []record{rewritten}, nil
+		return seq, []record{rewritten}, nil
 	})
 	if err != nil {
 		return fmt.Errorf("Update rewriting %q: %w", rewritten, err)
@@ -249,7 +279,7 @@ func refusals(ctx context.Context, v view) error {
 		{"a state RFC 5 does not name", record{"data-key", "s", "pending", []byte("s")}, nil},
 		{"a failing fn", good, errFn},
 	} {
-		err := v.Update(ctx, ns, func([]record) ([]record, error) { return []record{good, c.row}, c.err })
+		err := v.Update(ctx, ns, func(seq uint64, _ []record) (uint64, []record, error) { return seq + 1, []record{good, c.row}, c.err })
 		if err == nil {
 			return fmt.Errorf("Update returning %s succeeded, want it refused", c.name)
 		}
@@ -265,6 +295,10 @@ func refusals(ctx context.Context, v view) error {
 
 		if len(rows) != 0 {
 			return fmt.Errorf("Update refused for %s wrote %q, want nothing", c.name, sorted(rows))
+		}
+
+		if seq, err := sequenceOf(ctx, v, ns); err != nil || seq != 0 {
+			return fmt.Errorf("Update refused for %s left the sequence at %d (%v), want 0", c.name, seq, err)
 		}
 	}
 
@@ -328,6 +362,223 @@ func wrapCount(ctx context.Context, v view) error {
 
 		if ok != s.want {
 			return fmt.Errorf("RaiseWrapCount(%q, %d, %d) = %v, want %v, in the sequence from a count of 0", s.id, s.n, s.limit, ok, s.want)
+		}
+	}
+
+	return nil
+}
+
+// sequenceOf returns the sequence an Update of ns sees, writing nothing.
+func sequenceOf(ctx context.Context, v view, ns entity.NamespaceID) (uint64, error) {
+	var seen uint64
+
+	err := v.Update(ctx, ns, func(seq uint64, _ []record) (uint64, []record, error) {
+		seen = seq
+		return seq, nil, nil
+	})
+
+	return seen, err
+}
+
+// raiseTo returns fn for an Update that records seq and writes no row.
+func raiseTo(seq uint64) func(uint64, []record) (uint64, []record, error) {
+	return func(uint64, []record) (uint64, []record, error) { return seq, nil, nil }
+}
+
+// Two Updates of one namespace, each raising the sequence by one from the
+// value it saw, both holding their snapshots open until the other has taken
+// its own, raise it by two: the second to commit conflicts and, run again,
+// raises the first's. So two writers never claim one sequence (RFC 16 §4.2's
+// key lock). And a write decided on the sequence runs again once a raise
+// commits after its snapshot.
+func locking(ctx context.Context, v view) error {
+	ns := namespace(1)
+
+	const start = 41
+	if err := v.Update(ctx, ns, raiseTo(start)); err != nil {
+		return fmt.Errorf("Update recording sequence %d: %w", start, err)
+	}
+
+	var lastA, lastB atomic.Uint64
+
+	raise := func(last *atomic.Uint64) update {
+		return func(seq uint64, _ []record) (uint64, []record) {
+			last.Store(seq)
+			return seq + 1, nil
+		}
+	}
+
+	if _, _, err := pair(ctx, v, ns, ns, raise(&lastA), raise(&lastB)); err != nil {
+		return fmt.Errorf("two Updates raising one namespace's sequence: %w", err)
+	}
+
+	got, err := sequenceOf(ctx, v, ns)
+	if err != nil {
+		return fmt.Errorf("reading the sequence after two raises: %w", err)
+	}
+
+	if got != start+2 {
+		return fmt.Errorf("two Updates each raising the sequence from %d by one left it at %d, want %d: both claimed one sequence", start, got, start+2)
+	}
+
+	if a, b := lastA.Load(), lastB.Load(); a == b {
+		return fmt.Errorf("the two Updates that committed both saw sequence %d, want different values", a)
+	}
+
+	return readerRerun(ctx, v, ns, start+2)
+}
+
+// readerRerun checks that an Update writing a record named after the
+// sequence it saw, whose snapshot a raise of that sequence committed after,
+// runs again and writes the record from the raised one: the sequence is read
+// tracked, not only written.
+func readerRerun(ctx context.Context, v view, ns entity.NamespaceID, at uint64) error {
+	snapped, raised := make(chan struct{}), make(chan struct{})
+
+	var release sync.Once
+	defer release.Do(func() { close(raised) })
+
+	var runs atomic.Int32
+
+	done := make(chan error, 1)
+
+	go func() {
+		done <- v.Update(ctx, ns, func(seq uint64, _ []record) (uint64, []record, error) {
+			if runs.Add(1) == 1 {
+				close(snapped)
+				select {
+				case <-raised:
+				case <-time.After(backstop):
+					return 0, nil, errors.New("the raise never committed while this Update held its snapshot open")
+				}
+			}
+			return seq, []record{{"data-key", fmt.Sprint(seq), "current", nil}}, nil
+		})
+	}()
+
+	select {
+	case <-snapped:
+	case err := <-done:
+		return fmt.Errorf("the Update writing from the sequence returned before its snapshot was held: %w", err)
+	case <-time.After(backstop):
+		return errors.New("the Update writing from the sequence never ran fn")
+	}
+
+	err := v.Update(ctx, ns, raiseTo(at+1))
+	release.Do(func() { close(raised) })
+
+	if err != nil {
+		return fmt.Errorf("Update raising the sequence to %d while another held its snapshot: %w", at+1, err)
+	}
+
+	if err := <-done; err != nil {
+		return fmt.Errorf("the Update writing from the sequence: %w", err)
+	}
+
+	rows, err := v.Load(ctx, ns)
+	if err != nil {
+		return fmt.Errorf("Load after the raise: %w", err)
+	}
+
+	want := []record{{"data-key", fmt.Sprint(at + 1), "current", nil}}
+	if !sameRows(rows, want) {
+		return fmt.Errorf("an Update reading sequence %d, raised to %d after its snapshot, wrote %q, want %q: its read of the sequence was not tracked", at, at+1, sorted(rows), want)
+	}
+
+	return nil
+}
+
+// A sequence written is read back by a fresh view over the same store, the
+// whole of its 64 bits, and a namespace that never had one reads 0.
+func sequenceKept(ctx context.Context, s RecordStore[view]) error {
+	const written = 1<<63 | 1<<32 | 7
+
+	if err := s.View().Update(ctx, namespace(1), raiseTo(written)); err != nil {
+		return fmt.Errorf("Update recording sequence %d: %w", uint64(written), err)
+	}
+
+	fresh := s.View()
+
+	got, err := sequenceOf(ctx, fresh, namespace(1))
+	if err != nil {
+		return fmt.Errorf("reading the sequence from a fresh view: %w", err)
+	}
+
+	if got != written {
+		return fmt.Errorf("a fresh view over the store read sequence %d, want the %d written", got, uint64(written))
+	}
+
+	if got, err = sequenceOf(ctx, fresh, namespace(2)); err != nil || got != 0 {
+		return fmt.Errorf("a namespace that never had a sequence read %d (%v), want 0", got, err)
+	}
+
+	return nil
+}
+
+// Namespaces lists every namespace created on a remote store, one holding no
+// key record included, and none created on another; and Load of each returns
+// its own records.
+func listing(ctx context.Context, s RecordStore[view]) error {
+	storeA, storeB := [16]byte{0: 'a'}, [16]byte{0: 'b'}
+	// IDs whose bytes sort differently from their creation order.
+	onA := []entity.NamespaceID{namespace(3), namespace(1), {0: 0xff, 15: 2}}
+	onB := []entity.NamespaceID{namespace(2)}
+	empty := namespace(4) // on storeA, holding no record
+
+	for _, c := range []struct {
+		ids   []entity.NamespaceID
+		store [16]byte
+	}{{onA, storeA}, {onB, storeB}, {[]entity.NamespaceID{empty}, storeA}} {
+		for _, ns := range c.ids {
+			if err := s.AddNamespace(ctx, ns, c.store); err != nil {
+				return fmt.Errorf("creating namespace %v on store %x: %w", ns, c.store, err)
+			}
+		}
+	}
+
+	v := s.View()
+
+	own := func(ns entity.NamespaceID) record { return record{"data-key", ns.String(), "current", ns[:]} }
+
+	for _, ns := range append(slices.Clone(onA), onB...) {
+		if err := v.Update(ctx, ns, writing(own(ns))); err != nil {
+			return fmt.Errorf("Update of namespace %v: %w", ns, err)
+		}
+	}
+
+	sortIDs := func(ids []entity.NamespaceID) []entity.NamespaceID {
+		ids = slices.Clone(ids)
+		slices.SortFunc(ids, func(a, b entity.NamespaceID) int { return bytes.Compare(a[:], b[:]) })
+		return ids
+	}
+
+	for _, c := range []struct {
+		store [16]byte
+		want  []entity.NamespaceID
+	}{{storeB, onB}, {storeA, sortIDs(append(slices.Clone(onA), empty))}, {[16]byte{0: 'c'}, nil}} {
+		got, err := v.Namespaces(ctx, c.store)
+		if err != nil {
+			return fmt.Errorf("Namespaces(%x): %w", c.store, err)
+		}
+
+		if !slices.Equal(sortIDs(got), c.want) {
+			return fmt.Errorf("Namespaces(%x) = %v, want %v in any order", c.store, got, c.want)
+		}
+
+		for _, ns := range got {
+			rows, err := v.Load(ctx, ns)
+			if err != nil {
+				return fmt.Errorf("Load(namespace %v): %w", ns, err)
+			}
+
+			var want []record
+			if ns != empty {
+				want = []record{own(ns)}
+			}
+
+			if !sameRows(rows, want) {
+				return fmt.Errorf("Load(namespace %v) listed on store %x = %q, want %q", ns, c.store, sorted(rows), want)
+			}
 		}
 	}
 

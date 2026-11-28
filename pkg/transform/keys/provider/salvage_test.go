@@ -123,7 +123,7 @@ type updates struct {
 	nss []entity.NamespaceID
 }
 
-func (u *updates) Update(ctx context.Context, ns entity.NamespaceID, fn func([]Row) ([]Row, error)) error {
+func (u *updates) Update(ctx context.Context, ns entity.NamespaceID, fn func(uint64, []Row) (uint64, []Row, error)) error {
 	u.nss = append(u.nss, ns)
 	return u.KeyRecords.Update(ctx, ns, fn)
 }

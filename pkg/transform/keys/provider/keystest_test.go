@@ -50,7 +50,7 @@ func (h harness) write(ns entity.NamespaceID, fn func(rows []Row) []Row) {
 	h.t.Helper()
 
 	ctx := context.Background()
-	if err := h.records.Update(ctx, ns, func(rows []Row) ([]Row, error) { return fn(rows), nil }); err != nil {
+	if err := h.records.Update(ctx, ns, func(seq uint64, rows []Row) (uint64, []Row, error) { return seq, fn(rows), nil }); err != nil {
 		h.t.Fatalf("Update of namespace %s: %v", ns, err)
 	}
 	h.reload(ctx)

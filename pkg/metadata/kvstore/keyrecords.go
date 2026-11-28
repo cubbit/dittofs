@@ -12,8 +12,9 @@ import (
 )
 
 // KeyRecords is the key provider's view of each namespace's key records,
-// NS‖ns‖key‖kind‖keyID, and of each master key's wrap count,
-// MKW‖masterKeyID (RFC 16 §4.2). A record's kind and state travel as RFC 5
+// NS‖ns‖key‖kind‖keyID, its key lock, NS‖ns‖keyseq‖target, each master
+// key's wrap count, MKW‖masterKeyID, and the store index NSR‖store‖ns
+// (RFC 16 §4.2). A record's kind and state travel as RFC 5
 // Appendix B.2 names them and are stored as bytes; the rest of the record is
 // the provider's, stored as given. The state is a byte of its own so a block
 // commit can read it without the provider's codec.
@@ -65,6 +66,12 @@ func nameOf(names map[string]byte, b byte) (string, bool) {
 
 func keyRecordPrefix(ns entity.NamespaceID) []byte {
 	return append(keys.ID([]byte{keys.KindNS}, ns[:]), keys.NSKey)
+}
+
+// keySeqKey is NS‖ns‖keyseq‖target with the empty target that names ns's
+// own keys object.
+func keySeqKey(ns entity.NamespaceID) []byte {
+	return keys.String(append(keys.ID([]byte{keys.KindNS}, ns[:]), keys.NSKeyseq), nil)
 }
 
 func wrapCountKey(masterKeyID []byte) []byte {
@@ -150,28 +157,37 @@ func (k KeyRecords) Load(ctx context.Context, ns entity.NamespaceID) ([]keyRow, 
 	return rows, err
 }
 
-// Update runs fn on ns's key records, in no order a caller may rely on, in one transaction that conflicts with
-// any other write of them, and writes the rows fn returns, each replacing the
-// record of its kind and ID. It deletes nothing. fn may run more than once
-// and must have no other effect. A row whose kind or state RFC 5 does not
-// name fails the call, and nothing is written.
+// Update runs fn on ns's key records, in no order a caller may rely on, and
+// on the last sequence recorded for ns's own keys object, NS‖ns‖keyseq‖ with
+// an empty target (0 if none was), in one transaction that conflicts with any
+// other write of either. It writes the rows fn returns, each replacing the
+// record of its kind and ID, and the sequence fn returns when it differs from
+// the one fn saw. It deletes nothing. fn may run more than once and must have
+// no other effect. A row whose kind or state RFC 5 does not name fails the
+// call, and nothing is written.
 //
-// decision: the conflict comes from a guard over all of ns's key records,
-// taken before they are scanned, since a scan is never tracked: without it
-// two creators of one namespace's keys each see none, write different IDs,
-// and both commit. A guard orders only the writers that take it, so every
-// write of NS‖ns‖key‖… goes through Update; a writer that bypasses it
-// withdraws the guarantee.
-func (k KeyRecords) Update(ctx context.Context, ns entity.NamespaceID, fn func(rows []keyRow) ([]keyRow, error)) error {
+// decision: the conflict over the records comes from a guard over all of
+// ns's key records, taken before they are scanned, since a scan is never
+// tracked: without it two creators of one namespace's keys each see none,
+// write different IDs, and both commit. A guard orders only the writers that
+// take it, so every write of NS‖ns‖key‖… goes through Update; a writer that
+// bypasses it withdraws the guarantee. The sequence is the key lock: read
+// with a tracked Get, so two writers that raise it from one value conflict.
+func (k KeyRecords) Update(ctx context.Context, ns entity.NamespaceID, fn func(seq uint64, rows []keyRow) (uint64, []keyRow, error)) error {
 	return k.s.kv.Update(ctx, func(tx kv.Txn) error {
 		if err := tx.GuardRange(keyRecordPrefix(ns)); err != nil {
+			return err
+		}
+		seqKey := keySeqKey(ns)
+		seq, err := counterIn(tx, seqKey)
+		if err != nil {
 			return err
 		}
 		rows, err := loadKeyRecords(tx, ns)
 		if err != nil {
 			return err
 		}
-		out, err := fn(rows)
+		next, out, err := fn(seq, rows)
 		if err != nil {
 			return err
 		}
@@ -184,8 +200,35 @@ func (k KeyRecords) Update(ctx context.Context, ns entity.NamespaceID, fn func(r
 				return err
 			}
 		}
+		if next == seq {
+			return nil
+		}
+		return tx.Set(seqKey, encodeCounter(next))
+	})
+}
+
+// Namespaces returns every namespace whose namespace record names the remote
+// store, from the store index NSR‖store‖ns (RFC 16 §4.2).
+//
+// decision: key records under no namespace record are not listed; the
+// provider's KeyRecords.Namespaces says why that loses nothing.
+func (k KeyRecords) Namespaces(ctx context.Context, store [16]byte) ([]entity.NamespaceID, error) {
+	prefix := keys.ID([]byte{keys.KindNSR}, store[:])
+	var out []entity.NamespaceID
+	err := k.s.kv.View(ctx, func(r kv.Reader) error {
+		out = out[:0]
+		for e, err := range r.Scan(prefix, nil) {
+			if err != nil {
+				return err
+			}
+			if len(e.Key) != len(prefix)+keys.IDLen {
+				return fmt.Errorf("%w: store index key %s", keys.ErrMalformed, keys.Describe(e.Key))
+			}
+			out = append(out, entity.NamespaceID(e.Key[len(prefix):]))
+		}
 		return nil
 	})
+	return out, err
 }
 
 // RaiseWrapCount adds n to masterKeyID's wrap count if the sum stays at most

@@ -543,7 +543,7 @@ type lostAnswer struct {
 	lose bool
 }
 
-func (l *lostAnswer) Update(ctx context.Context, ns entity.NamespaceID, fn func([]Row) ([]Row, error)) error {
+func (l *lostAnswer) Update(ctx context.Context, ns entity.NamespaceID, fn func(uint64, []Row) (uint64, []Row, error)) error {
 	if err := l.KeyRecords.Update(ctx, ns, fn); err != nil || !l.lose {
 		return err
 	}
