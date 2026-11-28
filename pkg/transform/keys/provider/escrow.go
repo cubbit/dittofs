@@ -39,8 +39,11 @@ func (p *Provider) setConfig(cfg Config) {
 // survives a restart; RFC 16 has no row for it. Withdraw this split if RFC 16
 // gains a row the provider writes itself.
 func (p *Provider) VerifyEscrow(ctx context.Context, copy []byte) (Escrow, error) {
+	if p.kf == nil {
+		return Escrow{}, errors.New("provider: a key-service master key lives off the host and has no key file to escrow")
+	}
 	notEscrowed := func(why error) error {
-		return fmt.Errorf("%w: master key %x: %w", keys.ErrNotEscrowed, p.masterKeyID, why)
+		return fmt.Errorf("%w: master key %x: %w", keys.ErrNotEscrowed, p.kf.masterKeyID, why)
 	}
 
 	id, key, err := keyfile.Open(copy, p.cfg.Load().Passphrase)
@@ -75,30 +78,34 @@ func (p *Provider) VerifyEscrow(ctx context.Context, copy []byte) (Escrow, error
 
 	// The unwrap refuses a wrap under another master key ID, and its AEAD
 	// other key bytes; the fingerprint is RFC 5's own check of the bytes.
-	got, err := copied.unwrap(stored[0], aad)
+	got, err := copied.unwrap(ctx, stored[0], aad)
 	if err != nil {
 		return Escrow{}, notEscrowed(fmt.Errorf("the copy does not unwrap the test record: %w", err))
 	}
 	clear(got)
-	if copied.masterKeyFP != p.masterKeyFP {
+	if copied.kf.masterKeyFP != p.kf.masterKeyFP {
 		return Escrow{}, notEscrowed(errors.New("the copy's fingerprint is not the master key's"))
 	}
 
-	return Escrow{MasterKeyID: id, Fingerprint: copied.masterKeyFP}, nil
+	return Escrow{MasterKeyID: id, Fingerprint: copied.kf.masterKeyFP}, nil
 }
 
 // checkEscrow is the escrow gate: nil when a pass naming the master key's ID
 // and fingerprint is in the Config last given to New or Reconfigure, and
-// ErrNotEscrowed naming the key otherwise.
+// ErrNotEscrowed naming the key otherwise. A key-service master key lives off
+// the host and passes it (RFC 5 Appendix B.2).
 func (p *Provider) checkEscrow() error {
+	if p.kf == nil {
+		return nil
+	}
 	// ValidateConfig admits only a UUID's canonical text, so text compares.
-	id := uuid.UUID(p.masterKeyID).String()
+	id := uuid.UUID(p.kf.masterKeyID).String()
 	for _, e := range p.cfg.Load().Escrowed {
-		if e.MasterKeyID == id && e.Fingerprint == p.masterKeyFP {
+		if e.MasterKeyID == id && e.Fingerprint == p.kf.masterKeyFP {
 			return nil
 		}
 	}
-	return fmt.Errorf("%w: master key %x has no passed escrow check", keys.ErrNotEscrowed, p.masterKeyID)
+	return fmt.Errorf("%w: master key %x has no passed escrow check", keys.ErrNotEscrowed, p.kf.masterKeyID)
 }
 
 // Reconfigure takes a changed configuration without a restart: it checks
@@ -115,16 +122,29 @@ func (p *Provider) Reconfigure(_ context.Context, cfg Config) error {
 	if err := ValidateConfig(cfg); err != nil {
 		return err
 	}
+	if ks, ok := p.custody.(*keyService); ok {
+		if cfg.KeyFile != "" {
+			return errors.New("provider: a key-service master key cannot move to a key file; a rotation changes master key")
+		}
+		if err := ks.reconfigure(cfg.KMIP); err != nil {
+			return err
+		}
+		p.setConfig(cfg)
+		return nil
+	}
+	if cfg.KMIP.Endpoint != "" {
+		return errors.New("provider: a key-file master key cannot move to a key service; a rotation changes master key")
+	}
 	_, masterKeyID, key, err := openKeyFile(cfg)
 	if err != nil {
 		return err
 	}
 	defer clear(key)
 	switch {
-	case masterKeyID != p.masterKeyID:
-		return fmt.Errorf("provider: key file %s holds master key %x, not %x, the one the key records are wrapped under; a rotation changes master key", cfg.KeyFile, masterKeyID, p.masterKeyID)
-	case fingerprint(key) != p.masterKeyFP:
-		return fmt.Errorf("provider: key file %s holds other bytes under master key %x, whose fingerprint they do not match; a rotation changes master key", cfg.KeyFile, p.masterKeyID)
+	case masterKeyID != p.kf.masterKeyID:
+		return fmt.Errorf("provider: key file %s holds master key %x, not %x, the one the key records are wrapped under; a rotation changes master key", cfg.KeyFile, masterKeyID, p.kf.masterKeyID)
+	case fingerprint(key) != p.kf.masterKeyFP:
+		return fmt.Errorf("provider: key file %s holds other bytes under master key %x, whose fingerprint they do not match; a rotation changes master key", cfg.KeyFile, p.kf.masterKeyID)
 	}
 
 	p.setConfig(cfg)

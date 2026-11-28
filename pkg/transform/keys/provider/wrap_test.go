@@ -133,7 +133,7 @@ func TestStoredWrapVector(t *testing.T) {
 		t.Errorf("wrap left %d of the vector's 12 nonce bytes unread, want 0", rnd.Len())
 	}
 
-	got, err := p.unwrap(mustHex(t, wantStored), mustHex(t, wantAAD))
+	got, err := p.unwrap(context.Background(), mustHex(t, wantStored), mustHex(t, wantAAD))
 	if err != nil {
 		t.Fatalf("unwrap of the vector's stored wrap: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestWrapBindsNamespaceKindAndID(t *testing.T) {
 	}
 	stored := wraps[0]
 
-	got, err := p.unwrap(stored, aad)
+	got, err := p.unwrap(context.Background(), stored, aad)
 	if err != nil || !bytes.Equal(got, key) {
 		t.Fatalf("unwrap under its own AAD = %x, %v; want the key", got, err)
 	}
@@ -181,26 +181,26 @@ func TestWrapBindsNamespaceKindAndID(t *testing.T) {
 		{"another key ID", wrapAAD(ns[:], keys.KindDataKey, "id-2")},
 		{"no namespace", wrapAAD(nil, keys.KindDataKey, "id-1")},
 	} {
-		if got, err := p.unwrap(stored, tc.aad); err == nil || errors.Is(err, errStoredWrap) {
+		if got, err := p.unwrap(context.Background(), stored, tc.aad); err == nil || errors.Is(err, errStoredWrap) {
 			t.Errorf("unwrap under %s's AAD = %x, %v; want the AEAD's refusal", tc.name, got, err)
 		}
 	}
 
 	relabelled := bytes.Clone(stored)
 	relabelled[0] = kindKeyService
-	if got, err := p.unwrap(relabelled, aad); err == nil {
+	if got, err := p.unwrap(context.Background(), relabelled, aad); err == nil {
 		t.Errorf("unwrap of the wrap relabelled a key service's = %x, nil; want an error", got)
 	}
 
 	elsewhere, _, _ := newProvider(t, rand.Reader)
-	if got, err := elsewhere.unwrap(stored, aad); err == nil {
+	if got, err := elsewhere.unwrap(context.Background(), stored, aad); err == nil {
 		t.Errorf("unwrap under another key file's master key = %x, nil; want an error", got)
 	}
 
 	for i := range stored {
 		flipped := bytes.Clone(stored)
 		flipped[i] ^= 0x01
-		if got, err := p.unwrap(flipped, aad); err == nil {
+		if got, err := p.unwrap(context.Background(), flipped, aad); err == nil {
 			t.Errorf("unwrap with byte %d flipped = %x, nil; want an error", i, got)
 		}
 	}
@@ -247,7 +247,7 @@ func TestWrapCountStopsAtTwoToTheThirtyTwo(t *testing.T) {
 	p, records, _ := newProvider(t, rnd)
 	ctx := context.Background()
 
-	if ok, err := records.RaiseWrapCount(ctx, p.masterKeyID[:], 1<<32-2, 1<<32); !ok || err != nil {
+	if ok, err := records.RaiseWrapCount(ctx, p.kf.masterKeyID[:], 1<<32-2, 1<<32); !ok || err != nil {
 		t.Fatalf("raise the count to 2³² − 2 = %v, %v; want true, nil", ok, err)
 	}
 
@@ -276,7 +276,7 @@ func TestWrapCountStopsAtTwoToTheThirtyTwo(t *testing.T) {
 	if !errors.Is(err, keys.ErrWrapLimit) {
 		t.Fatalf("the wrap past 2³² = %v, want keys.ErrWrapLimit", err)
 	}
-	if want := fmt.Sprintf("%x", p.masterKeyID); !strings.Contains(err.Error(), want) {
+	if want := fmt.Sprintf("%x", p.kf.masterKeyID); !strings.Contains(err.Error(), want) {
 		t.Errorf("ErrWrapLimit %q does not name master key %s", err, want)
 	}
 	if rnd.Len() != before {
@@ -385,7 +385,7 @@ func TestStoredWrapRefusals(t *testing.T) {
 	}
 	for _, n := range []int{0, nonceLen - 1, nonceLen + tagLen - 1} {
 		stored := storedWrap{kind: kindKeyFile, masterKeyID: id, wrap: make([]byte, n)}.encode()
-		if got, err := p.unwrap(stored, nil); !errors.Is(err, errStoredWrap) {
+		if got, err := p.unwrap(context.Background(), stored, nil); !errors.Is(err, errStoredWrap) {
 			t.Errorf("unwrap of a %d-byte key-file wrap = %x, %v; want errStoredWrap", n, got, err)
 		}
 	}
