@@ -128,15 +128,6 @@ func TestProviderSuite(t *testing.T) {
 	keystest.Run(t, newHarness)
 }
 
-// matIDs is the namespace, kind and ID of each of ids, as Status names them.
-func matIDs(ids ...keys.MaterialID) []keys.MaterialID {
-	out := make([]keys.MaterialID, 0, len(ids))
-	for _, id := range ids {
-		out = append(out, keys.MaterialID{Namespace: id.Namespace, Kind: id.Kind, ID: id.ID})
-	}
-	return out
-}
-
 // A Get of an ID never given puts it in Status().Unknown until it is given
 // and read; a Current of a kind never given, even with every Load failing,
 // reports nothing. An unknown ID never reported, one that never leaves, or a
@@ -157,7 +148,7 @@ func TestStatusUnknown(t *testing.T) {
 		t.Fatalf("Current of a kind never given = %v, want ErrUnknownMaterial alone", err)
 	}
 	if st := f.p.Status(); len(st.Unknown) != 0 || len(st.Unavailable) != 0 {
-		t.Errorf("Status after a Current of a kind never given = %+v, want nothing unknown or unavailable", st)
+		t.Errorf("Status after a Current of a kind never given, Loads failing = %+v, want nothing unknown or unavailable (a Current that reloads on a kind miss sees the outage)", st)
 	}
 	f.records.fail.Store(false)
 
@@ -165,8 +156,8 @@ func TestStatusUnknown(t *testing.T) {
 	if _, err := f.p.Get(ctx, late); !isOnly(err, keys.ErrUnknownMaterial) {
 		t.Fatalf("Get of an ID never given = %v, want ErrUnknownMaterial alone", err)
 	}
-	if got := f.p.Status().Unknown; !slices.Equal(got, matIDs(late)) {
-		t.Errorf("Status().Unknown after a Get of an ID never given = %+v, want %+v", got, matIDs(late))
+	if got := f.p.Status().Unknown; !slices.Equal(got, []keys.MaterialID{late}) {
+		t.Errorf("Status().Unknown after a Get of an ID never given = %+v, want %+v", got, []keys.MaterialID{late})
 	}
 
 	put(t, f.records, ns, wrapped(t, f.p, ns, keys.KindDataKey, "late", "retired", key32(2)))
@@ -195,7 +186,7 @@ func TestStatusUnavailable(t *testing.T) {
 	bad := wrapped(t, f.p, ns, keys.KindDataKey, "k", stateCurrent, key32(2))
 	r, err := decodeKeyRecord(bad.Record)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("decode the replacing record: %v", err)
 	}
 	r.fingerprint = fingerprint(key32(1))
 	bad.Record = r.encode()
@@ -204,8 +195,8 @@ func TestStatusUnavailable(t *testing.T) {
 	if _, err := f.p.Get(ctx, id); !isOnly(err, keys.ErrMaterialUnavailable) {
 		t.Fatalf("Get of a replaced key = %v, want ErrMaterialUnavailable alone", err)
 	}
-	if got := f.p.Status().Unavailable; !slices.Equal(got, matIDs(id)) {
-		t.Errorf("Status().Unavailable after a replaced key was refused = %+v, want %+v, a gauge of 1", got, matIDs(id))
+	if got := f.p.Status().Unavailable; !slices.Equal(got, []keys.MaterialID{id}) {
+		t.Errorf("Status().Unavailable after a replaced key was refused = %+v, want %+v, a gauge of 1", got, []keys.MaterialID{id})
 	}
 
 	put(t, f.records, ns, good)
@@ -222,8 +213,59 @@ func TestStatusUnavailable(t *testing.T) {
 	if _, err := f.p.Get(ctx, other); !isOnly(err, keys.ErrMaterialUnavailable) {
 		t.Fatalf("Get during a Load outage = %v, want ErrMaterialUnavailable alone", err)
 	}
-	if got := f.p.Status().Unavailable; !slices.Equal(got, matIDs(other)) {
-		t.Errorf("Status().Unavailable after a Get during a Load outage = %+v, want %+v", got, matIDs(other))
+	if got := f.p.Status().Unavailable; !slices.Equal(got, []keys.MaterialID{other}) {
+		t.Errorf("Status().Unavailable after a Get during a Load outage = %+v, want %+v", got, []keys.MaterialID{other})
+	}
+}
+
+// Two current data keys in one namespace, which Current refuses, both count
+// as unavailable, and the namespace has no current key age. A refusal
+// Current makes before any record is served, left unreported, fails here.
+func TestStatusTwoCurrentRecords(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	f := newReadFixture(t)
+	ctx := context.Background()
+	ns := entity.NewNamespaceID()
+	put(t, f.records, ns,
+		wrapped(t, f.p, ns, keys.KindDataKey, "a", stateCurrent, key32(1)),
+		wrapped(t, f.p, ns, keys.KindDataKey, "b", stateCurrent, key32(2)))
+
+	if _, err := f.p.Current(ctx, ns, keys.KindDataKey); !isOnly(err, keys.ErrMaterialUnavailable) {
+		t.Fatalf("Current over two current data keys = %v, want ErrMaterialUnavailable alone", err)
+	}
+	st := f.p.Status()
+	want := []keys.MaterialID{{Namespace: ns, Kind: keys.KindDataKey, ID: "a"}, {Namespace: ns, Kind: keys.KindDataKey, ID: "b"}}
+	if !slices.Equal(st.Unavailable, want) {
+		t.Errorf("Status().Unavailable over two current data keys = %+v, want %+v", st.Unavailable, want)
+	}
+	if since, ok := st.CurrentSince[ns]; ok {
+		t.Errorf("Status().CurrentSince over two current data keys = %v, want no entry", since)
+	}
+}
+
+// An ID refused during a Load outage leaves Status().Unavailable once its
+// record is found destroyed, since destroyed material is lost, not
+// unavailable. A miss that only a successful read clears fails here.
+func TestStatusMissFoundDestroyed(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	f := newReadFixture(t)
+	ctx := context.Background()
+	ns := entity.NewNamespaceID()
+	id := keys.MaterialID{Namespace: ns, Kind: keys.KindDataKey, ID: "k"}
+	put(t, f.records, ns, Row{Kind: id.Kind, ID: id.ID, State: stateDestroyed, Record: f.p.record(fingerprint(key32(1)), nil, nil)})
+
+	f.records.fail.Store(true)
+	if _, err := f.p.Get(ctx, id); !isOnly(err, keys.ErrMaterialUnavailable) {
+		t.Fatalf("Get during a Load outage = %v, want ErrMaterialUnavailable alone", err)
+	}
+	f.records.fail.Store(false)
+	if _, err := f.p.Get(ctx, id); !isOnly(err, keys.ErrMaterialDestroyed) {
+		t.Fatalf("Get once the outage cleared = %v, want ErrMaterialDestroyed alone", err)
+	}
+	if got := f.p.Status().Unavailable; len(got) != 0 {
+		t.Errorf("Status().Unavailable once the ID was found destroyed = %+v, want empty", got)
 	}
 }
 
@@ -249,9 +291,11 @@ func TestStatusCurrentSince(t *testing.T) {
 	written := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 	p := at(written)
 	ns := entity.NewNamespaceID()
+	// The chunking key's record is newer, so a Status that took any current
+	// key's time, not the data key's, reads the wrong one.
 	put(t, records, ns,
 		wrapped(t, p, ns, keys.KindDataKey, "d", stateCurrent, key32(1)),
-		wrapped(t, p, ns, keys.KindChunkingKey, "c", stateCurrent, key32(2)))
+		wrapped(t, at(written.Add(time.Hour)), ns, keys.KindChunkingKey, "c", stateCurrent, key32(2)))
 
 	for _, tc := range []struct {
 		name string
@@ -336,10 +380,27 @@ func encodings(secret []byte) map[string]string {
 	}
 }
 
+// countedIDs passes every call through to the view beneath it and keeps the
+// master key IDs whose wrap counts were raised, the one value of the view a
+// test cannot read back.
+type countedIDs struct {
+	*faultyLoad
+	mu  sync.Mutex
+	ids [][]byte
+}
+
+func (c *countedIDs) RaiseWrapCount(ctx context.Context, masterKeyID []byte, n, limit uint64) (bool, error) {
+	c.mu.Lock()
+	c.ids = append(c.ids, bytes.Clone(masterKeyID))
+	c.mu.Unlock()
+	return c.faultyLoad.RaiseWrapCount(ctx, masterKeyID, n, limit)
+}
+
 // A planted data key, chunking key, master key and passphrase never reach a
-// log line, an error, a Status value or a stored record, raw, in hex or in
-// base64: the provider reports IDs and fingerprints only. Key material
-// formatted into a message, or a master key persisted, fails here.
+// log line, an error, a Status value or a stored record, wrap counts
+// included, raw, in hex or in base64: the provider reports IDs and
+// fingerprints only. Key material formatted into a message, or a master key
+// persisted, fails here.
 func TestPlantedKeyNeverLeaks(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -354,7 +415,7 @@ func TestPlantedKeyNeverLeaks(t *testing.T) {
 	dataKey, chunkingKey := plant(), plant()
 
 	var log bytes.Buffer
-	records := &faultyLoad{Records: keystest.NewRecords()}
+	records := &countedIDs{faultyLoad: &faultyLoad{Records: keystest.NewRecords()}}
 	deps := Deps{Records: records, Rand: rand.Reader, Logger: slog.New(slog.NewTextHandler(&log, &slog.HandlerOptions{Level: slog.LevelDebug}))}
 	ctx := context.Background()
 	p, err := New(ctx, Config{KeyFile: path, Passphrase: passphrase}, deps)
@@ -362,13 +423,26 @@ func TestPlantedKeyNeverLeaks(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
+	// Each step is named and must succeed or be refused as it says, so a
+	// refusal that stops happening leaves nothing unsearched unnoticed.
 	var errs []error
-	try := func(err error) {
+	step := func(name string, refusal bool, err error) {
+		t.Helper()
+		switch {
+		case refusal && err == nil:
+			t.Fatalf("%s: no error, want a refusal to search", name)
+		case !refusal && err != nil:
+			t.Fatalf("%s: %v", name, err)
+		}
 		if err != nil {
 			errs = append(errs, err)
 		}
 	}
-	get := func(id keys.MaterialID) { _, err := p.Get(ctx, id); try(err) }
+	get := func(name string, refusal bool, id keys.MaterialID) {
+		t.Helper()
+		_, err := p.Get(ctx, id)
+		step(name, refusal, err)
+	}
 
 	ns := entity.NewNamespaceID()
 	data := keys.MaterialID{Namespace: ns, Kind: keys.KindDataKey, ID: "d"}
@@ -376,63 +450,59 @@ func TestPlantedKeyNeverLeaks(t *testing.T) {
 	put(t, records, ns,
 		wrapped(t, p, ns, data.Kind, data.ID, stateCurrent, dataKey),
 		wrapped(t, p, ns, chunking.Kind, chunking.ID, stateCurrent, chunkingKey))
-	try(p.Open(ctx, ns))
-	get(data)
-	get(chunking)
+	step("Open", false, p.Open(ctx, ns))
+	get("Get of the data key", false, data)
+	get("Get of the chunking key", false, chunking)
 
 	// The chunking key's record replaced by the data key's wrap under its ID.
 	replaced := wrapped(t, p, ns, chunking.Kind, chunking.ID, stateCurrent, dataKey)
 	r, err := decodeKeyRecord(replaced.Record)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("decode the replacing record: %v", err)
 	}
 	r.fingerprint = fingerprint(chunkingKey)
 	replaced.Record = r.encode()
 	put(t, records, ns, replaced)
 	p.reload(ctx)
-	try(p.Open(ctx, ns))
-	get(chunking)
+	step("Open over the replaced chunking key", true, p.Open(ctx, ns))
+	get("Get of the replaced chunking key", true, chunking)
 	_, err = p.Current(ctx, ns, chunking.Kind)
-	try(err)
+	step("Current of the replaced chunking key", true, err)
 
-	// An unreadable record, an ID never given, a Load outage, a destroyed key.
 	other := entity.NewNamespaceID()
 	unreadable := wrapped(t, p, other, keys.KindDataKey, "u", stateCurrent, dataKey)
 	unreadable.Record = append([]byte{2}, unreadable.Record[1:]...)
 	put(t, records, other, unreadable)
-	get(keys.MaterialID{Namespace: other, Kind: keys.KindDataKey, ID: "u"})
-	get(keys.MaterialID{Namespace: ns, Kind: keys.KindDataKey, ID: "never"})
+	get("Get of an unreadable record", true, keys.MaterialID{Namespace: other, Kind: keys.KindDataKey, ID: "u"})
+	get("Get of an ID never given", true, keys.MaterialID{Namespace: ns, Kind: keys.KindDataKey, ID: "never"})
 	records.fail.Store(true)
-	get(keys.MaterialID{Namespace: entity.NewNamespaceID(), Kind: keys.KindDataKey, ID: "o"})
+	get("Get during a Load outage", true, keys.MaterialID{Namespace: entity.NewNamespaceID(), Kind: keys.KindDataKey, ID: "o"})
 	records.fail.Store(false)
-	try(p.update(ctx, ns, func([]Row) ([]Row, error) {
+	step("update marking the data key destroyed", false, p.update(ctx, ns, func([]Row) ([]Row, error) {
 		return []Row{{Kind: data.Kind, ID: data.ID, State: stateDestroyed, Record: p.record(fingerprint(dataKey), nil, nil)}}, nil
 	}))
-	get(data)
+	get("Get of the destroyed data key", true, data)
 
-	// The master key and passphrase refused, and an escrow copy refused.
 	_, err = New(ctx, Config{KeyFile: path, Passphrase: passphrase + "!"}, deps)
-	try(err)
-	_, err = New(ctx, Config{KeyFile: path, Passphrase: passphrase}, Deps{Records: records, Rand: rand.Reader, StorageKeys: []StorageKey{{ID: "storage", Fingerprint: fingerprint(master)}}})
-	try(err)
+	step("New with a wrong passphrase", true, err)
+	storage := deps
+	storage.StorageKeys = []StorageKey{{ID: "storage", Fingerprint: fingerprint(master)}}
+	_, err = New(ctx, Config{KeyFile: path, Passphrase: passphrase}, storage)
+	step("New over a storage key's bytes", true, err)
 	otherFile, _, _ := keyFile(t)
 	_, err = p.VerifyEscrow(ctx, readFile(t, otherFile))
-	try(err)
-	try(p.Reconfigure(ctx, Config{KeyFile: otherFile, Passphrase: passphrase}))
-	missing := filepath.Join(t.TempDir(), "absent.key")
-	try(p.Reconfigure(ctx, Config{KeyFile: missing, Passphrase: passphrase}))
+	step("VerifyEscrow of another key file", true, err)
+	step("Reconfigure to another key file", true, p.Reconfigure(ctx, Config{KeyFile: otherFile, Passphrase: passphrase}))
+	step("Reconfigure to an absent key file", true, p.Reconfigure(ctx, Config{KeyFile: filepath.Join(t.TempDir(), "absent.key"), Passphrase: passphrase}))
 
-	if len(errs) < 10 {
-		t.Fatalf("the rows above gave %d errors, want at least 10 to search:\n%v", len(errs), errs)
-	}
 	if !strings.Contains(log.String(), "level=ERROR") {
-		t.Fatalf("the rows above logged no Error line to search:\n%s", log.String())
+		t.Fatalf("the steps above logged no Error line to search:\n%s", log.String())
 	}
-
 	st := p.Status()
 	if len(st.Unavailable) == 0 || len(st.Unknown) == 0 {
 		t.Fatalf("Status = %+v, want unavailable and unknown material to search", st)
 	}
+
 	places := map[string]string{"the log": log.String(), "Status": fmt.Sprintf("%+v %#v", st, st)}
 	for i, err := range errs {
 		places[fmt.Sprintf("error %d", i)] = fmt.Sprintf("%v %+v %#v", err, err, err)
@@ -440,11 +510,17 @@ func TestPlantedKeyNeverLeaks(t *testing.T) {
 	for _, n := range []entity.NamespaceID{ns, other} {
 		rows, err := records.Load(ctx, n)
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("Load of namespace %s: %v", n, err)
 		}
 		for _, row := range rows {
 			places[fmt.Sprintf("the record of %s %q", row.Kind, row.ID)] = fmt.Sprintf("%s %#v", row.Record, row)
 		}
+	}
+	if len(records.ids) == 0 {
+		t.Fatal("no wrap count was raised, want its master key IDs to search")
+	}
+	for i, id := range records.ids {
+		places[fmt.Sprintf("wrap count %d's master key ID", i)] = string(id)
 	}
 
 	for secret, b := range map[string][]byte{"the data key": dataKey, "the chunking key": chunkingKey, "the master key": master, "the passphrase": []byte(passphrase)} {

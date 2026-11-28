@@ -7,9 +7,9 @@ import (
 )
 
 // reload drops every cached record and key, then opens again each namespace
-// the cache held, as a restart over the same records would. An Open refused
-// for its material is left for the caller's next read to see, as a namespace
-// that does not open would be.
+// the cache held, so the provider reads what another writer wrote. Calls and
+// Get's misses are kept, unlike across a restart. An Open refused for its
+// material is left for the caller's next read to see.
 func (p *Provider) reload(ctx context.Context) {
 	p.cache.mu.Lock()
 	held := make([]entity.NamespaceID, 0, len(p.cache.sets))

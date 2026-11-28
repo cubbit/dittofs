@@ -5,7 +5,6 @@ import (
 	"maps"
 	"slices"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -23,63 +22,35 @@ type Status struct {
 	CurrentSince map[entity.NamespaceID]time.Time // encryption_current_key_age_seconds
 }
 
-// matKey names one piece of material for the status maps.
-type matKey struct {
-	ns entity.NamespaceID
-	slot
-}
-
-// status holds the material reads refused, each until its next successful
-// read or until it is found destroyed.
+// misses holds the IDs Get refused before reaching a record: those its
+// namespace's records lacked, and those whose records could not be loaded.
+// Status drops each once its record is cached and served or destroyed. A
+// record refused once reached is not held here: its cache entry says so.
 //
-// ponytail: an ID asked for and never given stays in unknown until it is
-// given and read, so a caller asking for made-up IDs grows it without
-// bound. Cap it when Get can be reached by IDs no census listed.
-type status struct {
-	pending     atomic.Int64 // len(unavailable) + len(unknown), so a read with nothing to clear takes no lock
+// ponytail: an ID asked for and never given or never loadable stays until it
+// is, so a caller asking for made-up IDs, or for a namespace whose records
+// never load again, grows it without bound. Cap it when Get can be reached by
+// IDs no census listed.
+type misses struct {
 	mu          sync.Mutex
-	unavailable map[matKey]struct{}
-	unknown     map[matKey]struct{}
+	unknown     map[keys.MaterialID]struct{}
+	unavailable map[keys.MaterialID]struct{}
 }
 
-// refuse records k as unknown or as unavailable, whichever its latest
-// refused read found it, until its next successful read.
-func (s *status) refuse(k matKey, unknown bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// miss records id as unknown, or as unavailable when its records could not
+// be loaded, whichever the latest refused Get found.
+func (m *misses) miss(id keys.MaterialID, unknown bool) {
+	id.Fingerprint = [32]byte{}
 
-	if s.unknown == nil {
-		s.unknown, s.unavailable = make(map[matKey]struct{}), make(map[matKey]struct{})
-	}
-	in, out := s.unavailable, s.unknown
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	delete(m.unknown, id)
+	delete(m.unavailable, id)
 	if unknown {
-		in, out = out, in
-	}
-	if _, ok := out[k]; ok {
-		delete(out, k)
-		s.pending.Add(-1)
-	}
-	if _, ok := in[k]; !ok {
-		in[k] = struct{}{}
-		s.pending.Add(1)
-	}
-}
-
-// settled clears k after a read that served it, or found it destroyed,
-// which no condition reports as unavailable.
-func (s *status) settled(k matKey) {
-	if s.pending.Load() == 0 {
-		return
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	for _, m := range []map[matKey]struct{}{s.unavailable, s.unknown} {
-		if _, ok := m[k]; ok {
-			delete(m, k)
-			s.pending.Add(-1)
-		}
+		m.unknown[id] = struct{}{}
+	} else {
+		m.unavailable[id] = struct{}{}
 	}
 }
 
@@ -87,43 +58,69 @@ func (s *status) settled(k matKey) {
 // included, so a test can assert the provider was asked nothing.
 func (p *Provider) Calls() uint64 { return p.calls.Load() }
 
-// Status returns the material the provider last failed to serve and has not
-// served since, the IDs asked for and never given since, and the time each
-// loaded namespace's current data key became current, read from its record.
+// Status reads, from the cache, the records whose last serve failed and the
+// time each loaded namespace's current data key became current, and adds the
+// IDs Get missed that the cache has not served or found destroyed since.
 func (p *Provider) Status() Status {
 	st := Status{CurrentSince: make(map[entity.NamespaceID]time.Time)}
+	unavailable := make(map[keys.MaterialID]struct{})
 
-	p.status.mu.Lock()
-	for _, c := range []struct {
-		m   map[matKey]struct{}
-		out *[]keys.MaterialID
-	}{{p.status.unavailable, &st.Unavailable}, {p.status.unknown, &st.Unknown}} {
-		for _, k := range slices.SortedFunc(maps.Keys(c.m), compareMatKey) {
-			*c.out = append(*c.out, keys.MaterialID{Namespace: k.ns, Kind: k.kind, ID: k.id})
-		}
-	}
-	p.status.mu.Unlock()
-
+	p.misses.mu.Lock()
+	defer p.misses.mu.Unlock()
 	p.cache.mu.RLock()
 	defer p.cache.mu.RUnlock()
 
+	settled := func(id keys.MaterialID) bool {
+		e := p.cache.sets[id.Namespace][slot{id.Kind, id.ID}]
+		return e != nil && (e.key != nil || e.row.State == stateDestroyed)
+	}
+	maps.DeleteFunc(p.misses.unknown, func(id keys.MaterialID, _ struct{}) bool { return settled(id) })
+	maps.DeleteFunc(p.misses.unavailable, func(id keys.MaterialID, _ struct{}) bool { return settled(id) })
+	maps.Copy(unavailable, p.misses.unavailable)
+
 	for ns, set := range p.cache.sets {
+		current := make(map[string][]keys.MaterialID)
+		var since int64
 		for s, e := range set {
-			if s.kind != keys.KindDataKey || e.row.State != stateCurrent {
+			id := keys.MaterialID{Namespace: ns, Kind: s.kind, ID: s.id}
+			if e.failing {
+				unavailable[id] = struct{}{}
+			}
+			if e.row.State != stateCurrent {
 				continue
 			}
-			// A record that does not decode is reported unavailable at its
-			// first read; it has no start time to give.
-			if rec, err := decodeKeyRecord(e.row.Record); err == nil {
-				st.CurrentSince[ns] = time.Unix(0, rec.since)
+			current[s.kind] = append(current[s.kind], id)
+			// A record that does not decode has no start time to give.
+			if s.kind != keys.KindDataKey {
+				continue
+			}
+			if rec, err := decodeKeyRecord(e.row.Record); err == nil && rec.since > since {
+				since = rec.since
+				st.CurrentSince[ns] = time.Unix(0, since)
+			}
+		}
+		// Current refuses a kind with two current records, so both are
+		// unavailable, and the kind's data key has no one start time.
+		for kind, ids := range current {
+			if len(ids) < 2 {
+				continue
+			}
+			for _, id := range ids {
+				unavailable[id] = struct{}{}
+			}
+			if kind == keys.KindDataKey {
+				delete(st.CurrentSince, ns)
 			}
 		}
 	}
+
+	st.Unavailable = slices.SortedFunc(maps.Keys(unavailable), compareMaterial)
+	st.Unknown = slices.SortedFunc(maps.Keys(p.misses.unknown), compareMaterial)
 	return st
 }
 
-// compareMatKey orders material by namespace, kind and ID, so Status lists
+// compareMaterial orders material by namespace, kind and ID, so Status lists
 // it the same way each time.
-func compareMatKey(a, b matKey) int {
-	return cmp.Or(slices.Compare(a.ns[:], b.ns[:]), cmp.Compare(a.kind, b.kind), cmp.Compare(a.id, b.id))
+func compareMaterial(a, b keys.MaterialID) int {
+	return cmp.Or(slices.Compare(a.Namespace[:], b.Namespace[:]), cmp.Compare(a.Kind, b.Kind), cmp.Compare(a.ID, b.ID))
 }
