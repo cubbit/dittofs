@@ -2,9 +2,9 @@ package integration
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"math/bits"
 	"math/rand/v2"
 	"slices"
@@ -20,15 +20,24 @@ import (
 // of sizes, counts and bytes: none takes a duration, so speed can never decide
 // the default (RFC 2 §9.1).
 
-// The workloads the selection decides on; every other workload is reported and
-// decides nothing.
+// The workloads of the sweep. The selection decides on the 256 pages and the
+// sustained overwrites alone; the other three are reported and decide nothing.
 const (
+	workloadRelease   = "next release"
 	workloadPages     = "256 pages"
+	workloadInserts   = "64 inserts"
+	workloadAppend    = "streaming append"
 	workloadSustained = "sustained overwrites"
 )
 
-// defaultTarget is the proposed default a candidate has to beat (RFC 2 §3.2).
-const defaultTarget = 256 << 10
+// proposedTarget is the proposal a candidate has to beat (RFC 2 §3.2). It is
+// part of the rule, fixed before the run, and never read from the settings
+// section, whose default the run's selection sets.
+const proposedTarget = 256 << 10
+
+// candidates are the Targets the sweep measures: the four rows of RFC 2
+// Appendix C's whole-file baseline.
+var candidates = []int64{64 << 10, proposedTarget, 1 << 20, 4 << 20}
 
 // histogramFloor is the lower edge of the histogram's first power-of-two
 // bucket; one bucket below it holds the short chunks at stretch ends.
@@ -45,12 +54,13 @@ type chunkFigures struct {
 }
 
 // summarise takes the sizes of a file's live non-zero refs, the number of its
-// zero refs and its Target. Min and Max are Target/4 and 4 × Target (RFC 2
+// zero refs, each counted as a hole, and its Target. Min and Max are Target/4 and 4 × Target (RFC 2
 // §3.2). The ceiling allows a chunk per Min of live bytes, rounded up, one per
 // hole, and one for the file's last chunk, which may fall under Min (RFC 2
 // §3.2, "The ceiling under random overwrite"); it is an integer so a file at
 // the bound passes and one record more fails. A size of zero or past Max is
-// no chunk the carver cuts, and panics.
+// no chunk the carver cuts, and panics: a caller checks its sizes first if a
+// panic would cost it more than the one test.
 func summarise(sizes []int64, holes int, target int64) chunkFigures {
 	lo, hi := target/4, 4*target
 	f := chunkFigures{Records: len(sizes), Buckets: make([]int, bits.Len64(uint64(hi/histogramFloor)))}
@@ -91,8 +101,13 @@ type blockFigures struct {
 
 // summariseBlocks takes the carried bytes of each block phase 1 put, the
 // passes that put them and the block target; a block carrying less than the
-// target is short (RFC 2 §5.4).
+// target is short (RFC 2 §5.4). Blocks put by no pass are a contradiction,
+// and panic.
 func summariseBlocks(carried []int64, passes int, blockTarget int64) blockFigures {
+	if len(carried) > 0 && passes <= 0 {
+		panic(fmt.Sprintf("summariseBlocks: %d blocks put by %d passes", len(carried), passes))
+	}
+
 	f := blockFigures{Blocks: len(carried), Passes: passes}
 	for _, c := range carried {
 		if c < blockTarget {
@@ -101,7 +116,7 @@ func summariseBlocks(carried []int64, passes int, blockTarget int64) blockFigure
 	}
 
 	if passes > 0 {
-		f.PerPass = float64(len(carried)) / float64(passes)
+		f.PerPass = float64(f.Blocks) / float64(passes)
 	}
 
 	return f
@@ -129,7 +144,7 @@ func restoredWholeFile(before, after io.Reader, target int) (int64, error) {
 		return 0, err
 	}
 
-	buf := make([]byte, 2*s.Max())
+	buf := make([]byte, s.Max())
 
 	held := map[entity.ChunkHash]struct{}{}
 	if _, err := carve.Cut(before, 0, s, buf, true, func(c carver.Chunk, _ []byte) error {
@@ -155,7 +170,9 @@ func restoredWholeFile(before, after io.Reader, target int) (int64, error) {
 }
 
 // row is one candidate's figures on one workload. For the sustained overwrites
-// Restored and Twin are summed over every round.
+// Restored and Twin are summed over every round, and Chunks is the round whose
+// records stand furthest above, or least below, its ceiling, so the ceiling
+// is checked on the round that binds.
 type row struct {
 	Workload                          string
 	Target, Written, Stored, Restored int64 // Restored: the real path's re-stored bytes
@@ -166,64 +183,68 @@ type row struct {
 
 // selectDefault applies the selection rule of RFC 2 §11 to a report's rows,
 // deciding on the 256 pages and the sustained overwrites alone; it takes no
-// time. On each deciding workload a candidate's baseline ratio is its twin's
-// re-stored bytes over 256 KiB's, and its real ratio its real re-stored bytes
-// over 256 KiB's. A candidate qualifies if, on both, its real ratio is below
-// 1 and below its baseline ratio, and none of its rows passes its chunk
-// ceiling. Of those that qualify, the larger total relative margin,
-// Σ (baseline − real) / baseline, wins, then the smaller Target; with none,
-// 256 KiB stays. It panics on a report with no 256 KiB row for a deciding
-// workload, or one whose 256 KiB re-stored bytes are zero, since no ratio can
-// be taken over it.
+// time. On each deciding workload a candidate's real ratio is its real
+// re-stored bytes over 256 KiB's, and its baseline ratio its twin's over 256
+// KiB's twin's. A candidate qualifies if, on both, its real ratio is below 1
+// and below its baseline ratio and its chunk records stay at or under their
+// ceiling. Of those that qualify, the larger Σ (baseline − real) / baseline
+// wins, then the smaller Target; with none, 256 KiB stays. The ratios are
+// exact rationals, so a tie is a tie and no rounding picks the winner.
+//
+// It panics on a report that is not one row for each candidate on each
+// deciding workload, on a repeated row, and on 256 KiB rows with no re-stored
+// bytes, over which no ratio can be taken: a half-run report decides nothing.
 func selectDefault(rows []row) int64 {
 	type key struct {
 		workload string
 		target   int64
 	}
 
-	by := map[key]row{}
-	var targets []int64
-	for _, r := range rows {
-		if !slices.Contains(targets, r.Target) {
-			targets = append(targets, r.Target)
-		}
-		by[key{r.Workload, r.Target}] = r
-	}
-
 	deciding := []string{workloadPages, workloadSustained}
+
+	by := map[key]row{}
+	for _, r := range rows {
+		k := key{r.Workload, r.Target}
+		if _, dup := by[k]; dup {
+			panic(fmt.Sprintf("selectDefault: two rows for %q at Target %d", r.Workload, r.Target))
+		}
+		by[k] = r
+	}
+
 	for _, w := range deciding {
-		b, ok := by[key{w, defaultTarget}]
-		if !ok || b.Restored <= 0 || b.Twin <= 0 {
-			panic(fmt.Sprintf("selectDefault: no 256 KiB row with re-stored bytes for %q", w))
+		for _, t := range candidates {
+			if _, ok := by[key{w, t}]; !ok {
+				panic(fmt.Sprintf("selectDefault: no row for %q at Target %d", w, t))
+			}
+		}
+		if b := by[key{w, proposedTarget}]; b.Restored <= 0 || b.Twin <= 0 {
+			panic(fmt.Sprintf("selectDefault: 256 KiB re-stores %d bytes on %q, its twin %d", b.Restored, w, b.Twin))
 		}
 	}
 
-	best, bestMargin := int64(defaultTarget), 0.0
-	for _, t := range targets {
-		if t == defaultTarget || !underCeiling(rows, t) {
+	ratio := func(a, b int64) *big.Rat { return big.NewRat(a, b) }
+	one := big.NewRat(1, 1)
+
+	best, bestMargin := int64(proposedTarget), new(big.Rat)
+	for _, t := range candidates {
+		if t == proposedTarget {
 			continue
 		}
 
-		margin, ok := 0.0, true
+		margin, ok := new(big.Rat), true
 		for _, w := range deciding {
-			r, found := by[key{w, t}]
-			if !found {
+			r, b := by[key{w, t}], by[key{w, proposedTarget}]
+			realRatio, baseline := ratio(r.Restored, b.Restored), ratio(r.Twin, b.Twin)
+			if realRatio.Cmp(one) >= 0 || realRatio.Cmp(baseline) >= 0 || r.Chunks.Records > r.Chunks.Ceiling {
 				ok = false
 				break
 			}
 
-			b := by[key{w, defaultTarget}]
-			realRatio := float64(r.Restored) / float64(b.Restored)
-			baseline := float64(r.Twin) / float64(b.Twin)
-			if realRatio >= 1 || realRatio >= baseline {
-				ok = false
-				break
-			}
-
-			margin += (baseline - realRatio) / baseline
+			gain := new(big.Rat).Sub(baseline, realRatio)
+			margin.Add(margin, gain.Quo(gain, baseline))
 		}
 
-		if ok && (best == defaultTarget || margin > bestMargin || margin == bestMargin && t < best) {
+		if c := margin.Cmp(bestMargin); ok && (c > 0 || c == 0 && t < best) {
 			best, bestMargin = t, margin
 		}
 	}
@@ -231,38 +252,23 @@ func selectDefault(rows []row) int64 {
 	return best
 }
 
-// underCeiling says whether every row of target keeps its chunk records at or
-// under its ceiling.
-func underCeiling(rows []row, target int64) bool {
-	for _, r := range rows {
-		if r.Target == target && r.Chunks.Records > r.Chunks.Ceiling {
-			return false
-		}
-	}
-
-	return true
-}
-
 // The cold-read fetch is Σs²/Σs and records per GiB count live bytes alone:
 // 16, 16 and 64 KiB give 4,608 KiB² over 96 KiB, 48 KiB, and 3 records in 96
-// KiB, 32,768 per GiB.
+// KiB, 32,768 per GiB. A file with no live chunk reports zeros, not NaN.
 func TestSummariseColdFetchAndPerGiB(t *testing.T) {
 	f := summarise([]int64{16 << 10, 16 << 10, 64 << 10}, 2, 64<<10)
+	if f.ColdFetch != 48<<10 || f.PerGiB != 32768 || f.Records != 3 {
+		t.Errorf("16, 16 and 64 KiB: got ColdFetch %v, PerGiB %v, Records %d, want %v, 32768, 3", f.ColdFetch, f.PerGiB, f.Records, 48<<10)
+	}
 
-	if f.ColdFetch != 48<<10 {
-		t.Errorf("ColdFetch: got %v, want %v", f.ColdFetch, 48<<10)
-	}
-	if f.PerGiB != 32768 {
-		t.Errorf("PerGiB: got %v, want 32768", f.PerGiB)
-	}
-	if f.Records != 3 {
-		t.Errorf("Records: got %d, want 3", f.Records)
+	if e := summarise(nil, 2, 64<<10); e.ColdFetch != 0 || e.PerGiB != 0 || e.Ceiling != 3 {
+		t.Errorf("no live chunk, two holes: got ColdFetch %v, PerGiB %v, Ceiling %d, want 0, 0, 3", e.ColdFetch, e.PerGiB, e.Ceiling)
 	}
 }
 
 // The ceiling is ⌈live / Min⌉ + holes + 1 at every candidate's Min.
 func TestSummariseCeilingAtEachCandidatesMin(t *testing.T) {
-	for _, target := range []int64{64 << 10, 256 << 10, 1 << 20, 4 << 20} {
+	for _, target := range candidates {
 		lo := target / 4
 
 		// Five chunks of Min and one byte: ⌈(5 Min + 1) / Min⌉ = 6, three
@@ -280,17 +286,19 @@ func TestSummariseCeilingAtEachCandidatesMin(t *testing.T) {
 
 		// A thousand holes and 1,002 one-byte chunks sit exactly at the bound:
 		// each hole keeps its whole allowance however few live bytes there are.
-		sizes := make([]int64, 1002)
-		for i := range sizes {
-			sizes[i] = 1
-		}
-		if at := summarise(sizes, 1000, target); at.Ceiling != at.Records {
+		if at := summarise(slices.Repeat([]int64{1}, 1002), 1000, target); at.Ceiling != at.Records {
 			t.Errorf("Target %d: 1,002 one-byte chunks and 1,000 holes: got a ceiling of %d, want %d", target, at.Ceiling, at.Records)
+		}
+
+		// 300 chunks of Max, past a GiB of live bytes: each hole still adds
+		// one, never one per GiB.
+		if got := summarise(slices.Repeat([]int64{4 * target}, 300), 50, target).Ceiling; got != 300*16+51 {
+			t.Errorf("Target %d: 300 chunks of Max and 50 holes: got a ceiling of %d, want %d", target, got, 300*16+51)
 		}
 	}
 }
 
-// Every bucket edge falls where D6 puts it: under 4 KiB in the first bucket,
+// Every bucket edge falls on a power of two: under 4 KiB in the first bucket,
 // [2^k, 2^(k+1)) above, Min and Target on their own edges, exactly Max apart.
 func TestSummariseBucketEdges(t *testing.T) {
 	f := summarise([]int64{4<<10 - 1, 4 << 10, 8<<10 - 1, 8 << 10, 16 << 10, 64 << 10, 256<<10 - 1, 256 << 10}, 0, 64<<10)
@@ -318,22 +326,24 @@ func TestSummariseBucketEdges(t *testing.T) {
 	}
 }
 
+// panics says whether f panics.
+func panics(f func()) (did bool) {
+	defer func() { did = recover() != nil }()
+	f()
+	return false
+}
+
 // A size the carver never cuts is refused, not bucketed.
 func TestSummariseRefusesAChunkPastMax(t *testing.T) {
 	for _, s := range []int64{0, 256<<10 + 1} {
-		func() {
-			defer func() {
-				if recover() == nil {
-					t.Errorf("summarise of a %d-byte chunk at Target 64 KiB: got no panic, want one", s)
-				}
-			}()
-			summarise([]int64{s}, 0, 64<<10)
-		}()
+		if !panics(func() { summarise([]int64{s}, 0, 64<<10) }) {
+			t.Errorf("summarise of a %d-byte chunk at Target 64 KiB: got no panic, want one", s)
+		}
 	}
 }
 
 // A block carrying less than the target is short; one carrying exactly the
-// target is not.
+// target is not; blocks with no pass are refused.
 func TestSummariseBlocks(t *testing.T) {
 	for _, c := range []struct {
 		carried []int64
@@ -342,97 +352,122 @@ func TestSummariseBlocks(t *testing.T) {
 	}{
 		{[]int64{4 << 20, 4 << 20, 1 << 20}, 2, blockFigures{Blocks: 3, Passes: 2, Short: 1, PerPass: 1.5}},
 		{[]int64{4 << 20, 4<<20 + 1}, 1, blockFigures{Blocks: 2, Passes: 1, PerPass: 2}},
+		{nil, 0, blockFigures{}},
 	} {
 		if got := summariseBlocks(c.carried, c.passes, 4<<20); got != c.want {
 			t.Errorf("summariseBlocks(%v, %d): got %+v, want %+v", c.carried, c.passes, got, c.want)
 		}
 	}
+
+	if !panics(func() { summariseBlocks([]int64{1}, 0, 4<<20) }) {
+		t.Errorf("summariseBlocks of one block and no pass: got no panic, want one")
+	}
 }
 
-// seededBytes returns n bytes of the ChaCha8 stream under seed.
-func seededBytes(seed byte, n int) []byte {
+// twinSeededBytes returns n bytes of the ChaCha8 stream under seed.
+func twinSeededBytes(seed byte, n int) []byte {
 	b := make([]byte, n)
 	_, _ = rand.NewChaCha8([32]byte{seed}).Read(b)
 	return b
 }
 
-// The twin re-stores nothing of a file against itself, only the re-cut tail
-// and the appended bytes of a file grown by 1 MiB, and nothing of zeros.
+// The twin re-stores nothing of a file against itself. Before's chunks but
+// its last are after's too, so from the last one's start after is new: all of
+// it counts when seeded bytes are appended, a repeated block each time it
+// recurs, and of appended zeros only the chunks that hold before's bytes.
 func TestRestoredWholeFile(t *testing.T) {
 	const target = 64 << 10
-	before := seededBytes(1, 4<<20)
+	before := twinSeededBytes(1, 4<<20)
 
 	if got, err := restoredWholeFile(bytes.NewReader(before), bytes.NewReader(before), target); err != nil || got != 0 {
 		t.Errorf("a file against itself: got %d, %v, want 0, nil", got, err)
 	}
 
-	// Before's chunks but its last are after's too: from the last one's
-	// start, after is cut anew.
 	s, err := carve.NewSettings(target, false, [32]byte{}, twinChunkIDKey)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("NewSettings(%d): %v", target, err)
 	}
-	var last int64
-	if _, err := carve.Cut(bytes.NewReader(before), 0, s, make([]byte, s.Max()), true, func(c carver.Chunk, _ []byte) error {
-		last = c.Offset
-		return nil
-	}); err != nil {
-		t.Fatal(err)
+	cut := func(b []byte) (chunks []carver.Chunk) {
+		if _, err := carve.Cut(bytes.NewReader(b), 0, s, make([]byte, s.Max()), true, func(c carver.Chunk, _ []byte) error {
+			chunks = append(chunks, c)
+			return nil
+		}); err != nil {
+			t.Fatalf("cutting %d bytes: %v", len(b), err)
+		}
+		return chunks
+	}
+	last := cut(before)[len(cut(before))-1].Offset
+
+	block := twinSeededBytes(2, 1<<20)
+	for _, c := range []struct {
+		name  string
+		after []byte
+	}{
+		{"1 MiB appended", slices.Concat(before, block)},
+		{"one 1 MiB block appended twice", slices.Concat(before, block, block)},
+	} {
+		want := int64(len(c.after)) - last
+		if got, err := restoredWholeFile(bytes.NewReader(before), bytes.NewReader(c.after), target); err != nil || got != want {
+			t.Errorf("%s: got %d, %v, want %d, nil", c.name, got, err, want)
+		}
 	}
 
-	grown := append(slices.Clone(before), seededBytes(2, 1<<20)...)
-	if got, err := restoredWholeFile(bytes.NewReader(before), bytes.NewReader(grown), target); err != nil || got != int64(len(grown))-last {
-		t.Errorf("1 MiB appended: got %d, %v, want %d, nil", got, err, int64(len(grown))-last)
+	zeroed := slices.Concat(before, make([]byte, 2<<20))
+	var want int64
+	for _, c := range cut(zeroed) {
+		if c.Offset >= last && c.Offset < int64(len(before)) {
+			want += int64(c.Length)
+		}
 	}
-
-	// 2 MiB of zeros appended: only the chunk that holds before's tail holds
-	// a non-zero byte, and it is at most Max.
-	zeroed := append(slices.Clone(before), make([]byte, 2<<20)...)
-	if got, err := restoredWholeFile(bytes.NewReader(before), bytes.NewReader(zeroed), target); err != nil || got <= 0 || got > int64(s.Max()) {
-		t.Errorf("2 MiB of zeros appended: got %d, %v, want 1 to %d bytes, nil", got, err, s.Max())
-	}
-
-	if _, err := restoredWholeFile(bytes.NewReader(before), bytes.NewReader(before), target+1); !errors.Is(err, carver.ErrInvalidSettings) {
-		t.Errorf("a Target that is not a power of two: got %v, want carver.ErrInvalidSettings", err)
+	if got, err := restoredWholeFile(bytes.NewReader(before), bytes.NewReader(zeroed), target); err != nil || got != want {
+		t.Errorf("2 MiB of zeros appended: got %d, %v, want %d, nil", got, err, want)
 	}
 }
 
 // The twin's re-stored bytes on Appendix C's whole-file baseline, in KiB, as
 // a hand-built report's figures.
 var baselineTwin = map[string]map[int64]int64{
-	"next release":    {64 << 10: 166912, 256 << 10: 198656, 1 << 20: 216064, 4 << 20: 225280},
+	workloadRelease:   {64 << 10: 166912, 256 << 10: 198656, 1 << 20: 216064, 4 << 20: 225280},
 	workloadPages:     {64 << 10: 24576, 256 << 10: 71680, 1 << 20: 168960, 4 << 20: 219136},
-	"64 inserts":      {64 << 10: 4915, 256 << 10: 19456, 1 << 20: 79872, 4 << 20: 179200},
+	workloadInserts:   {64 << 10: 4915, 256 << 10: 19456, 1 << 20: 79872, 4 << 20: 179200},
 	workloadSustained: {64 << 10: 24576, 256 << 10: 71680, 1 << 20: 168960, 4 << 20: 219136},
 }
 
-// baselineReport is a report whose real re-stored bytes equal the twin's on
-// every row, every row under its ceiling, the largest Target first, so a tie
-// is met with the larger Target already held.
-func baselineReport() []row {
+// edit changes one row of a report: its real and twin re-stored bytes and
+// its chunk records, each where non-zero.
+type edit struct {
+	w                      string
+	target, restored, twin int64
+	records                int
+}
+
+// report is a report whose real re-stored bytes equal the twin's on every
+// row, every row's chunk records exactly at its ceiling, the largest Target
+// first so a tie meets the larger Target already held, with edits applied.
+func report(edits ...edit) []row {
 	var rows []row
-	for _, target := range []int64{4 << 20, 1 << 20, 256 << 10, 64 << 10} {
-		for _, w := range []string{"next release", workloadPages, "64 inserts", workloadSustained} {
+	for _, target := range slices.Backward(candidates) {
+		for _, w := range []string{workloadRelease, workloadPages, workloadInserts, workloadSustained} {
 			b := baselineTwin[w][target]
-			rows = append(rows, row{Workload: w, Target: target, Restored: b, Twin: b, Chunks: chunkFigures{Records: 1, Ceiling: 2}})
+			rows = append(rows, row{Workload: w, Target: target, Restored: b, Twin: b, Chunks: chunkFigures{Records: 2, Ceiling: 2}})
+		}
+	}
+
+	for _, e := range edits {
+		i := slices.IndexFunc(rows, func(r row) bool { return r.Workload == e.w && r.Target == e.target })
+		if e.restored != 0 {
+			rows[i].Restored = e.restored
+		}
+		if e.twin != 0 {
+			rows[i].Twin = e.twin
+		}
+		if e.records != 0 {
+			rows[i].Chunks.Records = e.records
 		}
 	}
 
 	return rows
 }
-
-// withRow changes one row of rows in place.
-func withRow(rows []row, w string, target int64, f func(*row)) []row {
-	for i := range rows {
-		if rows[i].Workload == w && rows[i].Target == target {
-			f(&rows[i])
-		}
-	}
-
-	return rows
-}
-
-func restoredAs(n int64) func(*row) { return func(r *row) { r.Restored = n } }
 
 func TestSelectDefault(t *testing.T) {
 	const k64, k256, m1 = 64 << 10, 256 << 10, 1 << 20
@@ -442,50 +477,86 @@ func TestSelectDefault(t *testing.T) {
 		rows []row
 		want int64
 	}{
-		{"the real ratios equal the baseline's", baselineReport(), k256},
+		{"the real ratios equal the baseline's", report(), k256},
 		{
 			"64 KiB below its twin on the 256 pages and the sustained overwrites",
-			withRow(withRow(baselineReport(), workloadPages, k64, restoredAs(20000)), workloadSustained, k64, restoredAs(20000)),
+			report(edit{w: workloadPages, target: k64, restored: 20000}, edit{w: workloadSustained, target: k64, restored: 20000}),
 			k64,
 		},
-		{"64 KiB below its twin on the 256 pages alone", withRow(baselineReport(), workloadPages, k64, restoredAs(20000)), k256},
+		{"64 KiB below its twin on the 256 pages alone", report(edit{w: workloadPages, target: k64, restored: 20000}), k256},
 		{
-			"64 KiB below its twin on both, its chunk records past the ceiling",
-			withRow(withRow(withRow(baselineReport(), workloadPages, k64, restoredAs(20000)), workloadSustained, k64, restoredAs(20000)),
-				"next release", k64, func(r *row) { r.Chunks.Records = 3 }),
+			"64 KiB below its twin on both, its chunk records past the ceiling on the 256 pages",
+			report(edit{w: workloadPages, target: k64, restored: 20000, records: 3}, edit{w: workloadSustained, target: k64, restored: 20000}),
 			k256,
 		},
 		{
 			"1 MiB below its twin on both, above 256 KiB's bytes",
-			withRow(withRow(baselineReport(), workloadPages, m1, restoredAs(100000)), workloadSustained, m1, restoredAs(100000)),
+			report(edit{w: workloadPages, target: m1, restored: 100000}, edit{w: workloadSustained, target: m1, restored: 100000}),
 			k256,
 		},
 		{
 			"64 KiB below its twin on both controls alone",
-			withRow(withRow(baselineReport(), "next release", k64, restoredAs(1000)), "64 inserts", k64, restoredAs(100)),
+			report(edit{w: workloadRelease, target: k64, restored: 1000}, edit{w: workloadInserts, target: k64, restored: 100}),
 			k256,
+		},
+		{
+			// Correct: baseline 24576/71680 ≈ 0.343 and real 30000/143360 ≈
+			// 0.209, so 64 KiB qualifies. A baseline over 256 KiB's real bytes,
+			// 24576/143360 ≈ 0.171, or a real ratio over its twin's,
+			// 30000/71680 ≈ 0.419, would not.
+			"256 KiB's real bytes twice its twin's: each ratio over its own denominator",
+			report(edit{w: workloadPages, target: k256, restored: 143360}, edit{w: workloadSustained, target: k256, restored: 143360},
+				edit{w: workloadPages, target: k64, restored: 30000}, edit{w: workloadSustained, target: k64, restored: 30000}),
+			k64,
 		},
 		{
 			// 1 MiB: baseline 2.357, real 0.9, an absolute margin of 1.457 and a
 			// relative one of 0.618 a workload; 64 KiB: baseline 0.343, real
 			// 0.05, 0.293 and 0.854.
 			"64 KiB and 1 MiB qualify, 1 MiB by the absolute margin, 64 KiB by the relative one",
-			withRow(withRow(withRow(withRow(baselineReport(),
-				workloadPages, k64, restoredAs(3584)), workloadSustained, k64, restoredAs(3584)),
-				workloadPages, m1, restoredAs(64512)), workloadSustained, m1, restoredAs(64512)),
+			report(edit{w: workloadPages, target: k64, restored: 3584}, edit{w: workloadSustained, target: k64, restored: 3584},
+				edit{w: workloadPages, target: m1, restored: 64512}, edit{w: workloadSustained, target: m1, restored: 64512}),
 			k64,
 		},
 		{
 			"64 KiB and 1 MiB tie on the margin",
-			withRow(withRow(withRow(withRow(baselineReport(),
-				workloadPages, k64, restoredAs(12288)), workloadSustained, k64, restoredAs(12288)),
-				workloadPages, m1, func(r *row) { r.Twin, r.Restored = 24576, 12288 }),
-				workloadSustained, m1, func(r *row) { r.Twin, r.Restored = 24576, 12288 }),
+			report(edit{w: workloadPages, target: k64, restored: 12288}, edit{w: workloadSustained, target: k64, restored: 12288},
+				edit{w: workloadPages, target: m1, restored: 12288, twin: 24576}, edit{w: workloadSustained, target: m1, restored: 12288, twin: 24576}),
+			k64,
+		},
+		{
+			// 1 MiB's figures are six times 64 KiB's, so every ratio and the
+			// margin are the same; summed as floats they differ in the last bit.
+			"64 KiB and 1 MiB tie on margins whose float sums differ",
+			report(edit{w: workloadPages, target: k256, restored: 70001}, edit{w: workloadSustained, target: k256, restored: 1150013, twin: 1146880},
+				edit{w: workloadPages, target: k64, restored: 2972, twin: 11838}, edit{w: workloadSustained, target: k64, restored: 51, twin: 13467},
+				edit{w: workloadPages, target: m1, restored: 6 * 2972, twin: 6 * 11838}, edit{w: workloadSustained, target: m1, restored: 6 * 51, twin: 6 * 13467}),
 			k64,
 		},
 	} {
-		if got := selectDefault(c.rows); got != c.want {
-			t.Errorf("%s: got %d, want %d", c.name, got, c.want)
+		t.Run(c.name, func(t *testing.T) {
+			if got := selectDefault(c.rows); got != c.want {
+				t.Errorf("got %d, want %d", got, c.want)
+			}
+		})
+	}
+}
+
+// A report that is not one row per candidate on each deciding workload, or
+// whose 256 KiB rows re-store nothing, decides nothing and is refused.
+func TestSelectDefaultRefusesAnIncompleteReport(t *testing.T) {
+	missing := slices.DeleteFunc(report(), func(r row) bool { return r.Workload == workloadSustained && r.Target == 64<<10 })
+
+	for _, c := range []struct {
+		name string
+		rows []row
+	}{
+		{"no 64 KiB row on the sustained overwrites", missing},
+		{"two 64 KiB rows on the sustained overwrites", append(report(), row{Workload: workloadSustained, Target: 64 << 10, Restored: 1, Twin: 1})},
+		{"256 KiB re-stores nothing on the 256 pages", report(edit{w: workloadPages, target: 256 << 10, restored: -1})},
+	} {
+		if !panics(func() { selectDefault(c.rows) }) {
+			t.Errorf("%s: got no panic, want one", c.name)
 		}
 	}
 }
