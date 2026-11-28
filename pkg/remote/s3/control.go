@@ -70,18 +70,19 @@ func (s *store) putControl(ctx context.Context, role remote.Role, body []byte) (
 // no request, and an object the service declares longer than 256 KiB is
 // remote.ErrInvalid before any byte is read.
 func (s *store) GetControl(ctx context.Context, role remote.Role) ([]byte, remote.Version, error) {
-	body, err := s.getControl(ctx, role)
+	body, err := s.getControl(ctx, role, opGetControl)
 
 	return body, "", err
 }
 
 // getControl reads role's object through the whole-block get's reader, which
-// records the call at its end; a call that fails before the reader exists is
-// recorded here.
-func (s *store) getControl(ctx context.Context, role remote.Role) ([]byte, error) {
+// records the call as op at its end; a call that fails before the reader
+// exists is recorded here. The reply is judged as a control get's whatever op
+// records it.
+func (s *store) getControl(ctx context.Context, role remote.Role, op opKind) ([]byte, error) {
 	start := time.Now()
 	fail := func(err error) ([]byte, error) {
-		s.record(opGetControl, err, time.Since(start), 0)
+		s.record(op, err, time.Since(start), 0)
 		return nil, err
 	}
 
@@ -107,7 +108,7 @@ func (s *store) getControl(ctx context.Context, role remote.Role) ([]byte, error
 		return fail(fmt.Errorf("remote/s3: %s of %v, %d bytes over %d: %w", opGetControl, role, b.left, maxControl, remote.ErrInvalid))
 	}
 
-	b.start = start
+	b.start, b.op = start, op
 
 	body, err := io.ReadAll(b)
 	_ = b.Close() // ReadAll read to the reader's end, so its error is err

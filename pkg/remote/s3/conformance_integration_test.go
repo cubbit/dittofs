@@ -26,9 +26,11 @@ import (
 // but the one each open's check sends into its check namespace (RFC 4
 // Appendix C.3, §4.3).
 //
-// The subject backs PutRaw, Reopen and Raw. ReadOnly and Load are left unset,
-// so their rows skip: the first needs Health, and the second a record of
-// every call the store took, which only the in-memory store keeps.
+// The subject backs PutRaw, Reopen, Raw and ReadOnly, which refuses every
+// PutObject under the prefix with 403 AccessDenied on the client's transport,
+// so on every store over the client, Reopen's included. Load is left unset,
+// so its rows skip: they need a record of every call the store took, which
+// only the in-memory store keeps.
 func TestConformance(t *testing.T) {
 	// Before the suite's watch, for the reason newLSRig gives.
 	endpoint, roots := s3fault.LocalStack(t)
@@ -69,6 +71,9 @@ func TestConformance(t *testing.T) {
 
 				prefix := "ns-" + hex.EncodeToString(randomBytes(4)) + "/"
 
+				// writable removes the read-only refusal; nil while there is none.
+				var writable func()
+
 				opens++
 				checked, _, err := Open(t.Context(), c, prefix, remote.Mutable)
 				if err != nil {
@@ -92,6 +97,17 @@ func TestConformance(t *testing.T) {
 					// reopened store, which a check would have put again.
 					Reopen: func(context.Context) (remote.Store, error) { return open(c, prefix, remote.Mutable, s.choice) },
 					Raw:    func(ctx context.Context) ([]string, error) { return rawUnder(ctx, b, prefix) },
+					ReadOnly: func(_ context.Context, on bool) error {
+						switch {
+						case on && writable == nil:
+							writable = tr.Inject(s3fault.Rule{Op: "PutObject", KeyPrefix: prefix}, s3fault.Answer(http.StatusForbidden, "AccessDenied", nil))
+						case !on && writable != nil:
+							writable()
+							writable = nil
+						}
+
+						return nil
+					},
 				}
 			})
 
