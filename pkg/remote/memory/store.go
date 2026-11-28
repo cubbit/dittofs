@@ -178,26 +178,22 @@ func (s *Store) hash() hash.Hash {
 // remote.ChecksumNone, as RFC 4 §4.1 allows when the service reports none), so
 // a raw copy's test cannot read one here. Keep the sum the put was checked
 // against and report it when a raw copy's test needs one without a service.
-func (s *Store) Get(ctx context.Context, name remote.Name, r remote.Range) (io.ReadCloser, remote.StoredSum, error) {
+func (s *Store) Get(ctx context.Context, name remote.Name, r remote.Range) (_ io.ReadCloser, _ remote.StoredSum, err error) {
+	// A get is in flight until its reader is closed; one that fails, until it
+	// returns.
 	done := s.enter("get", name)
+	defer func() {
+		if err != nil {
+			done()
+		}
+	}()
 
-	b, err := s.get(ctx, name, r)
-	if err != nil {
-		done()
+	if err := s.open("Get"); err != nil {
 		return nil, remote.StoredSum{}, err
 	}
 
-	return &reader{Reader: bytes.NewReader(b), done: done}, remote.StoredSum{}, nil
-}
-
-// get returns a copy of the bytes Get serves.
-func (s *Store) get(ctx context.Context, name remote.Name, r remote.Range) ([]byte, error) {
-	if err := s.open("Get"); err != nil {
-		return nil, err
-	}
-
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, remote.StoredSum{}, err
 	}
 
 	s.ns.mu.Lock()
@@ -205,20 +201,20 @@ func (s *Store) get(ctx context.Context, name remote.Name, r remote.Range) ([]by
 	s.ns.mu.Unlock()
 
 	if !ok {
-		return nil, fmt.Errorf("memory: get of block %x: %w", name, remote.ErrNotFound)
+		return nil, remote.StoredSum{}, fmt.Errorf("memory: get of block %x: %w", name, remote.ErrNotFound)
 	}
 
 	b := o.body
 	if r != (remote.Range{}) {
 		size := int64(len(b))
 		if r.Off < 0 || r.Len <= 0 || r.Len > size-r.Off {
-			return nil, fmt.Errorf("memory: get of %+v of a %d-byte block: %w", r, size, remote.ErrInvalid)
+			return nil, remote.StoredSum{}, fmt.Errorf("memory: get of %+v of a %d-byte block: %w", r, size, remote.ErrInvalid)
 		}
 
 		b = b[r.Off : r.Off+r.Len]
 	}
 
-	return bytes.Clone(b), nil
+	return &reader{Reader: bytes.NewReader(bytes.Clone(b)), done: done}, remote.StoredSum{}, nil
 }
 
 // Close marks the store closed: every later call but Close is refused with

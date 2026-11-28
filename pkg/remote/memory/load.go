@@ -26,34 +26,39 @@ type Load struct {
 	// Calls lists every call in the order it reached the store.
 	Calls []CallRecord
 
-	// Puts counts every put that reached the store, per name, failed ones too.
+	// Puts counts every put that reached the store, per name, failed and
+	// refused ones too.
 	Puts map[remote.Name]int
 
 	// Bytes is the size of the blocks held, control objects and keys under
 	// blocks/ that are not names excluded.
 	Bytes int64
 
-	// Foreign counts the keys under blocks/ that are not names a listing
-	// skipped, once per listing that skipped one.
+	// Foreign counts each key under blocks/ that is not a name, once for
+	// every listing that skips it.
 	Foreign int
 }
 
 // load is the record a namespace keeps, under the namespace's mutex.
-//
-// ponytail: Calls grows by one entry per call for the store's life. Record it
-// only when a test switches it on if a benchmark over this store shows it in
-// its heap.
 type load struct {
 	inFlight, peak int
-	calls          []CallRecord
-	puts           map[remote.Name]int
-	foreign        int
+
+	// ponytail: calls grows by one entry per call for the store's life.
+	// Record it only when a test switches it on if a benchmark over this
+	// store shows it in its heap.
+	calls   []CallRecord
+	puts    map[remote.Name]int
+	foreign int
 }
 
-// Load returns a copy of the record of the calls that reached the store's
-// namespace, through it or any store opened again over the namespace, as a
-// service records the load of every client of its bucket. A call a wrapper
-// refuses never reaches the store, so it is not in the record.
+// Load returns a copy of the record of the calls that reached the store. A
+// call a wrapper refuses never reaches the store, so it is not in the record.
+//
+// decision: the record is the namespace's, so a store opened again over it
+// adds to the same record, as a service sees the load of every client of its
+// bucket and the bytes held are the namespace's. A check that reopens its
+// store reads both stores' calls here; give each store its own record if a
+// check needs one client's load alone.
 func (s *Store) Load() Load {
 	s.ns.mu.Lock()
 	defer s.ns.mu.Unlock()

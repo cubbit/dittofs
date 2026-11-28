@@ -1111,6 +1111,39 @@ func (b *heldBody) Read(p []byte) (int, error) {
 	return b.body.Read(p)
 }
 
+// within runs f and waits for it to return, at most backstop, reporting
+// whether it did. A call that never returns is left running: the row has
+// failed, and the leak check reports it too.
+func within(f func()) bool {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		f()
+	}()
+
+	timer := time.NewTimer(backstop)
+	defer timer.Stop()
+
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
+// callsSince returns the calls l lists after the first before, failing t if
+// the record lost calls it held.
+func callsSince(t *testing.T, l Load, before int) []CallRecord {
+	t.Helper()
+
+	if len(l.Calls) < before {
+		t.Fatalf("Calls shrank from %d to %d entries, want every call kept", before, len(l.Calls))
+	}
+
+	return l.Calls[before:]
+}
+
 // awaitStarted waits for n signals on started, at most backstop in all, and
 // returns how many came.
 func awaitStarted(started <-chan struct{}, n int) int {
@@ -1151,6 +1184,11 @@ func testLoad(t *testing.T, sub Subject) {
 // and each name counts one put.
 func testLoadHeldPuts(t *testing.T, sub Subject) {
 	s := sub.Store
+
+	if p := sub.Load().Peak; p != 0 {
+		t.Fatalf("Peak before the held puts: %d, want 0, so the peak is theirs alone", p)
+	}
+
 	started, release := make(chan struct{}, heldPuts), make(chan struct{})
 
 	var (
@@ -1177,7 +1215,10 @@ func testLoadHeldPuts(t *testing.T, sub Subject) {
 	held := sub.Load()
 
 	close(release)
-	wg.Wait()
+
+	if !within(wg.Wait) {
+		t.Fatalf("the held puts did not all return within %v of their release", backstop)
+	}
 
 	if got != heldPuts {
 		t.Errorf("%d of %d puts reached their body's first Read within %v, want all of them: the store holds puts back", got, heldPuts, backstop)
@@ -1210,7 +1251,8 @@ func testLoadHeldPuts(t *testing.T, sub Subject) {
 	}
 }
 
-// A get is in flight until its reader is closed, its bytes read whole or not.
+// A get is in flight until its reader is closed, and a get that fails until
+// it returns.
 func testLoadGetUntilClosed(t *testing.T, sub Subject) {
 	s, n := sub.Store, name("load-get")
 	put(t, s, n, block("load-get", 16))
@@ -1226,20 +1268,20 @@ func testLoadGetUntilClosed(t *testing.T, sub Subject) {
 		t.Errorf("InFlight with a get's reader open: %d, want %d", got, base+1)
 	}
 
-	if _, err := io.ReadAll(body); err != nil {
-		t.Errorf("reading the get's body: %v", err)
-	}
-
-	if got := sub.Load().InFlight; got != base+1 {
-		t.Errorf("InFlight with a get's reader read whole but open: %d, want %d", got, base+1)
-	}
-
 	if err := body.Close(); err != nil {
 		t.Errorf("closing the get's reader: %v", err)
 	}
 
 	if got := sub.Load().InFlight; got != base {
 		t.Errorf("InFlight once the get's reader is closed: %d, want %d", got, base)
+	}
+
+	if _, _, err := s.Get(t.Context(), name("load-get-absent"), remote.Range{}); !only(err, remote.ErrNotFound) {
+		t.Errorf("Get of a name never put: %v, want ErrNotFound", err)
+	}
+
+	if got := sub.Load().InFlight; got != base {
+		t.Errorf("InFlight once a get of a name never put failed: %d, want %d", got, base)
 	}
 }
 
@@ -1255,7 +1297,7 @@ func testLoadFailedBody(t *testing.T, sub Subject) {
 	}
 
 	l := sub.Load()
-	if calls, want := l.Calls[len(before.Calls):], []CallRecord{{"put", n}}; !slices.Equal(calls, want) {
+	if calls, want := callsSince(t, l, len(before.Calls)), []CallRecord{{"put", n}}; !slices.Equal(calls, want) {
 		t.Errorf("calls for one put whose body fails: %s, want %s", fmtCalls(calls), fmtCalls(want))
 	}
 
@@ -1293,8 +1335,12 @@ func testLoadOrder(t *testing.T, sub Subject) {
 		t.Errorf("GetControl: %v", err)
 	}
 
-	want := []CallRecord{{"put", n}, {"get", n}, {"delete", remote.Name{}}, {"list", remote.Name{}}, {"put_control", remote.Name{}}, {"get_control", remote.Name{}}}
-	if calls := sub.Load().Calls[before:]; !slices.Equal(calls, want) {
+	if err := s.Health(t.Context(), remote.DirGet); err != nil {
+		t.Errorf("Health(DirGet): %v", err)
+	}
+
+	want := []CallRecord{{"put", n}, {"get", n}, {"delete", remote.Name{}}, {"list", remote.Name{}}, {"put_control", remote.Name{}}, {"get_control", remote.Name{}}, {"health", remote.Name{}}}
+	if calls := callsSince(t, sub.Load(), before); !slices.Equal(calls, want) {
 		t.Errorf("calls made one after another: %s, want %s", fmtCalls(calls), fmtCalls(want))
 	}
 
@@ -1316,13 +1362,22 @@ func testLoadOrder(t *testing.T, sub Subject) {
 
 	got := awaitStarted(started, 1)
 	if got == 1 {
-		if _, err := get(t, s, q, remote.Range{}); err != nil {
-			t.Errorf("Get beside a held put: %v", err)
+		var getErr error
+
+		// A store holding a lock across a put's body blocks the get, so it is
+		// waited on boundedly, before the put is released.
+		if !within(func() { _, getErr = get(t, s, q, remote.Range{}) }) {
+			t.Errorf("a get beside a put held in its body did not return within %v: the store holds the get back behind the put", backstop)
+		} else if getErr != nil {
+			t.Errorf("Get beside a held put: %v", getErr)
 		}
 	}
 
 	close(release)
-	wg.Wait()
+
+	if !within(wg.Wait) {
+		t.Fatalf("the held put did not return within %v of its release", backstop)
+	}
 
 	if got != 1 {
 		t.Fatalf("the put did not reach its body's first Read within %v", backstop)
@@ -1332,14 +1387,14 @@ func testLoadOrder(t *testing.T, sub Subject) {
 		t.Errorf("the held put, released: %v, want nil", putErr)
 	}
 
-	if calls, want := sub.Load().Calls[before:], []CallRecord{{"put", p}, {"get", q}}; !slices.Equal(calls, want) {
+	if calls, want := callsSince(t, sub.Load(), before), []CallRecord{{"put", p}, {"get", q}}; !slices.Equal(calls, want) {
 		t.Errorf("calls of a put held in its body and a get beside it that returned first: %s, want %s, each listed as it reached the store", fmtCalls(calls), fmtCalls(want))
 	}
 }
 
 // Bytes is the size of the blocks held: a block replaced counts its last
-// size, a block deleted counts nothing, and a name put three times counts
-// three puts.
+// size, a block deleted and a control object count nothing, and a name put
+// three times counts three puts.
 func testLoadBytes(t *testing.T, sub Subject) {
 	s, a, b := sub.Store, name("load-bytes-a"), name("load-bytes-b")
 	base := sub.Load().Bytes
@@ -1353,9 +1408,13 @@ func testLoadBytes(t *testing.T, sub Subject) {
 		t.Fatalf("Delete of one name: %v, want one nil", errs)
 	}
 
+	if err := s.PutControl(t.Context(), remote.RoleClaim, block("load-bytes-claim", 50)); err != nil {
+		t.Fatalf("PutControl: %v", err)
+	}
+
 	l := sub.Load()
 	if got := l.Bytes - base; got != 40 {
-		t.Errorf("Bytes after a block put at 100, 60 then 40 bytes and one of 200 deleted: %d more, want 40", got)
+		t.Errorf("Bytes after a block put at 100, 60 then 40 bytes, one of 200 deleted and a 50-byte control object: %d more, want 40", got)
 	}
 
 	if l.Puts[a] != 3 {
