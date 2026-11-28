@@ -311,8 +311,8 @@ func TestConcurrentPutsShareOneAnswer(t *testing.T) {
 	}
 	wg.Wait()
 	refused := slices.IndexFunc(errs, func(err error) bool { return err != nil })
-	if refused < 0 || slices.ContainsFunc(errs[refused+1:], func(err error) bool { return err != nil }) {
-		t.Errorf("puts refused: %v, want exactly one", errs)
+	if refused < 0 || code(errs[refused]) != "SlowDown" || slices.ContainsFunc(errs[refused+1:], func(err error) bool { return err != nil }) {
+		t.Errorf("puts refused: %v, want exactly one, answered SlowDown", errs)
 	}
 	list, err := r.admin.ListObjectsV2(t.Context(), &s3.ListObjectsV2Input{Bucket: &r.bucket, Prefix: aws.String("c/")})
 	if err != nil {
@@ -323,10 +323,15 @@ func TestConcurrentPutsShareOneAnswer(t *testing.T) {
 	}
 }
 
-// The transport allocates nothing per byte of a put: what it adds to a put's
-// allocation is the same at 16 MiB as at 1 MiB, so it buffers no body.
+// The transport allocates nothing per byte of a put, with or without a
+// schedule to consult: what it adds to a put's allocation is the same at 16
+// MiB as at 1 MiB, so it buffers no body.
 func TestTheTransportAllocatesNothingPerByte(t *testing.T) {
-	r := newRig(t, nil)
+	quiet, err := sim.NewSchedule(1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := newRig(t, quiet)
 	direct := rawClient(r.endpoint, r.tr.next)
 	// allocated is the least the process allocates over one put, over a few
 	// runs, so a collection or another goroutine's work in one run is ignored.

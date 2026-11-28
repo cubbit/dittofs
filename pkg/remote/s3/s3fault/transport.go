@@ -1,8 +1,10 @@
 package s3fault
 
 import (
+	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -12,10 +14,12 @@ import (
 
 // Fault decides each request's fault; *sim.Schedule satisfies it as it is.
 // It is called once per request, with the request's op and key, before the
-// request is sent. Zero results pass; err alone drops the request unsent and
+// request is sent. At waits out any delay itself, on its own clock, and the
+// transport only reads the delay it returns. Zero results pass; err alone drops the request unsent and
 // returns err; tearAfter > 0 with err set, on a PutObject only, sends that
-// many bytes of the body, then cuts it and returns err. Every other tear, and
-// a loss (tearAfter < 0), panics, naming the op.
+// many bytes of a body longer than that, then cuts it and returns err. Every
+// other tear, and a loss (tearAfter < 0), panics, naming the op. A panic
+// raised on a goroutine the client started ends the test binary.
 type Fault interface {
 	At(op string, key []byte) (delay time.Duration, tearAfter int, err error)
 }
@@ -25,7 +29,8 @@ const Other = "Other"
 
 // Transport is a fault wrapper around a real http.RoundTripper: it consults a
 // Fault and the effects injected into it before each request, and keeps a
-// record of every request that reached it. It never answers a request with a
+// record of every request that reached it, those it dropped or answered
+// included. It never answers a request with a
 // success the service did not give. It is safe for concurrent use.
 type Transport struct {
 	next  http.RoundTripper
@@ -54,8 +59,10 @@ func New(next http.RoundTripper, fault Fault) *Transport {
 func (t *Transport) Requests() []Request {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	out := make([]Request, len(t.requests))
-	copy(out, t.requests)
+	out := slices.Clone(t.requests)
+	for i := range out {
+		out[i].Header = out[i].Header.Clone()
+	}
 	return out
 }
 
@@ -84,12 +91,17 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			// in the service's place, which the fault transport must never do.
 			panic("s3fault: a loss of the op " + op + ": the service would never apply what it reports done")
 		case tearAfter > 0 && (err == nil || op != "PutObject"):
-			panic("s3fault: a tear of the op " + op + " with error " + errString(err) + ": only a PutObject tears, and only failing")
+			panic(fmt.Sprintf("s3fault: a tear of the op %s with error %v: only a PutObject tears, and only failing", op, err))
+		case tearAfter > 0 && (req.Body == nil || int64(tearAfter) >= req.ContentLength):
+			// A cut at or past the body's end would send it whole, and the
+			// service would store the put the client was told failed.
+			panic(fmt.Sprintf("s3fault: a tear of the op %s after %d bytes of a %d-byte body: a tear cuts part-way", op, tearAfter, req.ContentLength))
 		case tearAfter > 0:
 			req = req.Clone(req.Context())
 			req.Body = &cut{ReadCloser: req.Body, left: int64(tearAfter), end: err}
 			req.GetBody = nil // so net/http cannot resend the body whole
 			if resp, sendErr := t.next.RoundTrip(req); sendErr == nil {
+				t.replied(n, resp)
 				_ = resp.Body.Close()
 			}
 			return nil, err
@@ -99,9 +111,14 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 	}
 
-	effects := t.match(req, op, key)
-	for _, e := range effects {
-		if resp := e.before(req); resp != nil {
+	var effects []Effect
+	for _, in := range t.selecting(req, op, key) {
+		if !t.claim(in) {
+			continue
+		}
+		effects = append(effects, in.effect)
+		var resp *http.Response
+		if req, resp = in.effect.before(req, op, key); resp != nil {
 			closeBody(req)
 			return resp, nil
 		}
@@ -111,9 +128,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	t.mu.Lock()
-	t.requests[n].ProtoMajor = resp.ProtoMajor
-	t.mu.Unlock()
+	t.replied(n, resp)
 
 	for _, e := range effects {
 		if resp, err = e.after(resp); err != nil {
@@ -121,6 +136,13 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 	}
 	return resp, nil
+}
+
+// replied records the protocol of the reply to request n.
+func (t *Transport) replied(n int, resp *http.Response) {
+	t.mu.Lock()
+	t.requests[n].ProtoMajor = resp.ProtoMajor
+	t.mu.Unlock()
 }
 
 // at consults the fault from a goroutine of its own, so a request whose
@@ -160,13 +182,6 @@ func closeBody(req *http.Request) {
 	}
 }
 
-func errString(err error) string {
-	if err == nil {
-		return "nil"
-	}
-	return err.Error()
-}
-
 // cut passes the first left bytes of a body, then ends it with end.
 type cut struct {
 	io.ReadCloser
@@ -183,5 +198,8 @@ func (b *cut) Read(p []byte) (int, error) {
 	}
 	n, err := b.ReadCloser.Read(p)
 	b.left -= int64(n)
+	if err == io.EOF && b.left > 0 {
+		err = nil // a body that ends before the cut still ends with end
+	}
 	return n, err
 }

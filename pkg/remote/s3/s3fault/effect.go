@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/xml"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"slices"
@@ -23,9 +24,11 @@ type Rule struct {
 // Effect is what the transport does to a request a Rule selects. It is sealed:
 // only this package's constructors build one.
 type Effect interface {
-	// before acts on the request before it is sent; a response it returns
-	// answers the request, which is then never sent.
-	before(req *http.Request) *http.Response
+	// before acts on the request, of op on key, before it is sent, and
+	// returns it, or a clone it changed: never req changed in place, which
+	// the client still holds. A response it returns answers the request,
+	// which is then never sent.
+	before(req *http.Request, op, key string) (*http.Request, *http.Response)
 	// after acts on the service's reply.
 	after(resp *http.Response) (*http.Response, error)
 }
@@ -40,7 +43,9 @@ type injected struct {
 
 // Inject applies e to every request r selects from now on, after the
 // scheduled fault, until remove is called. Every injection that selects a
-// request applies, in the order they were injected.
+// request applies, in the order they were injected, on the request and then
+// on the reply. Once one answers the request, those after it neither act nor
+// count it against their Times.
 func (t *Transport) Inject(r Rule, e Effect) (remove func()) {
 	in := &injected{rule: r, effect: e, left: r.Times}
 	t.mu.Lock()
@@ -53,27 +58,34 @@ func (t *Transport) Inject(r Rule, e Effect) (remove func()) {
 	}
 }
 
-// match returns the effects whose rules select the request, counting it
-// against each one's Times.
-func (t *Transport) match(req *http.Request, op, key string) []Effect {
+// selecting returns the injections whose rules select the request, Times
+// aside.
+func (t *Transport) selecting(req *http.Request, op, key string) []*injected {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	var out []Effect
+	var out []*injected
 	for _, in := range t.effects {
 		r := in.rule
-		switch {
-		case r.Op != "" && r.Op != op,
-			!strings.HasPrefix(key, r.KeyPrefix),
-			r.MinBody > 0 && req.ContentLength < r.MinBody,
-			r.Times > 0 && in.left == 0:
-			continue
+		if (r.Op == "" || r.Op == op) && strings.HasPrefix(key, r.KeyPrefix) && (r.MinBody == 0 || req.ContentLength >= r.MinBody) {
+			out = append(out, in)
 		}
-		if r.Times > 0 {
-			in.left--
-		}
-		out = append(out, in.effect)
 	}
 	return out
+}
+
+// claim counts one request against in's Times, and reports false when none
+// is left.
+func (t *Transport) claim(in *injected) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if in.rule.Times == 0 {
+		return true
+	}
+	if in.left == 0 {
+		return false
+	}
+	in.left--
+	return true
 }
 
 // Answer answers the request with status and code without sending it. A nil
@@ -84,8 +96,11 @@ func (t *Transport) match(req *http.Request, op, key string) []Effect {
 // service's place with a success, since a success it made up would report a
 // block stored, or read, that the service never held.
 func Answer(status int, code string, body []byte) Effect {
-	if status >= 200 && status <= 299 {
-		panic("s3fault: Answer of the success " + strconv.Itoa(status) + ": only the service answers a success")
+	switch {
+	case status >= 200 && status <= 299:
+		panic(fmt.Sprintf("s3fault: Answer of the success %d: only the service answers a success", status))
+	case status < 100 || status > 599:
+		panic(fmt.Sprintf("s3fault: Answer of the status %d, outside 100-599", status))
 	}
 	if body == nil {
 		body, _ = xml.Marshal(struct {
@@ -104,16 +119,20 @@ type answer struct {
 	body   []byte
 }
 
-func (a answer) before(req *http.Request) *http.Response {
-	return &http.Response{
+func (a answer) before(req *http.Request, _, _ string) (*http.Request, *http.Response) {
+	body := a.body
+	if req.Method == http.MethodHead {
+		body = nil // as the service answers a HEAD: the status alone
+	}
+	return req, &http.Response{
 		Status:        strconv.Itoa(a.status) + " " + http.StatusText(a.status),
 		StatusCode:    a.status,
 		Proto:         "HTTP/1.1",
 		ProtoMajor:    1,
 		ProtoMinor:    1,
-		Header:        http.Header{"Content-Type": {"application/xml"}, "Content-Length": {strconv.Itoa(len(a.body))}},
-		Body:          io.NopCloser(bytes.NewReader(a.body)),
-		ContentLength: int64(len(a.body)),
+		Header:        http.Header{"Content-Type": {"application/xml"}, "Content-Length": {strconv.Itoa(len(body))}},
+		Body:          io.NopCloser(bytes.NewReader(body)),
+		ContentLength: int64(len(body)),
 		Request:       req,
 	}
 }
@@ -130,7 +149,9 @@ func LoseReply() Effect { return loseReply{} }
 
 type loseReply struct{}
 
-func (loseReply) before(*http.Request) *http.Response { return nil }
+func (loseReply) before(req *http.Request, _, _ string) (*http.Request, *http.Response) {
+	return req, nil
+}
 
 func (loseReply) after(resp *http.Response) (*http.Response, error) {
 	_ = resp.Body.Close()
@@ -146,7 +167,9 @@ func TruncateReply(n int64) Effect { return truncateReply{n} }
 
 type truncateReply struct{ n int64 }
 
-func (truncateReply) before(*http.Request) *http.Response { return nil }
+func (truncateReply) before(req *http.Request, _, _ string) (*http.Request, *http.Response) {
+	return req, nil
+}
 
 func (e truncateReply) after(resp *http.Response) (*http.Response, error) {
 	resp.Body = &cut{ReadCloser: resp.Body, left: e.n, end: io.EOF}
