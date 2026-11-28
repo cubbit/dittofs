@@ -20,8 +20,8 @@ const chainIDContext = "dittofs transform chain id v1"
 // each step's pinned material in the order of its Kinds: BLAKE3-derive-key
 // over the transform count, then per transform its ID, format version, length
 // key and material, ordered by kind then ID, each with its fingerprint.
-// Lengths are 4 bytes and integers big-endian. Pin refuses a step with more
-// kinds than the one-byte material count holds.
+// Lengths are 4 bytes and integers big-endian. NewChain refuses a step with
+// more kinds than the one-byte material count holds.
 func chainID(steps []transform.Transform, material [][]keys.MaterialID) [32]byte {
 	b := []byte{byte(len(steps))}
 	for i, t := range steps {

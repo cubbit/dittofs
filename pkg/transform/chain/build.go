@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -16,6 +17,7 @@ import (
 type chain struct {
 	decode *decodeSet
 	steps  []transform.Transform // the configured transforms, in stage order
+	kinds  [][]string            // each step's Kinds, read once at build
 	keys   keys.Provider
 }
 
@@ -112,7 +114,7 @@ func (r *registry) assemble(ctx context.Context, cfg []transform.Config, m keys.
 				"so compressed sizes would leak content to a writer who places data beside it (RFC 5 Appendix A)", cfg[0].Name, cfg[1].Name)
 		}
 	}
-	steps := make([]transform.Transform, len(cfg))
+	steps, kinds := make([]transform.Transform, len(cfg)), make([][]string, len(cfg))
 	for i, c := range cfg {
 		t, err := fs[i](ctx, c.Settings, m)
 		if err != nil {
@@ -130,9 +132,15 @@ func (r *registry) assemble(ctx context.Context, cfg []transform.Config, m keys.
 			return nil, c.Name, fmt.Errorf("chain: transform %q built from its settings reports ID %#04x stage %d, not its registered ID %#04x stage %d",
 				c.Name, t.ID(), t.Stage(), d.ID(), d.Stage())
 		}
-		steps[i] = t
+		// The chain ID counts a step's materials in one byte, and a kind
+		// listed twice would be counted twice.
+		k := slices.Clone(t.Kinds())
+		if len(k) > math.MaxUint8 || len(slices.Compact(slices.Sorted(slices.Values(k)))) != len(k) {
+			return nil, c.Name, fmt.Errorf("chain: transform %q declares %d material kinds, more than 255 or one twice", c.Name, len(k))
+		}
+		steps[i], kinds[i] = t, k
 	}
-	return &chain{decode: set, steps: steps, keys: m}, "", nil
+	return &chain{decode: set, steps: steps, kinds: kinds, keys: m}, "", nil
 }
 
 // MaxDecodeLen answers from the decode set, never from the configured

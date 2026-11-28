@@ -3,8 +3,6 @@ package chain
 import (
 	"context"
 	"errors"
-	"fmt"
-	"math"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/transform"
@@ -20,11 +18,7 @@ import (
 func (c *chain) Pin(ctx context.Context, ns entity.NamespaceID) (transform.Attempt, error) {
 	current := make(map[string]keys.MaterialID)
 	material := make([][]keys.MaterialID, len(c.steps))
-	for i, t := range c.steps {
-		kinds := t.Kinds()
-		if len(kinds) > math.MaxUint8 {
-			return nil, fmt.Errorf("chain: transform %#04x declares %d material kinds, more than the chain ID's count holds", t.ID(), len(kinds))
-		}
+	for i, kinds := range c.kinds {
 		material[i] = make([]keys.MaterialID, len(kinds))
 		for j, kind := range kinds {
 			m, ok := current[kind]
@@ -38,15 +32,14 @@ func (c *chain) Pin(ctx context.Context, ns entity.NamespaceID) (transform.Attem
 			material[i][j] = m
 		}
 	}
-	return &attempt{id: chainID(c.steps, material), steps: c.steps, material: material}, nil
+	return &attempt{id: chainID(c.steps, material), c: c, material: material}, nil
 }
 
-// attempt is one pinned chain: the configured transforms in stage order, each
-// with its pinned material in the order of its Kinds, and the chain ID they
-// give.
+// attempt is one pinned chain: its chain, each configured step's pinned
+// material in the order of its Kinds, and the chain ID they give.
 type attempt struct {
 	id       [32]byte
-	steps    []transform.Transform
+	c        *chain
 	material [][]keys.MaterialID
 }
 
@@ -59,23 +52,23 @@ func (a *attempt) ID() [32]byte { return a.id }
 // material, in stage order, each no less than its input since a step that
 // declines passes it on, plus an envelope listing every step (RFC 5 §2.4).
 func (a *attempt) MaxEncodedLen(n int) int {
-	for i, t := range a.steps {
+	for i, t := range a.c.steps {
 		n = max(n, t.MaxEncodedLen(n, a.material[i]))
 	}
-	return n + 2 + 2*len(a.steps)
+	return n + 2 + 2*len(a.c.steps)
 }
 
 // LengthOf composes the steps' LengthOf of n bytes under their pinned
 // material, false if any one is false. A length known in advance is never a
 // declined chunk's, so the envelope lists every step.
 func (a *attempt) LengthOf(n int) (int, bool) {
-	for i, t := range a.steps {
+	for i, t := range a.c.steps {
 		var ok bool
 		if n, ok = t.LengthOf(n, a.material[i]); !ok {
 			return 0, false
 		}
 	}
-	return n + 2 + 2*len(a.steps), true
+	return n + 2 + 2*len(a.c.steps), true
 }
 
 // ponytail: Encode fails every call with errors.ErrUnsupported, so an attempt

@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/cubbit/dittofs/internal/prof"
@@ -20,13 +22,16 @@ import (
 // each piece of material it was given, after a length byte, before the input,
 // and its bounds count those bytes. Its ID, stage, version and kinds are
 // parameters; its length key is its settings' level as one byte, and it
-// ignores every other setting.
+// ignores every other setting. A shrink bounds it below its input, as a
+// compressor's bound may be, and unknown makes its length unknown in advance.
 type keyed struct {
 	id      transform.ID
 	stage   transform.Stage
 	version uint8
 	kinds   []string
 	level   []byte
+	shrink  int
+	unknown bool
 }
 
 func (k keyed) ID() transform.ID       { return k.id }
@@ -48,8 +53,10 @@ func (k keyed) extra(m []keys.MaterialID) int {
 	return e
 }
 
-func (k keyed) MaxEncodedLen(n int, m []keys.MaterialID) int    { return n + k.extra(m) }
-func (k keyed) LengthOf(n int, m []keys.MaterialID) (int, bool) { return n + k.extra(m), true }
+func (k keyed) MaxEncodedLen(n int, m []keys.MaterialID) int { return n + k.extra(m) - k.shrink }
+func (k keyed) LengthOf(n int, m []keys.MaterialID) (int, bool) {
+	return n + k.extra(m) - k.shrink, !k.unknown
+}
 
 func (k keyed) Encode(_ context.Context, _ entity.NamespaceID, m []keys.MaterialID, dst []byte, _ [32]byte, plain []byte) (transform.Encoded, error) {
 	body := dst[:0]
@@ -76,14 +83,19 @@ func (k keyed) factory() transform.Factory {
 
 var ns = entity.NamespaceID{1}
 
-// pin builds cfg over r with provider p and pins it for ns.
-func pin(t *testing.T, r chain.Registry, p keys.Provider, cfg ...transform.Config) (transform.Attempt, error) {
-	t.Helper()
-	c, err := r.NewChain(context.Background(), cfg, p, chain.Deps{
+// build builds cfg over r with provider p.
+func build(r chain.Registry, p keys.Provider, cfg ...transform.Config) (transform.Chain, error) {
+	return r.NewChain(context.Background(), cfg, p, chain.Deps{
 		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Recorder: sink{new([]string)},
 		Encrypts: func(entity.NamespaceID) bool { return false },
 	})
+}
+
+// pin builds cfg over r with provider p and pins it for ns.
+func pin(t *testing.T, r chain.Registry, p keys.Provider, cfg ...transform.Config) (transform.Attempt, error) {
+	t.Helper()
+	c, err := build(r, p, cfg...)
 	if err != nil {
 		t.Fatalf("NewChain: %v", err)
 	}
@@ -196,22 +208,22 @@ func TestChainIDChangesWithWhatDecidesABody(t *testing.T) {
 	idOf := func(r chain.Registry, s map[string]any) [32]byte { return mustPin(t, r, p, cfg(s)...).ID() }
 
 	base := idOf(chainOf(1), map[string]any{"level": 3})
+	if got := idOf(chainOf(1), map[string]any{"level": 3, "threads": 8}); got != base {
+		t.Errorf("a setting outside the length key changed the chain ID: %x, want %x", got, base)
+	}
+	version := idOf(chainOf(2), map[string]any{"level": 3})
+	level := idOf(chainOf(1), map[string]any{"level": 4})
+	p.Give(ns, "data-key", "d2", span(32, 64))
+	material := idOf(chainOf(1), map[string]any{"level": 3})
+	seen := map[[32]byte]string{base: "nothing"}
 	for _, tc := range []struct {
 		change string
 		id     [32]byte
-		same   bool
-	}{
-		{"a setting outside the length key", idOf(chainOf(1), map[string]any{"level": 3, "threads": 8}), true},
-		{"the format version", idOf(chainOf(2), map[string]any{"level": 3}), false},
-		{"a length-affecting setting", idOf(chainOf(1), map[string]any{"level": 4}), false},
-		{"the current material", func() [32]byte {
-			p.Give(ns, "data-key", "d2", span(32, 64))
-			return idOf(chainOf(1), map[string]any{"level": 3})
-		}(), false},
-	} {
-		if same := tc.id == base; same != tc.same {
-			t.Errorf("after changing %s, chain ID unchanged = %v, want %v", tc.change, same, tc.same)
+	}{{"the format version", version}, {"a length-affecting setting", level}, {"the current material", material}} {
+		if prev, ok := seen[tc.id]; ok {
+			t.Errorf("changing %s gives the chain ID of changing %s, want another", tc.change, prev)
 		}
+		seen[tc.id] = tc.change
 	}
 }
 
@@ -231,8 +243,19 @@ func TestAttemptKeepsItsPin(t *testing.T) {
 	settings := map[string]any{"level": 3, "with_encryption": "accept"}
 	cfg := []transform.Config{{Name: "c", Settings: settings}, {Name: "e"}}
 
+	c, err := build(r, p, cfg...)
+	if err != nil {
+		t.Fatalf("NewChain: %v", err)
+	}
+	pinNow := func() transform.Attempt {
+		a, err := c.Pin(context.Background(), ns)
+		if err != nil {
+			t.Fatalf("Pin: %v", err)
+		}
+		return a
+	}
 	before := p.Calls()
-	a := mustPin(t, r, p, cfg...)
+	a := pinNow()
 	if got := p.Calls() - before; got != 2 {
 		t.Errorf("Pin made %d provider calls, want 2, one Current per kind", got)
 	}
@@ -241,8 +264,11 @@ func TestAttemptKeepsItsPin(t *testing.T) {
 	// envelope of two IDs.
 	const wantMax = 100 + 3 + 3 + 3 + 2 + 2*2
 
-	p.Give(ns, "data-key", "data-key-2", span(64, 96))
 	settings["level"] = 9
+	if got := pinNow().ID(); got != id {
+		t.Errorf("a pin after the settings map changed has chain ID %x, want %x: the chain keeps the caller's map", got, id)
+	}
+	p.Give(ns, "data-key", "data-key-2", span(64, 96))
 	after := p.Calls()
 	if got := a.ID(); got != id {
 		t.Errorf("attempt ID changed after a rotation and a settings change: %x, want %x", got, id)
@@ -256,7 +282,7 @@ func TestAttemptKeepsItsPin(t *testing.T) {
 	if got := p.Calls() - after; got != 0 {
 		t.Errorf("the attempt made %d provider calls after Pin, want 0", got)
 	}
-	if fresh := mustPin(t, r, p, cfg...); fresh.ID() == id || fresh.MaxEncodedLen(100) == wantMax {
+	if fresh := pinNow(); fresh.ID() == id || fresh.MaxEncodedLen(100) == wantMax {
 		t.Errorf("a pin after the rotation kept the old chain ID or bound, so this test cannot tell a re-read from a pin")
 	}
 }
@@ -283,8 +309,56 @@ func TestPinFailsWithTheProvidersError(t *testing.T) {
 			if a != nil {
 				t.Errorf("Pin returned an attempt beside its error")
 			}
-			if !errors.Is(err, tc.want) || err == nil || err.Error() != want.Error() {
+			if !errors.Is(err, tc.want) || err.Error() != want.Error() {
 				t.Errorf("Pin error = %v, want the provider's %v", err, want)
+			}
+		})
+	}
+}
+
+// TestAttemptBounds holds the attempt's composed bounds: a step bounded below
+// its input passes the input's length on, since it may decline, and one whose
+// length is unknown in advance makes the attempt's unknown.
+func TestAttemptBounds(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	r := chain.NewRegistry()
+	r.Register(idA, "c", keyed{id: idA, stage: transform.StageCompress, version: 1, shrink: 10, unknown: true}.factory())
+	r.Register(idB, "e", keyed{id: idB, stage: transform.StageEncrypt, version: 1}.factory())
+	p := keystest.NewMemory()
+	a := mustPin(t, r, p, transform.Config{Name: "c", Settings: map[string]any{"with_encryption": "accept"}}, transform.Config{Name: "e"})
+	if got, want := a.MaxEncodedLen(100), 100+2+2*2; got != want {
+		t.Errorf("MaxEncodedLen(100) = %d, want %d: a step that may decline passes its input's length on", got, want)
+	}
+	if _, ok := a.LengthOf(100); ok {
+		t.Errorf("LengthOf(100) is known, want unknown: the compress step's length is unknown in advance")
+	}
+	if got, ok := mustPin(t, r, p, transform.Config{Name: "e"}).LengthOf(100); got != 100+2+2 || !ok {
+		t.Errorf("LengthOf(100) of the encrypt step alone = %d, %v, want %d, true", got, ok, 100+2+2)
+	}
+}
+
+// TestNewChainRefusesKindsTheChainIDCannotCount holds that a transform
+// declaring more material kinds than the chain ID's one-byte count holds, or
+// one kind twice, fails NewChain, so Pin fails only with the provider's error.
+func TestNewChainRefusesKindsTheChainIDCannotCount(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	many := make([]string, 256)
+	for i := range many {
+		many[i] = fmt.Sprintf("kind-%03d", i)
+	}
+	for _, tc := range []struct {
+		name  string
+		kinds []string
+	}{{"256 kinds", many}, {"one kind twice", []string{"data-key", "chunk-id-key", "data-key"}}} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := chain.NewRegistry()
+			r.Register(idB, "e", keyed{id: idB, stage: transform.StageEncrypt, version: 1, kinds: tc.kinds}.factory())
+			p := keystest.NewMemory()
+			if c, err := build(r, p, transform.Config{Name: "e"}); c != nil || err == nil || !strings.Contains(err.Error(), `"e"`) {
+				t.Errorf("NewChain built a chain = %v, error %v, want no chain and an error naming transform e", c != nil, err)
+			}
+			if got := p.Calls(); got != 0 {
+				t.Errorf("the refused build made %d provider calls, want 0", got)
 			}
 		})
 	}
