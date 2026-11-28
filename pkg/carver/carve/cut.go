@@ -1,7 +1,6 @@
 package carve
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -18,11 +17,12 @@ import (
 // caller that keeps them copies them. buf is the caller's, at least s.Max()
 // bytes, or Cut fails with io.ErrShortBuffer; a zero s fails it with
 // carver.ErrInvalidSettings. realEnd says whether the stretch ends for good;
-// an artificial end is refused with errors.ErrUnsupported. consumed is how
-// far, from base, the chunks emit accepted reach. An error from r or emit
-// stops Cut and is returned as it came. A negative base, or a stretch whose
-// next byte would sit past math.MaxInt64, fails it with an error wrapping
-// fs.ErrInvalid, so offsets never overflow.
+// on an artificial end the tail after the last content-chosen boundary is not
+// emitted, and consumed says how far Cut cut: how far, from base, the chunks
+// emit accepted reach. An error from r or emit stops Cut and is returned as
+// it came. A negative base, or a stretch whose next byte would sit past
+// math.MaxInt64, fails it with an error wrapping fs.ErrInvalid, so offsets
+// never overflow.
 func Cut(r io.Reader, base int64, s carver.Settings, buf []byte, realEnd bool,
 	emit func(carver.Chunk, []byte) error,
 ) (consumed int64, err error) {
@@ -33,8 +33,6 @@ func Cut(r io.Reader, base int64, s carver.Settings, buf []byte, realEnd bool,
 		return 0, io.ErrShortBuffer
 	case base < 0:
 		return 0, fmt.Errorf("%w: base %d is negative", fs.ErrInvalid, base)
-	case !realEnd:
-		return 0, fmt.Errorf("%w: an artificial end", errors.ErrUnsupported)
 	}
 
 	var (
@@ -81,11 +79,19 @@ func Cut(r io.Reader, base int64, s carver.Settings, buf []byte, realEnd bool,
 			}
 		}
 
-		if lo == hi {
+		// decision: an artificial end stops once fewer than Max bytes are left
+		// past the last boundary, even when that tail ends on a content
+		// boundary: the chunker is asked only with Max bytes in view or with
+		// final, and an artificial end never sets final (RFC 2 §2.4). The
+		// held tail, under Max bytes, is re-read on the next offer and cut
+		// as one long stretch would cut it. Look for a boundary in the tail
+		// instead if the chunker gains an answer for "no boundary in this
+		// short buffer".
+		if lo == hi || eof && !realEnd && hi-lo < s.Max() {
 			return consumed, nil
 		}
 
-		e := chunker.NextBoundary(s, buf[lo:hi], eof)
+		e := chunker.NextBoundary(s, buf[lo:hi], eof && realEnd)
 		p := buf[lo : lo+e : lo+e]
 
 		if err := emit(carver.Chunk{Offset: base + consumed, Length: int32(e), Hash: ChunkID(s, p)}, p); err != nil {
