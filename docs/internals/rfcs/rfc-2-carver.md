@@ -1441,8 +1441,8 @@ the same box differs by more across those than across commits.
 
 **Suites.** §9's chunker, carver, name and consumer rows, §5.7's assembler checks but the two that need the lookup, and §10's golden
 vectors, differential, property and fault tests run in `unit`, and an allocation count the race
-detector skews runs in `unit/carver-allocs`, on every pull request, every carver test whose name starts TestAllocs; its tests skip under the race detector, so that option is the only place they count. Fuzzing past the seed corpus is planned for a shared nightly fuzz suite. §9.1's K1 to K3 on the
-reference box, §10.3's fault sweep at full size and the golden vectors on a second CPU architecture are planned to run nightly, and K4 and K5 by hand, in a suite named for the carver. None of these but `unit/carver-allocs` is registered yet; until each is, no suite runs what it holds.
+detector skews runs in `unit/carver-allocs`, on every pull request, every carver test whose name starts TestAllocs; its tests skip under the race detector, so that option is the only place they count. Fuzzing past the seed corpus runs nightly in the shared `fuzz` suite, one fuzzing run of ten minutes per target, starting with the reference chunker's bounds; `unit` runs each target's seeds. §9.1's K1 to K3 on the
+reference box, §10.3's fault sweep at full size and the golden vectors on a second CPU architecture are planned to run nightly, and K4 and K5 by hand, in a suite named for the carver. None of these but `unit/carver-allocs` and `fuzz` is registered yet; until each is, no suite runs what it holds.
 
 ## 11. Open questions
 

@@ -141,6 +141,17 @@ suites:
       # dt run --changed never narrows them away.
       whole-tree:
         cmd: go test -race -timeout=5m -run=^(TestImportRules|TestNodeExports|TestReferenceMatchesCommandTrees|TestImports|TestOpenAPIMatchesRouteTable|TestRepositoryNamesNoRefusedVariable)$ ./internal/node/ ./internal/node/api/ ./cmd/gendocs/ ./pkg/identity/ ./pkg/bootstrap/
+  # Fuzzing past the seed corpus, which unit runs. go test fuzzes one target of one package at
+  # a time, so each target is one line, and every line runs even after one fails. A target
+  # joins with its line, raising both timeouts by its ten minutes. A crasher is written under
+  # its package's testdata/fuzz/, where only its path is printed, so the last line copies every
+  # untracked file there into {out}, for its owner to commit as a seed.
+  fuzz:
+    tier: nightly
+    cmd:
+      - go test -run=^$ -fuzz=^FuzzReferenceBounds$ -fuzztime=10m ./pkg/carver/internal/carvetest/
+      - { sh: 'git ls-files -o -- ":(glob)**/testdata/fuzz/**" | while IFS= read -r f; do mkdir -p "{out}/$(dirname "$f")" && cp "$f" "{out}/$f" || exit 1; done' }
+    timeout: { test: 15m, cell: 20m }
   # The journal's conformance checks, behind their own tag: they fail until the journal they
   # check is written, and each failure is a known one, so the unit suite would turn red on them.
   journal-conformance:
