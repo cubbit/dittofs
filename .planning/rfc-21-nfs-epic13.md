@@ -786,7 +786,7 @@ test/pcap-corpus/
   - A context idle 8 hours on the clock is gone at the next `insert` or `get`; a `check` whose verdict
     is run alone moves its idle time and its place in either list; a dropped number and a `get`
     move neither; an `insert` or `get` evicts at most 16 idle contexts.
-  - With the budget too small for one more context, `reserve` refuses and charges nothing; `insert` leaves charged only the context's real size (D8).
+  - With the budget too small for one more context, `reserve` refuses and charges nothing; `insert` leaves charged only the lesser of the context's bound and its real size (D8).
   - In the window: a repeated or too-old number drops; one above advances it; one at or above
     `MAXSEQ`, or at or past the ticket's end, deletes the context.
   - Every deletion releases its reservation: the budget is back to zero once the table is empty.
@@ -882,7 +882,7 @@ test/pcap-corpus/
   `Reset` after its `INIT`s:
   - the `Identity` on that `r.Call` (catches a principal or protection dropped between the stage and
     the handler, R16, R17, R39);
-  - R34's five steps, each asserting the reply and the table's state read back, the forged calls
+  - R34's other five steps, each asserting the reply and the table's state read back, the forged calls
     leaving `vfstest.Mutations` empty (catch an unauthenticated teardown, R10, a window moved by a
     forgery, R7, one principal evicting another, R4, a context keyed by connection, R2, a dropped or
     rejected call run, R8);
@@ -890,20 +890,27 @@ test/pcap-corpus/
     `vfstest.Mutations` holds one entry, and the context's idle time read back after the replay is
     the first send's (catches a replayed sequence number run or answered, R6, R8, or one that keeps
     a context alive, R5);
-  - an `INIT` with the pool after its own: the connection-state `Budget` the adapter is handed built
-    at the connection's fixed cost (RFC 24 §4.4) plus one `INIT`'s bound (`resources.NewBudget`,
-    RFC 24 §2.5; `SplitFor`'s 4 MiB floor does not apply to one a test builds, §2.4), the first
-    `INIT` held in `SignIn` by a fault-injection wrapper around the real one; a second `INIT` is a
-    `CREDPROBLEM` reply read on the connection, nothing charged for it and nothing evicted, the
-    first then released and its context built; the same `INIT`'s bytes sent again once the pool
-    frees set up a context, so its authenticator never reached the replay cache (catch an `INIT`
-    refused by timing rather than the pool, a `CREDPROBLEM` that evicts a context or charges
-    anything, an `INIT` dropped unanswered, which leaves the client waiting its RPC timeout, a
-    context held uncharged, or a charge taken after `SignIn`, D8); then a fresh `INIT` from the
-    initiator, a new AP-REQ as `rpc.gssd`'s next upcall sends, sets up a context too;
-  - the row's fifth case: five `INIT`s on one ticket over a `Budget` at the fixed cost plus the
-    contexts' four trimmed sizes plus one bound, all five built, the `Budget` read back at the
-    fixed cost plus five trimmed sizes (catch a charge never trimmed, R34);
+  - an `INIT` with the pool after built contexts: the connection-state `Budget` the adapter is
+    handed built at the connection's fixed cost F (RFC 24 §4.4) plus one context's trimmed size T
+    plus one `INIT`'s bound B (`resources.NewBudget`, RFC 24 §2.5; `SplitFor`'s 4 MiB floor does
+    not apply to one a test builds, §2.4), one `INIT` built first so a wrongly-evicting refusal
+    has something to lose; the next `INIT` held in `SignIn` by a fault-injection wrapper around
+    the real one, a third `INIT` a `CREDPROBLEM` reply read on the connection, nothing charged
+    for it, and the built context still answering a call (catches a `CREDPROBLEM` that evicts a
+    context, or one that loses the built one); the held `INIT` released and its context built,
+    the `Budget` read back at F + 2T; the two contexts destroyed with valid `RPCSEC_GSS_DESTROY`s,
+    the `Budget` at F; the same held `INIT`'s bytes sent again set up a context, so its
+    authenticator never reached the replay cache (catches an `INIT` refused by timing rather
+    than the pool, an `INIT` dropped unanswered, which leaves the client waiting its RPC timeout,
+    a context held uncharged, or a charge taken after `SignIn`, D8); that context destroyed too,
+    then a fresh `INIT` from the initiator, a new AP-REQ as `rpc.gssd`'s next upcall sends, sets
+    up a context;
+  - the row's fifth case: five tokens built first, each `INIT` carrying its own authenticator so
+    its own bound, the pool sized at the fixed cost F plus the four contexts' trimmed sizes plus
+    the fifth token's own bound, T read back from one context built on a roomy `Budget` first, all
+    five `INIT`s sent on one ticket so each context's trimmed size is the same, the count cap at
+    its default (the case before it leaves the cap at four): all five built, the `Budget` read
+    back at F plus five trimmed sizes (catches a charge never trimmed, R34);
   - two contexts sending one XID and the same arguments: two entries in `vfstest.Mutations`; one
     context retransmitting under a new sequence number: one; a `CREATE` whose connection is closed
     before its reply is read, retransmitted under a new sequence number on a new connection from
