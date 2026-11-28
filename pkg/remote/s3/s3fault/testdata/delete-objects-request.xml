@@ -1,0 +1,1 @@
+<Delete xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Object><Key>a</Key></Object><Object><Key>b&amp;&lt;c</Key></Object><Object><Key>d</Key></Object></Delete>
