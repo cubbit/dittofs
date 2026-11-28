@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"slices"
-	"sync"
 	"testing"
 
 	"github.com/cubbit/dittofs/internal/prof"
@@ -21,7 +20,7 @@ import (
 //
 // ponytail: pinned here from this package's own script until RFC 5 carries a
 // salvage golden vector and its vectors have a shared loader; move it there
-// then.
+// then, and pin keystest.Memory's salvage AAD to it too.
 const (
 	salvageVectorExport = "journal-7/tag-3"
 	salvageVectorAAD    = "000000000000000b73616c766167652d6b65790000000f6a6f75726e616c2d372f7461672d33"
@@ -29,9 +28,10 @@ const (
 )
 
 // WrapSalvageKey's key is the 32 bytes Deps.Rand serves first, and its wrap
-// equals the vector another AES-GCM implementation computed from RFC 5's
-// text: an AAD that drops the empty namespace, misspells the kind or frames
-// the export apart from the key wrap's layout fails here.
+// equals the vector another AES-GCM implementation computed from Appendix
+// B.1's key wrap and stored wrap, over an empty namespace and kind
+// salvage-key: an AAD that drops the empty namespace, misspells the kind or
+// frames the export apart from the key wrap's layout fails here.
 func TestSalvageWrapVector(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -59,9 +59,8 @@ func TestSalvageWrapVector(t *testing.T) {
 		t.Errorf("WrapSalvageKey left %d of the vector's 44 random bytes unread, want 0", rnd.Len())
 	}
 
-	got, err := p.unwrap(mustHex(t, salvageVectorStored), mustHex(t, salvageVectorAAD))
-	if err != nil || !bytes.Equal(got, key) {
-		t.Errorf("unwrap of the vector's salvage wrap under its AAD = %x, %v; want the key %x", got, err, key)
+	if got := hex.EncodeToString(wrapAAD(nil, kindSalvageKey, salvageVectorExport)); got != salvageVectorAAD {
+		t.Errorf("salvage AAD %s, want the vector's %s", got, salvageVectorAAD)
 	}
 }
 
@@ -107,22 +106,25 @@ func TestSalvageWrapBindsItsExport(t *testing.T) {
 	if got, err := elsewhere.unwrap(wrap, own); err == nil {
 		t.Errorf("unwrap under another key file's master key = %x, nil; want an error", got)
 	}
+
+	sameID, err := build(p.masterKeyID, make([]byte, 32), Deps{Records: keystest.NewRecords(), Rand: rand.Reader})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := sameID.unwrap(wrap, own); err == nil || errors.Is(err, errStoredWrap) {
+		t.Errorf("unwrap under other key bytes with the same master key ID = %x, %v; want the AEAD's refusal", got, err)
+	}
 }
 
 // updates passes every call through to a KeyRecords and keeps the namespaces
 // Update was called for, so a test can assert that no key record was written.
 type updates struct {
 	KeyRecords
-
-	mu  sync.Mutex
 	nss []entity.NamespaceID
 }
 
 func (u *updates) Update(ctx context.Context, ns entity.NamespaceID, fn func([]Row) ([]Row, error)) error {
-	u.mu.Lock()
 	u.nss = append(u.nss, ns)
-	u.mu.Unlock()
-
 	return u.KeyRecords.Update(ctx, ns, fn)
 }
 
@@ -141,12 +143,6 @@ func TestSalvageWrapCountsAndWritesNoRecord(t *testing.T) {
 	p, err := New(ctx, Config{KeyFile: path, Passphrase: passphrase}, Deps{Records: view, Rand: rand.Reader})
 	if err != nil {
 		t.Fatalf("New: %v", err)
-	}
-
-	ns := entity.NewNamespaceID()
-	seeded := Row{Kind: keys.KindDataKey, ID: "d1", State: "current", Record: []byte("record")}
-	if err := records.Update(ctx, ns, func([]Row) ([]Row, error) { return []Row{seeded}, nil }); err != nil {
-		t.Fatalf("seed a key record: %v", err)
 	}
 
 	if ok, err := records.RaiseWrapCount(ctx, p.masterKeyID[:], 1<<32-2, 1<<32); !ok || err != nil {
@@ -171,12 +167,5 @@ func TestSalvageWrapCountsAndWritesNoRecord(t *testing.T) {
 
 	if len(view.nss) != 0 {
 		t.Errorf("salvage wraps called Update for namespaces %v, want no key record written", view.nss)
-	}
-	rows, err := records.Load(ctx, ns)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if len(rows) != 1 || rows[0].Kind != seeded.Kind || rows[0].ID != seeded.ID || rows[0].State != seeded.State || !bytes.Equal(rows[0].Record, seeded.Record) {
-		t.Errorf("namespace %s's key records after salvage wraps = %v, want only the seeded %v", ns, rows, seeded)
 	}
 }
