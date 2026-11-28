@@ -180,7 +180,7 @@ func settingsBackedRefused(t *testing.T, role entity.APIRole, node uuid.UUID) {
 			"namespace",
 			http.MethodPost,
 			"/api/v1/namespaces",
-			`{"spec":{"store":"` + ids + `","settings":{"namespace.prefix":"p/"}}}`,
+			`{"spec":{"store":"` + ids + `","settings":{"remote.prefix":"p/"}}}`,
 			[]string{"Idempotency-Key", "ns"},
 		},
 		{
@@ -447,7 +447,7 @@ func TestGenericSettingGuards(t *testing.T) {
 		{"a store's credential", "/api/v1/stores/" + st.String() + "/settings/remote.credential", http.StatusBadRequest, "remote.credential", "PUT /api/v1/stores/{id}/credential"},
 		{"the keytab", "/api/v1/settings/identity.keytab", http.StatusBadRequest, "identity.keytab", "PUT /api/v1/installation/keytab"},
 		{"an unknown node's", "/api/v1/nodes/" + uuid.NewString() + "/settings/adapters.nfs.port", http.StatusNotFound, "", ""},
-		{"an unknown namespace's", "/api/v1/namespaces/" + uuid.NewString() + "/settings/namespace.prefix", http.StatusNotFound, "", ""},
+		{"an unknown namespace's", "/api/v1/namespaces/" + uuid.NewString() + "/settings/remote.prefix", http.StatusNotFound, "", ""},
 		{"an unknown store's", "/api/v1/stores/" + uuid.NewString() + "/settings/remote.bucket", http.StatusNotFound, "", ""},
 		{"an overlong key", "/api/v1/settings/" + strings.Repeat("k", 256), http.StatusBadRequest, "key", ""},
 	} {
@@ -467,7 +467,7 @@ func TestGenericSettingGuards(t *testing.T) {
 func TestNamespaceOnMissingStoreRefused(t *testing.T) {
 	s := serve(t, as(entity.RoleOperator, false))
 	before := s.written(t)
-	r := s.do(t, http.MethodPost, "/api/v1/namespaces", `{"spec":{"store":"`+uuid.NewString()+`","settings":{"namespace.prefix":"p/"}}}`, "Idempotency-Key", "ns")
+	r := s.do(t, http.MethodPost, "/api/v1/namespaces", `{"spec":{"store":"`+uuid.NewString()+`","settings":{"remote.prefix":"p/"}}}`, "Idempotency-Key", "ns")
 	if p := r.problem(t); r.status != http.StatusBadRequest || p.Field != "spec.store" {
 		t.Fatalf("POST namespace on a missing store: answered %d %s, want 400 naming spec.store", r.status, r.body)
 	}

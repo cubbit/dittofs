@@ -676,7 +676,7 @@ func TestWiredEveryWriteAudited(t *testing.T) {
 			waitingWrite{wiredWrite: wiredWrite{route: "PUT /api/v1/stores/{id}/credential", path: bare + "/credential", body: map[string]any{"spec": apiv1.CredentialSpec{Value: []byte("a new credential")}}, hdr: []string{"If-None-Match", "*"}, secrets: secretForms("a new credential")},
 				status: http.StatusConflict, code: "unproven", why: "the store's capability check"},
 			waitingWrite{wiredWrite: wiredWrite{route: "DELETE /api/v1/stores/{id}/credential", path: cred, hdr: append([]string{"If-Match", `"1"`}, idemKey()...)}, status: http.StatusBadRequest, code: "unknown_key", why: "the settings table"},
-			waitingWrite{wiredWrite: wiredWrite{route: "POST /api/v1/namespaces", path: "/api/v1/namespaces", body: json.RawMessage(`{"spec":{"store":"` + uuid.UUID(storeA).String() + `","settings":{"namespace.prefix":"p/"}}}`), hdr: idemKey()}, status: http.StatusBadRequest, code: "unknown_key", why: "the settings table"},
+			waitingWrite{wiredWrite: wiredWrite{route: "POST /api/v1/namespaces", path: "/api/v1/namespaces", body: json.RawMessage(`{"spec":{"store":"` + uuid.UUID(storeA).String() + `","settings":{"remote.prefix":"p/"}}}`), hdr: idemKey()}, status: http.StatusBadRequest, code: "unknown_key", why: "the settings table"},
 			waitingWrite{wiredWrite: wiredWrite{route: "POST /api/v1/operations/{id}:cancel", path: "/api/v1/operations/" + f.op + ":cancel", hdr: idemKey()},
 				status: http.StatusConflict, code: apiv1.CodeNotCancellable, why: "a cancellable operation kind"},
 		)

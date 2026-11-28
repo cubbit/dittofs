@@ -31,6 +31,16 @@ type Settings struct {
 	// the system's roots.
 	TrustRoots string `json:"trust_roots" class:"live"`
 	// Bucket is the bucket every object of the store lives in.
+	//
+	// decision: the bucket carries the store-location tag beside its bound
+	// class, so a change is refused as bound while the store holds content
+	// and refused unproven while it holds none, since the location gate
+	// refuses every change but a first value until the capability check can
+	// prove the claim at the new bucket. That is narrower than RFC 13 §5.1,
+	// which lets an empty store's bucket change; the no-content half waits on
+	// the API running the check and on the namespace's claim. Region and
+	// trust roots carry no tag: they change how a request to the same
+	// endpoint is signed or verified, not where the content is.
 	Bucket string `json:"bucket" class:"bound" location:"store"`
 	// StorageClass is the class every object is written in (RFC 4 C.1).
 	StorageClass string `json:"storage_class" class:"next write"`
@@ -66,6 +76,14 @@ func (s Settings) Validate() error {
 // NamespaceSettings is a namespace's location in the bucket (RFC 4 §4.2).
 type NamespaceSettings struct {
 	// Prefix is the key prefix every object of the namespace carries.
+	//
+	// decision: the prefix carries the store-location tag beside its bound
+	// class, as the bucket does, so its change is refused on every
+	// namespace: as bound while the API answers that every namespace holds
+	// content, the bound gate running first, and as unproven past that. Only
+	// the value written with the namespace passes. Withdraw the refusal of an
+	// empty namespace's change once the API answers content per namespace
+	// and the capability check proves the claim at the new prefix.
 	Prefix string `json:"prefix" class:"bound" location:"store"`
 }
 
