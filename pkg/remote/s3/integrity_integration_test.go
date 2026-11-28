@@ -4,6 +4,7 @@ package s3
 
 import (
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"runtime"
 	"testing"
@@ -36,15 +37,11 @@ func newCheckRig(t *testing.T) *checkRig {
 	return &checkRig{lsRig: r, c: s.c, tr: tr, ns: s.prefix + "check/0011223344556677/"}
 }
 
-// Compositions of the services RFC 4 Appendix B measured, over LocalStack.
-var (
-	// Cubbit DS3 ignores every put checksum and If-None-Match.
-	cubbitDS3 = []string{"Content-Md5", "If-None-Match", "X-Amz-Sdk-Checksum-Algorithm", "X-Amz-Checksum-Crc32",
-		"X-Amz-Checksum-Crc32c", "X-Amz-Checksum-Crc64nvme", "X-Amz-Checksum-Sha1", "X-Amz-Checksum-Sha256"}
-)
-
+// cubbit is Cubbit DS3 as RFC 4 Appendix B measured it, over LocalStack: it
+// ignores every put checksum and If-None-Match.
 func cubbit(tr *s3fault.Transport) {
-	tr.Inject(s3fault.Rule{Op: "PutObject"}, s3fault.StripHeaders(cubbitDS3...))
+	tr.Inject(s3fault.Rule{Op: "PutObject"}, s3fault.StripHeaders("Content-Md5", "If-None-Match", "X-Amz-Sdk-Checksum-Algorithm",
+		"X-Amz-Checksum-Crc32", "X-Amz-Checksum-Crc32c", "X-Amz-Checksum-Crc64nvme", "X-Amz-Checksum-Sha1", "X-Amz-Checksum-Sha256"))
 }
 
 // scaleway enforces only CRC32C, refusing a wrong one 400 InvalidRequest.
@@ -83,7 +80,9 @@ func TestProveIntegrityChoosesEachProfilesMechanism(t *testing.T) {
 		{"cubbit_ds3", cubbit, "",
 			choice{proved: true, sum: remote.ChecksumNone},
 			nil, []string{"integrity/crc32c-wrong", "integrity/md5-wrong", "integrity/etag"}},
-		// A refusal counts only once nothing is found stored at the key.
+		// A refusal counts only once nothing is found stored at the key. The
+		// plant's body is not read back: LocalStack 4.13.1 keeps its length
+		// after refusing a put over it, and a get of it never sends the body.
 		{"refused_but_held", func(*s3fault.Transport) {}, "integrity/crc32c-wrong",
 			choice{proved: true, sum: remote.ChecksumMD5, rejected: recorded{400, "BadDigest"}},
 			[]string{"integrity/md5-wrong", "integrity/large-wrong"}, nil},
@@ -166,28 +165,33 @@ func TestProveIntegrityAtTheLargestBlock(t *testing.T) {
 
 	for _, tc := range []struct {
 		name    string
-		compose func(*s3fault.Transport)
+		compose func(tr *s3fault.Transport, ns string)
 	}{
-		{"crc32c_stripped", func(tr *s3fault.Transport) {
+		{"crc32c_stripped", func(tr *s3fault.Transport, _ string) {
 			tr.Inject(above, s3fault.StripHeaders("X-Amz-Checksum-Crc32c", "X-Amz-Sdk-Checksum-Algorithm"))
 		}},
-		{"md5_stripped", func(tr *s3fault.Transport) {
+		{"md5_stripped", func(tr *s3fault.Transport, _ string) {
 			md5Only(tr)
 			tr.Inject(above, s3fault.StripHeaders("Content-Md5"))
 		}},
 		// The small refusal recorded as BadDigest, the large one answered
 		// under another code, which the store would read as ErrInvalid.
-		{"large_refusal_recoded", func(tr *s3fault.Transport) {
+		{"large_refusal_recoded", func(tr *s3fault.Transport, _ string) {
 			tr.Inject(above, s3fault.RecodeError("BadDigest", http.StatusBadRequest, "InvalidRequest"))
 		}},
-		{"etag_body_flipped", func(tr *s3fault.Transport) {
+		// The small ETag proof's body flipped: the ETag is of other bytes.
+		{"etag_small_flipped", func(tr *s3fault.Transport, ns string) {
+			cubbit(tr)
+			tr.Inject(s3fault.Rule{Op: "PutObject", KeyPrefix: ns + "integrity/etag"}, s3fault.FlipByte(0))
+		}},
+		{"etag_body_flipped", func(tr *s3fault.Transport, _ string) {
 			cubbit(tr)
 			tr.Inject(above, s3fault.FlipByte(largestBlock-1))
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newCheckRig(t)
-			tc.compose(r.tr)
+			tc.compose(r.tr, r.ns)
 
 			ch, v, err := proveIntegrity(t.Context(), r.c, r.ns, largestBlock)
 			if err != nil {
@@ -200,6 +204,43 @@ func TestProveIntegrityAtTheLargestBlock(t *testing.T) {
 
 			if ch != (choice{}) {
 				t.Errorf("choice %+v, want nothing proved", ch)
+			}
+		})
+	}
+}
+
+// A failure past the first request, on the largest block's put or on the get
+// showing a refused put stored nothing, fails the check with that request's
+// error and sends nothing after it.
+func TestProveIntegrityFailsOnALaterFailedCall(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rule s3fault.Rule
+		eff  s3fault.Effect
+		want error
+		last string // the key of the last request sent
+	}{
+		{"large_put", s3fault.Rule{Op: "PutObject", MinBody: largestBlock / 2},
+			s3fault.Answer(http.StatusServiceUnavailable, "SlowDown", nil), remote.ErrThrottled, "integrity/large"},
+		{"existence_get", s3fault.Rule{Op: "GetObject"},
+			s3fault.Answer(http.StatusForbidden, "AccessDenied", nil), remote.ErrDenied, "integrity/crc32c-wrong"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newCheckRig(t)
+			r.tr.Inject(tc.rule, tc.eff)
+
+			ch, v, err := proveIntegrity(t.Context(), r.c, r.ns, largestBlock)
+			if !errors.Is(err, tc.want) {
+				t.Errorf("proveIntegrity = %v, want %v", err, tc.want)
+			}
+
+			if ch != (choice{}) || v != (verdict{}) {
+				t.Errorf("choice %+v and verdict %v, want both zero", ch, v)
+			}
+
+			reqs := r.tr.Requests()
+			if len(reqs) == 0 || reqs[len(reqs)-1].Key != r.ns+tc.last {
+				t.Errorf("the last of %d requests went to %v, want %s: nothing sent after the failure", len(reqs), reqs, tc.last)
 			}
 		})
 	}
@@ -238,7 +279,12 @@ func TestProveIntegrityAllocatesFlat(t *testing.T) {
 
 	small, large := perCheck(1<<20), perCheck(8<<20)
 
-	const slack = 256 << 10
+	// The small puts, the existence gets and the SDK's own per-request cost,
+	// below the 1 MiB block a held one would add.
+	const slack = 768 << 10
+	if small > slack {
+		t.Errorf("the check at 1 MiB allocates %d bytes, more than %d: the block is held", small, slack)
+	}
 	if large > small+slack {
 		t.Errorf("the check allocates %d bytes at 8 MiB and %d at 1 MiB, more than %d apart: the block is held", large, small, slack)
 	}

@@ -6,6 +6,7 @@ import (
 	"crypto/md5"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"hash"
 	"hash/crc32"
 	"io"
@@ -34,8 +35,13 @@ var checkBody = []byte("dittofs capability check\n")
 // It returns the choice and a verdict on put_integrity, with nothing proved
 // when that is missing. A call that fails rather than answers, a refused
 // credential, a 5xx or a throttle among them, fails the check with the call's
-// error as fromSDK maps it.
+// error as fromSDK maps it. largest is the bound the store's Put enforces,
+// the client's largest block; below 1 it is refused with remote.ErrInvalid.
 func proveIntegrity(ctx context.Context, c *Client, ns string, largest int64) (choice, verdict, error) {
+	if largest < 1 {
+		return choice{}, verdict{}, fmt.Errorf("remote/s3: integrity proof at %d bytes: %w", largest, remote.ErrInvalid)
+	}
+
 	var v verdict
 
 	ch, ok, err := smallProof(ctx, c, ns)
@@ -63,10 +69,9 @@ func smallProof(ctx context.Context, c *Client, ns string) (choice, bool, error)
 		sum  remote.Checksum
 		name string
 	}{{remote.ChecksumCRC32C, "crc32c"}, {remote.ChecksumMD5, "md5"}} {
-		sum := m.sum
-		key, right := ns+"integrity/"+m.name, sumOf(sum, bytes.NewReader(checkBody))
+		key, right := ns+"integrity/"+m.name, sumOf(m.sum, bytes.NewReader(checkBody))
 
-		_, refused, err := putSum(ctx, c, key, bytes.NewReader(checkBody), n, sum, right)
+		_, refused, err := putSum(ctx, c, key, bytes.NewReader(checkBody), n, m.sum, right)
 		if err != nil {
 			return choice{}, false, err
 		}
@@ -75,7 +80,7 @@ func smallProof(ctx context.Context, c *Client, ns string) (choice, bool, error)
 			continue // the service refuses even the correct value
 		}
 
-		refused, err = refusesWrong(ctx, c, key+"-wrong", bytes.NewReader(checkBody), n, sum, right)
+		refused, err = refusesWrong(ctx, c, key+"-wrong", bytes.NewReader(checkBody), n, m.sum, right)
 		if err != nil {
 			return choice{}, false, err
 		}
@@ -83,7 +88,7 @@ func smallProof(ctx context.Context, c *Client, ns string) (choice, bool, error)
 		if refused != nil {
 			status, code := reply(refused)
 
-			return choice{proved: true, sum: sum, rejected: recorded{status, code}}, true, nil
+			return choice{proved: true, sum: m.sum, rejected: recorded{status, code}}, true, nil
 		}
 	}
 
@@ -100,15 +105,26 @@ func smallProof(ctx context.Context, c *Client, ns string) (choice, bool, error)
 // largeProof proves ch again at key with size bytes of blockOf: a correct
 // put, then one with a wrong checksum, refused with nothing stored, that the
 // store's own reading of the refusal, the recorded rejection included, reads
-// as ErrCorrupt; under the ETag, one put with a wrong Content-MD5 whose ETag
-// must be the MD5 of the bytes sent.
+// as ErrCorrupt; under the ETag, one put with no checksum, as the store's
+// puts are sent, whose ETag must be the MD5 of the bytes sent.
+//
+// decision: the large refusal must read as ErrCorrupt under the code the small
+// one recorded, not be recorded afresh, since a service that refuses a large
+// block under another code would see every corrupt block put come back
+// ErrInvalid and never retried. The cost is refusing such a service outright;
+// record a code per size if one is ever measured.
 //
 // ponytail: two puts of the largest block per open, one under the ETag, a few
 // MiB at the defaults. Prove once per client if opens of many namespaces on one
 // configuration show it.
 func largeProof(ctx context.Context, c *Client, key string, ch choice, size int64) (bool, error) {
 	if ch.sum == remote.ChecksumNone {
-		return etagIsMD5Of(ctx, c, key, blockOf(size), size, sumOf(remote.ChecksumMD5, blockOf(size)))
+		etag, refused, err := putSum(ctx, c, key, blockOf(size), size, remote.ChecksumNone, nil)
+		if err != nil || refused != nil {
+			return false, err
+		}
+
+		return etagIsMD5(etag, sumOf(remote.ChecksumMD5, blockOf(size))), nil
 	}
 
 	right := sumOf(ch.sum, blockOf(size))
@@ -141,9 +157,9 @@ func putSum(ctx context.Context, c *Client, key string, body io.Reader, size int
 
 	switch mech {
 	case remote.ChecksumCRC32C:
-		in.ChecksumCRC32C = aws.String(base64.StdEncoding.EncodeToString(sum))
+		in.ChecksumCRC32C = new(base64.StdEncoding.EncodeToString(sum))
 	case remote.ChecksumMD5:
-		in.ContentMD5 = aws.String(base64.StdEncoding.EncodeToString(sum))
+		in.ContentMD5 = new(base64.StdEncoding.EncodeToString(sum))
 	}
 
 	out, sdkErr := c.api.PutObject(ctx, in)
@@ -155,7 +171,9 @@ func putSum(ctx context.Context, c *Client, key string, body io.Reader, size int
 	// verdict on the checksum. A 401, a 403, a 3xx, a size or quota refusal, a
 	// throttle and a 5xx fail the check instead of being recorded as the
 	// checksum's rejection, which would turn every later denial of a put into
-	// ErrCorrupt, retried for ever.
+	// ErrCorrupt, retried for ever. The price: a service that refuses a wrong
+	// checksum only with one of those fails every open rather than falling
+	// through to the next mechanism; widen the set if one is ever measured.
 	e := fromSDK(ctx, opPut, recorded{}, nil, sdkErr)
 	if errors.Is(e, remote.ErrInvalid) || errors.Is(e, remote.ErrCorrupt) {
 		return nil, sdkErr, nil
@@ -195,6 +213,13 @@ func etagIsMD5Of(ctx context.Context, c *Client, key string, body io.Reader, siz
 
 // holds reports whether the service holds an object at key, reading its first
 // byte only.
+//
+// decision: only 404 NoSuchKey reads as nothing stored; any other answer, a
+// 403 from a credential without the list right among them, fails the check
+// with the get's error, since without it nothing shows the refused put left
+// nothing behind. Such a credential is then refused as denied at step 1, not
+// named as list_bucket at step 2. Name it there instead, by treating a 403
+// here as the mechanism unproved, if operators are seen misreading the denial.
 func holds(ctx context.Context, c *Client, key string) (bool, error) {
 	out, err := c.api.GetObject(ctx, &s3.GetObjectInput{Bucket: &c.cfg.Bucket, Key: &key, Range: aws.String("bytes=0-0")})
 	if err == nil {
