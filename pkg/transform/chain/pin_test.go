@@ -97,7 +97,7 @@ var ns = entity.NamespaceID{1}
 func build(r chain.Registry, p keys.Provider, cfg ...transform.Config) (transform.Chain, error) {
 	return r.NewChain(context.Background(), cfg, p, chain.Deps{
 		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Recorder: sink{new([]string)},
+		Recorder: &sink{},
 		Encrypts: func(entity.NamespaceID) bool { return false },
 	})
 }

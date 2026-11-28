@@ -21,6 +21,7 @@ type chain struct {
 	keys     keys.Provider
 	require  []transform.ID                // Deps.Require, resolved at build
 	encrypts func(entity.NamespaceID) bool // Deps.Encrypts
+	series   series                        // Deps.Recorder's handles, resolved at build
 }
 
 var _ transform.Chain = (*chain)(nil)
@@ -150,7 +151,13 @@ func (r *registry) assemble(ctx context.Context, cfg []transform.Config, m keys.
 		}
 		steps[i], kinds[i] = t, k
 	}
-	return &chain{decode: set, steps: steps, kinds: kinds, keys: m, require: reqIDs, encrypts: deps.Encrypts}, "", nil
+	// Resolved last, so a list refused for its shape or a factory makes no
+	// series.
+	ser, name, err := r.resolveSeries(deps.Recorder, set)
+	if err != nil {
+		return nil, name, err
+	}
+	return &chain{decode: set, steps: steps, kinds: kinds, keys: m, require: reqIDs, encrypts: deps.Encrypts, series: ser}, "", nil
 }
 
 // MaxDecodeLen answers from the decode set, never from the configured

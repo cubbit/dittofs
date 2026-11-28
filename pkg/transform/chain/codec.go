@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 	"unsafe"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -31,7 +32,9 @@ import (
 // own, writes past its MaxEncodedLen, or makes a body of another length than
 // a LengthOf that answered. dst must not overlap plain; the body is dst
 // resliced when dst holds MaxEncodedLen(len(plain)) bytes, a new slice
-// otherwise.
+// otherwise. Each step's call that succeeds is recorded under its name (RFC 5
+// §6), even when a later check fails the put; a step that fails records
+// nothing.
 func (a *attempt) Encode(ctx context.Context, dst []byte, hash [32]byte, plain []byte) ([]byte, []transform.Encoded, error) {
 	steps := a.c.steps
 	need := a.MaxEncodedLen(len(plain))
@@ -52,11 +55,16 @@ func (a *attempt) Encode(ctx context.Context, dst []byte, hash [32]byte, plain [
 		if i < len(steps)-1 {
 			buf = make([]byte, 0, bound)
 		}
+		start := time.Now()
 		enc, err := t.Encode(ctx, a.ns, m, buf, hash, in)
+		took := time.Since(start)
 		if err != nil {
 			return nil, nil, fmt.Errorf("chain: encoding with transform %#04x: %w", t.ID(), err)
 		}
 		if !enc.Applied {
+			// A declined chunk passes on unchanged, so its bytes out are
+			// its bytes in.
+			a.c.series.byID[t.ID()].Encoded(false, len(in), len(in), took)
 			continue
 		}
 		if enc.Version != t.Version() {
@@ -69,6 +77,7 @@ func (a *attempt) Encode(ctx context.Context, dst []byte, hash [32]byte, plain [
 		if len(m) > 0 {
 			enc.Material = slices.Clone(m)
 		}
+		a.c.series.byID[t.ID()].Encoded(true, len(in), len(enc.Body), took)
 		ids[len(encs)] = t.ID()
 		encs = append(encs, enc)
 		in = enc.Body
@@ -97,14 +106,16 @@ func (a *attempt) Encode(ctx context.Context, dst []byte, hash [32]byte, plain [
 // decodes (required), and each step reaches material only through a view of
 // census in ns (census), whose own refusal or material error outranks the
 // error the step returns. Every error is one of RFC 5 §2.7's five, and no
-// transform's own error crosses it (decodeErr).
+// transform's own error crosses it (decodeErr). Each step's successful
+// decode is recorded under its name, and a failure under the step at fault,
+// or under envelope when it belongs to no step (RFC 5 §6).
 func (c *chain) Decode(ctx context.Context, ns entity.NamespaceID, dst []byte, hash [32]byte, body []byte, limit int, listed []transform.Encoded) ([]byte, error) {
 	p, err := c.decode.parseEnvelope(body)
 	if err != nil {
-		return nil, err
+		return failed(c.series.envelope, err)
 	}
 	if err := c.required(ns, &p); err != nil {
-		return nil, err
+		return failed(c.series.envelope, err)
 	}
 	var bounds [stages]int
 	for i, b := 0, limit; i < p.n; i++ {
@@ -114,7 +125,7 @@ func (c *chain) Decode(ctx context.Context, ns entity.NamespaceID, dst []byte, h
 	in := body[p.off:]
 	if p.n == 0 {
 		if len(in) > limit {
-			return nil, fmt.Errorf("%w: a body of no transform holds %d bytes, past %d", transform.ErrTooLarge, len(in), limit)
+			return failed(c.series.envelope, fmt.Errorf("%w: a body of no transform holds %d bytes, past %d", transform.ErrTooLarge, len(in), limit))
 		}
 		return append(dst[:0], in...), nil
 	}
@@ -125,22 +136,33 @@ func (c *chain) Decode(ctx context.Context, ns entity.NamespaceID, dst []byte, h
 		if i > 0 {
 			buf = make([]byte, 0, bound)
 		}
+		rec := c.series.byID[t.ID()]
+		start := time.Now()
 		out, err := t.Decode(ctx, ns, buf, hash, in, bound, view)
+		took := time.Since(start)
 		if v := view.take(); err != nil && v != nil {
 			err = v
 		}
 		if err != nil {
-			return nil, decodeErr(ctx, t.ID(), err)
+			return failed(rec, decodeErr(ctx, t.ID(), err))
 		}
 		if len(out) > bound {
-			return nil, fmt.Errorf("%w: transform %#04x decoded %d bytes, past its bound of %d", transform.ErrTooLarge, t.ID(), len(out), bound)
+			return failed(rec, fmt.Errorf("%w: transform %#04x decoded %d bytes, past its bound of %d", transform.ErrTooLarge, t.ID(), len(out), bound))
 		}
+		rec.Decoded(len(in), len(out), took)
 		in = out
 	}
 	if overlaps(in, body) {
 		in = append(dst[:0], in...)
 	}
 	return in, nil
+}
+
+// failed records err, one of the chain's own decode errors, under rec, the
+// transform at fault or the envelope, and returns it.
+func failed(rec TransformRecorder, err error) ([]byte, error) {
+	rec.DecodeFailed(reasonOf(err))
+	return nil, err
 }
 
 // overlaps reports whether a and b share a byte.

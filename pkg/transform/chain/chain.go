@@ -28,8 +28,10 @@ import (
 // whose Stage is not one of StageCompress, StageEncrypt and StageRedundancy,
 // or that reports another ID than it registered under; and an encrypt stage
 // beside a compress stage whose settings do not carry with_encryption: accept
-// (RFC 5 §3.2). Every refusal but a missing member of deps is logged once at
-// Error, with the reason and the transform at fault (RFC 5 §6). Only an
+// (RFC 5 §3.2); and a Recorder whose For gives no recorder for a registered
+// transform or for envelope. Every refusal but a missing member of deps is
+// logged once at Error, with the reason and the transform at fault (RFC 5
+// §6). Only an
 // untyped nil Recorder is refused: a Recorder holding a nil pointer is the
 // caller's bug.
 func NewChain(ctx context.Context, cfg []transform.Config, m keys.Provider, deps Deps) (transform.Chain, error) {
@@ -61,24 +63,29 @@ type Deps struct {
 }
 
 // Recorder resolves RFC 5 §6's series for one transform, labelled by its
-// registered name. NewChain calls For once for every transform it builds, so a
-// chunk's recording is an add on a series resolved at build, with no label
-// lookup and no allocation (RFC 25 §2.9). The content wiring implements it over
-// the node's metrics.
+// registered name. NewChain calls For once for every registered transform,
+// since a body may name any of them, and once for envelope, the label of a
+// decode refusal no transform owns, so a chunk's recording is an add on a series resolved at build, with no label
+// lookup and no allocation (RFC 25 §2.9). Every NewChain calls For again, so
+// For must give the same series for a name each time. A TransformRecorder
+// holding a nil pointer is the caller's bug. The content wiring implements it
+// over the node's metrics.
 type Recorder interface {
 	For(name string) TransformRecorder
 }
 
 // TransformRecorder records one transform's series, one call per moment the
-// chain observes.
+// chain observes. The chain calls it from every goroutine that encodes or
+// decodes, so it must be safe for concurrent use.
 type TransformRecorder interface {
-	// Encoded records one encode of one chunk: transform_chunks_total by
-	// applied, and transform_bytes_total and transform_seconds with direction
-	// encode.
+	// Encoded records one Encode call: transform_chunks_total by applied,
+	// and transform_bytes_total and transform_seconds with direction encode.
+	// A chunk encoded again, as a retried put does, is counted again.
 	Encoded(applied bool, in, out int, took time.Duration)
 
 	// Decoded records one successful decode of one body:
-	// transform_bytes_total and transform_seconds with direction decode.
+	// transform_bytes_total and transform_seconds with direction decode. The
+	// time includes the material the step reads through its census view.
 	Decoded(in, out int, took time.Duration)
 
 	// DecodeFailed records one transform_decode_failures_total under reason's
