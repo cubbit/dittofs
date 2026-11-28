@@ -31,8 +31,8 @@ import (
 // (RFC 5 §3.2). Every refusal but a missing member of deps is logged once at
 // Error, with the reason and the transform at fault (RFC 5 §6). Only an
 // untyped nil Recorder is refused: a Recorder holding a nil pointer is the
-// caller's bug. The chain it returns fails Pin and Decode with
-// errors.ErrUnsupported until both are built.
+// caller's bug. The chain it returns fails Decode, and its attempts fail
+// Encode, with errors.ErrUnsupported until both are built.
 func NewChain(ctx context.Context, cfg []transform.Config, m keys.Provider, deps Deps) (transform.Chain, error) {
 	return process.newChain(ctx, cfg, m, deps)
 }

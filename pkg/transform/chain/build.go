@@ -12,10 +12,11 @@ import (
 )
 
 // chain is a built transform.Chain: the configured transforms in stage order,
-// and the store's decode set.
+// the store's decode set, and the provider Pin reads current material from.
 type chain struct {
 	decode *decodeSet
 	steps  []transform.Transform // the configured transforms, in stage order
+	keys   keys.Provider
 }
 
 var _ transform.Chain = (*chain)(nil)
@@ -131,7 +132,7 @@ func (r *registry) assemble(ctx context.Context, cfg []transform.Config, m keys.
 		}
 		steps[i] = t
 	}
-	return &chain{decode: set, steps: steps}, "", nil
+	return &chain{decode: set, steps: steps, keys: m}, "", nil
 }
 
 // MaxDecodeLen answers from the decode set, never from the configured
@@ -139,14 +140,8 @@ func (r *registry) assemble(ctx context.Context, cfg []transform.Config, m keys.
 // chain is still admitted (RFC 5 §3.1).
 func (c *chain) MaxDecodeLen(n int) int { return c.decode.maxDecodeLen(n) }
 
-// ponytail: Pin and Decode fail every call with errors.ErrUnsupported, so a
-// chain that builds cannot yet encode or decode. Replace them with the pin and
-// the envelope's decode.
-
-// Pin fails every call with errors.ErrUnsupported.
-func (c *chain) Pin(context.Context, entity.NamespaceID) (transform.Attempt, error) {
-	return nil, errors.ErrUnsupported
-}
+// ponytail: Decode fails every call with errors.ErrUnsupported, so a chain
+// that builds cannot yet decode. Replace it with the envelope's decode.
 
 // Decode fails every call with errors.ErrUnsupported.
 func (c *chain) Decode(context.Context, entity.NamespaceID, []byte, [32]byte, []byte, int, []transform.Encoded) ([]byte, error) {
