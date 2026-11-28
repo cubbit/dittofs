@@ -284,6 +284,10 @@ type Stream struct {
 	// and with its record pinned, holding no lock: the point a seal can first
 	// drain the segment.
 	pinnedHook func()
+	// rolledHook runs in AppendRoll once a roll has installed its segment,
+	// holding no lock, before the append relocks for its reservation: the
+	// one point the new segment's room is read with no record reserved.
+	rolledHook func()
 
 	// decision: every field below is guarded by appendMu, the segment append
 	// domain of RFC 1 §8.2 — next, count, entries, the tracker, the active
@@ -975,6 +979,9 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 			opening := !s.opened
 			s.appendMu.Unlock()
 			rerr := s.roll(hasPayload, r, opening)
+			if rerr == nil && s.rolledHook != nil {
+				s.rolledHook()
+			}
 			s.appendMu.Lock()
 			s.rollSettle()
 			if rerr != nil {

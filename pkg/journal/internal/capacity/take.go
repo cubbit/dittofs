@@ -85,9 +85,9 @@ type Config struct {
 
 	// Room reports the payload bytes the stream's active segment can still
 	// take: the figure Take grants against, read inside its decision
-	// section. Its lock ranks below capacity in the order of RFC 1 §8.3
-	// (the segment-append domain), so the read under Take's own mutex is
-	// allowed; it must make no I/O.
+	// section. The stream publishes the figure under its append mutex and
+	// Room loads it without that lock, so the read under Take's own mutex
+	// takes no lock and makes no I/O.
 	Room func(stream int) int64
 
 	// ReadySpares reports the content spares an unreserved take can reach:
@@ -552,11 +552,11 @@ func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 	}
 
 	// The room grant and the spares. The room is read inside the section,
-	// through the injected Room func: its read takes the stream's append
-	// mutex — the segment-append domain, ranked below capacity in the
-	// order of RFC 1 §8.3 — makes no I/O, and always returns a figure the
-	// stream's appends still stand under, so the section's grant never
-	// trusts a room a later landing has already spent.
+	// through the injected Room func: it loads the figure the stream
+	// publishes under its append mutex, takes no lock, makes no I/O, and
+	// always returns a figure the stream's appends still stand under, so
+	// the section's grant never trusts a room a later landing has already
+	// spent.
 	//
 	// decision: the room is read inside the section rather than snapshotted
 	// by the caller, because a concurrent write on the same stream can

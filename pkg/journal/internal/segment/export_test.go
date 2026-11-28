@@ -12,6 +12,10 @@ func (s *Stream) SetRollTakeHook(f func()) { s.rollTakeHook = f }
 // holds a finishing seal on.
 func (s *Stream) SetRollWaitHook(f func()) { s.rollWaitHook = f }
 
+// SetRolledHook sets the instance's hook that runs once a roll has installed
+// its segment, before the append relocks for its reservation.
+func (s *Stream) SetRolledHook(f func()) { s.rolledHook = f }
+
 // SetPinnedHook sets the instance's hook that runs once an append has left the
 // drain with its record pinned, holding no lock: where a seal can first run.
 func (s *Stream) SetPinnedHook(f func()) { s.pinnedHook = f }
