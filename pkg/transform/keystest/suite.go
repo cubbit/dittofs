@@ -5,20 +5,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/transform/keys"
 )
 
-// Harness is a provider under the suite: the provider, and the calls the
-// suite sets it up and reads it through, as Memory's methods of the same names
-// define them. A real provider is adapted to it over its own records, and an
+// Harness is a provider under the suite: the provider with its destroyed
+// material notice, and the calls the suite sets it up and reads it through,
+// as Memory's methods of the same names define them. A real provider is adapted to it over its own records, and an
 // adapter that cannot set one up fails the test through t.Fatal on the t
 // newHarness was given. A row gives each ID once, so an adapter may refuse a
 // second Give of one.
 type Harness interface {
 	keys.Provider
+	keys.DestroyedNotice
 
 	Give(ns entity.NamespaceID, kind, id string, material []byte) keys.MaterialID
 	Replace(id keys.MaterialID, material []byte)
@@ -57,6 +59,8 @@ var rows = []row{
 	{"destroyed", destroyed},
 	{"owned", owned},
 	{"calls", calls},
+	{"notice", notice},
+	{"notice-batches", noticeBatches},
 }
 
 // Material contents the rows give. Each is distinct, so a provider serving
@@ -331,6 +335,108 @@ func calls(ctx context.Context, h Harness) error {
 		if got := int64(h.Calls()) - int64(before); got != 1 {
 			return fmt.Errorf("Calls rose by %d over %s, want 1", got, c.name)
 		}
+	}
+
+	return nil
+}
+
+// destroyedSince reports what DestroyedSince of cursor returns, against want,
+// and the cursor it gives next.
+func destroyedSince(ctx context.Context, h Harness, cursor uint64, want ...keys.MaterialID) (uint64, error) {
+	got, next, err := h.DestroyedSince(ctx, cursor)
+	if err != nil {
+		return 0, fmt.Errorf("DestroyedSince(%#x): %w", cursor, err)
+	}
+
+	if !slices.Equal(got, want) {
+		return 0, fmt.Errorf("DestroyedSince(%#x) = %+v, want %+v", cursor, got, want)
+	}
+
+	return next, nil
+}
+
+// The notice names material once it is destroyed, once, after the cursor it
+// was given (RFC 5 §2.7, keys.DestroyedNotice): a Destroy is named by
+// DestroyedSince(0) once Get refuses it as destroyed, the cursor returned
+// names nothing more, a second Destroy is named after it without the first,
+// destroying the first again names nothing, and a replaced key, an ID never
+// given and material still held, current or not, are never named. Catches a
+// notice that repeats, skips, or reports as lost a refusal or a key no
+// longer current.
+func notice(ctx context.Context, h Harness) error {
+	ns := namespace(1)
+	first := h.Give(ns, keys.KindDataKey, "first", materialA)
+	second := h.Give(ns, keys.KindChunkIDKey, "second", materialB)
+	replaced := h.Give(ns, keys.KindChunkingKey, "replaced", materialC)
+	h.Give(namespace(2), keys.KindDataKey, "held", materialA)
+	h.Give(namespace(2), keys.KindDataKey, "newer", materialB)
+	h.Replace(replaced, materialA)
+
+	// Refused, so a provider that reports refusals has them to report; the
+	// unknown and replaced rows check how.
+	_, _ = h.Get(ctx, keys.MaterialID{Namespace: ns, Kind: keys.KindDataKey, ID: "never-given"})
+	_, _ = h.Get(ctx, replaced)
+
+	if _, err := destroyedSince(ctx, h, 0); err != nil {
+		return fmt.Errorf("before any Destroy: %w", err)
+	}
+
+	h.Destroy(first)
+
+	_, err := h.Get(ctx, first)
+	if err := refused(`Get of destroyed ID "first"`, err, keys.ErrMaterialDestroyed); err != nil {
+		return err
+	}
+
+	next, err := destroyedSince(ctx, h, 0, first)
+	if err != nil {
+		return fmt.Errorf("after one Destroy: %w", err)
+	}
+
+	if next, err = destroyedSince(ctx, h, next); err != nil {
+		return fmt.Errorf("from the cursor naming the first Destroy: %w", err)
+	}
+
+	h.Destroy(second)
+
+	if next, err = destroyedSince(ctx, h, next, second); err != nil {
+		return fmt.Errorf("after a second Destroy: %w", err)
+	}
+
+	h.Destroy(first)
+
+	if _, err := destroyedSince(ctx, h, next); err != nil {
+		return fmt.Errorf("after destroying the first again: %w", err)
+	}
+
+	return nil
+}
+
+// A call returns at most a batch of 256 IDs: 300 destroyed come in a batch
+// of 256 and one of 44, in the order destroyed, and the cursor after the
+// second names nothing more. Catches a batch that drops the rest, and one
+// past the bound.
+func noticeBatches(ctx context.Context, h Harness) error {
+	ns := namespace(1)
+
+	var want []keys.MaterialID
+	for i := range 300 {
+		id := h.Give(ns, keys.KindDataKey, fmt.Sprintf("k%03d", i), materialA)
+		h.Destroy(id)
+		want = append(want, id)
+	}
+
+	next, err := destroyedSince(ctx, h, 0, want[:256]...)
+	if err != nil {
+		return fmt.Errorf("first batch of 300 destroyed: %w", err)
+	}
+
+	if next, err = destroyedSince(ctx, h, next, want[256:]...); err != nil {
+		return fmt.Errorf("second batch of 300 destroyed: %w", err)
+	}
+
+	if _, err := destroyedSince(ctx, h, next); err != nil {
+		return fmt.Errorf("after both batches: %w", err)
 	}
 
 	return nil

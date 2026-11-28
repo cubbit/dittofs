@@ -54,15 +54,16 @@ type cache struct {
 	updateMu sync.Mutex
 }
 
-// Open loads ns's key records and unwraps and checks every current one,
-// returning the first that cannot be served as Get would return it, so a
-// namespace whose keys cannot be reached does not open. The content wiring
-// calls it as it opens each namespace.
+// Open loads ns's key records, lists every destroyed one in the notice, and
+// unwraps and checks every current one, returning the first that cannot be
+// served as Get would return it, so a namespace whose keys cannot be reached
+// does not open. The content wiring calls it as it opens each namespace.
 func (p *Provider) Open(ctx context.Context, ns entity.NamespaceID) error {
 	set, err := p.load(ctx, ns)
 	if err != nil {
 		return err
 	}
+	p.listDestroyed(ns, set)
 	for _, e := range set {
 		if e.row.State != stateCurrent {
 			continue

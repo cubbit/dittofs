@@ -23,8 +23,9 @@ import (
 
 // harness adapts the provider to keystest.Harness over the in-memory view.
 // Give, Replace and Destroy write rows as another writer of the metadata
-// store would, then reload the provider, so one provider serves the whole
-// run and Calls is its own.
+// store would, then reload the provider and open the namespace written, so
+// one provider serves the whole run, Calls is its own, and a row Destroy
+// marks reaches DestroyedSince as an Open finds it, under one incarnation.
 type harness struct {
 	*Provider
 	t       *testing.T
@@ -43,7 +44,9 @@ func newHarness(t *testing.T) keystest.Harness {
 	return harness{Provider: p, t: t, records: records}
 }
 
-// write runs fn on ns's rows through the view, then reloads the provider.
+// write runs fn on ns's rows through the view, then reloads the provider and
+// opens ns. An Open refused for its material is left for the row's own reads
+// to see.
 func (h harness) write(ns entity.NamespaceID, fn func(rows []Row) []Row) {
 	h.t.Helper()
 
@@ -52,6 +55,7 @@ func (h harness) write(ns entity.NamespaceID, fn func(rows []Row) []Row) {
 		h.t.Fatalf("Update of namespace %s: %v", ns, err)
 	}
 	h.reload(ctx)
+	_ = h.Open(ctx, ns)
 }
 
 // row is id's row among rows, failing the test when there is none.

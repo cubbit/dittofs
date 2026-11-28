@@ -85,6 +85,7 @@ type Provider struct {
 	cache   cache
 	calls   atomic.Uint64 // Current and Get calls, failing ones included
 	misses  misses
+	notice  notice
 
 	// masterKeyID names the key-file master key; aead holds the key itself,
 	// which never leaves this process.
@@ -181,6 +182,9 @@ func New(ctx context.Context, cfg Config, deps Deps) (*Provider, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := p.notice.drawIncarnation(deps.Rand); err != nil {
+		return nil, err
+	}
 	p.setConfig(cfg)
 	return p, nil
 }
@@ -226,5 +230,6 @@ func build(masterKeyID [16]byte, key []byte, deps Deps) (*Provider, error) {
 	p.cache.epochs = make(map[entity.NamespaceID]uint64)
 	p.misses.unknown = make(map[keys.MaterialID]struct{})
 	p.misses.unavailable = make(map[keys.MaterialID]struct{})
+	p.notice.listed = make(map[keys.MaterialID]struct{})
 	return p, nil
 }

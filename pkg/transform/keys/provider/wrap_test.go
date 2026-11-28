@@ -243,7 +243,8 @@ func TestValidateConfig(t *testing.T) {
 func TestWrapCountStopsAtTwoToTheThirtyTwo(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	rnd := bytes.NewReader(make([]byte, 2*nonceLen))
+	// New draws the notice's 4-byte incarnation first.
+	rnd := bytes.NewReader(make([]byte, 4+2*nonceLen))
 	p, records, _ := newProvider(t, rnd)
 	ctx := context.Background()
 

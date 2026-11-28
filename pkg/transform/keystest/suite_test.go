@@ -341,6 +341,49 @@ func (p *countsGives) Give(ns entity.NamespaceID, kind, id string, material []by
 
 func (p *countsGives) Calls() uint64 { return p.Memory.Calls() + p.gives }
 
+// reportsReplaced lists a replaced key as destroyed.
+type reportsReplaced struct{ *Memory }
+
+func (p reportsReplaced) Replace(id keys.MaterialID, material []byte) {
+	p.Memory.Replace(id, material)
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.destroyed = append(p.destroyed, id)
+}
+
+// repeatsDestroyed ignores the cursor, naming every ID destroyed so far.
+type repeatsDestroyed struct{ *Memory }
+
+func (p repeatsDestroyed) DestroyedSince(ctx context.Context, _ uint64) ([]keys.MaterialID, uint64, error) {
+	return p.Memory.DestroyedSince(ctx, 0)
+}
+
+// unbatched returns every ID after the cursor in one call.
+type unbatched struct{ *Memory }
+
+func (p unbatched) DestroyedSince(_ context.Context, cursor uint64) ([]keys.MaterialID, uint64, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	i := min(cursor&0xffffffff, uint64(len(p.destroyed)))
+
+	return slices.Clone(p.destroyed[i:]), memoryIncarnation<<32 | uint64(len(p.destroyed)), nil
+}
+
+// dropsRest returns the first batch and a cursor past every ID.
+type dropsRest struct{ *Memory }
+
+func (p dropsRest) DestroyedSince(ctx context.Context, cursor uint64) ([]keys.MaterialID, uint64, error) {
+	ids, _, err := p.Memory.DestroyedSince(ctx, cursor)
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return ids, memoryIncarnation<<32 | uint64(len(p.destroyed)), err
+}
+
 // Every row fails on the broken providers written for it and on no other,
 // and passes on Memory, so a row failing for the wrong reason fails here too;
 // and every row has a broken provider.
@@ -356,17 +399,17 @@ func TestEachBrokenProviderFailsItsRow(t *testing.T) {
 		want  []string
 	}{
 		{"Memory", func() Harness { return NewMemory() }, nil},
-		{"a lookup without the namespace", func() Harness { return noNamespace{NewMemory()} }, []string{"namespaces"}},
+		{"a lookup without the namespace", func() Harness { return noNamespace{NewMemory()} }, []string{"namespaces", "notice", "notice-batches"}},
 		{"a Get falling back to another namespace", func() Harness { return getAnyNamespace{mem()} }, []string{"namespaces"}},
 		{"a Current falling back to another namespace", func() Harness { return currentAnyNamespace{mem()} }, []string{"namespaces"}},
 		{"a Get ignoring the kind", func() Harness { return kindBlind{mem()} }, []string{"kinds"}},
 		{"the first material kept current", func() Harness { return firstStaysCurrent{mem()} }, []string{"current"}},
-		{"only the latest material kept", func() Harness { return latestOnly{mem()} }, []string{"current"}},
+		{"only the latest material kept", func() Harness { return latestOnly{mem()} }, []string{"current", "notice"}},
 		{"replaced material served", func() Harness { return refingerprints{NewMemory()} }, []string{"replaced"}},
 		{"replaced material served under the caller's fingerprint", func() Harness {
 			return callerFingerprint{NewMemory(), make(map[keys.MaterialID][]byte)}
 		}, []string{"replaced"}},
-		{"destroyed reported as unavailable", func() Harness { return destroyedAsUnavailable{NewMemory()} }, []string{"destroyed"}},
+		{"destroyed reported as unavailable", func() Harness { return destroyedAsUnavailable{NewMemory()} }, []string{"destroyed", "notice"}},
 		{"the held slice returned", func() Harness { return aliased{NewMemory()} }, []string{"owned"}},
 		{"handed-out slices wiped on Destroy", func() Harness {
 			return wipes{NewMemory(), make(map[keys.MaterialID][][]byte)}
@@ -374,6 +417,10 @@ func TestEachBrokenProviderFailsItsRow(t *testing.T) {
 		{"a kind never given reported as unavailable", func() Harness { return unknownKindUnavailable{NewMemory()} }, []string{"unknown"}},
 		{"failing calls left uncounted", func() Harness { return &countsSuccesses{Memory: NewMemory()} }, []string{"calls"}},
 		{"Give counted as a call", func() Harness { return &countsGives{Memory: NewMemory()} }, []string{"calls"}},
+		{"a replaced key reported destroyed", func() Harness { return reportsReplaced{NewMemory()} }, []string{"notice"}},
+		{"the cursor ignored", func() Harness { return repeatsDestroyed{NewMemory()} }, []string{"notice", "notice-batches"}},
+		{"no batch bound", func() Harness { return unbatched{NewMemory()} }, []string{"notice-batches"}},
+		{"the rest past a batch dropped", func() Harness { return dropsRest{NewMemory()} }, []string{"notice-batches"}},
 	} {
 		var failed []string
 
@@ -423,6 +470,10 @@ func TestEachBrokenProviderFailsOnItsCheck(t *testing.T) {
 		{"handed-out slices wiped on Destroy", func() Harness {
 			return wipes{NewMemory(), make(map[keys.MaterialID][][]byte)}
 		}, owned, "after a Replace and a Destroy"},
+		{"a replaced key reported destroyed", func() Harness { return reportsReplaced{NewMemory()} }, notice, "before any Destroy"},
+		{"the cursor ignored", func() Harness { return repeatsDestroyed{NewMemory()} }, notice, "from the cursor naming the first Destroy"},
+		{"no batch bound", func() Harness { return unbatched{NewMemory()} }, noticeBatches, "first batch of 300 destroyed"},
+		{"the rest past a batch dropped", func() Harness { return dropsRest{NewMemory()} }, noticeBatches, "second batch of 300 destroyed"},
 	} {
 		err := c.row(t.Context(), c.build())
 		if got := fmt.Sprint(err); err == nil || !strings.Contains(got, c.want) {
