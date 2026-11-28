@@ -412,6 +412,10 @@ func build(cfg Config, in seams) (_ *Node, err error) {
 		Directory:    n.identity,
 		Joins:        n.identity,
 		Sealer:       providerSealer{p},
+		CheckCredential: func(v []byte) error {
+			_, _, err := content.ParseCredential(v)
+			return err
+		},
 	})
 	return n, nil
 }

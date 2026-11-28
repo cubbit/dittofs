@@ -45,9 +45,14 @@ never prints. The server refuses a change of a bound setting while a namespace
 names the store, and a change of how the store is reached, its endpoint among
 them, until it can prove the store holds the same content there.
 
+A credential is one JSON object holding the access key ID and the secret
+access key, under exactly these two names:
+
+  {"access_key_id": "EXAMPLEACCESSKEYID", "secret_access_key": "example-secret-access-key"}
+
 Examples:
-  # Create a store, its credential read from a file
-  dfsctl store create --setting remote.endpoint=https://s3.example.com --credential-file cred.txt
+  # Create a store, its credential read from a file holding that object
+  dfsctl store create --setting remote.endpoint=https://s3.example.com --setting remote.bucket=dittofs-data --credential-file s3-credential.json
 
   # Change a store's region and remove its storage class, so its default holds
   dfsctl store update 0b5c1a7e-2f4d-4c8e-9a1b-3c5d7e9f1a2b --setting remote.region=eu-west-1 --unset remote.storage_class
@@ -65,7 +70,8 @@ func newCreateCmd(env cmdutil.Env) *cobra.Command {
 		Short: "Create a remote store",
 		Long: `Create a remote store with its settings, each --setting key=value, a value
 that is JSON taken as it is and any other as a string. With --credential-file
-the store is created with the credential that file holds.`,
+the store is created with the credential that file holds: one JSON object of
+access_key_id and secret_access_key, which the server refuses in any other form.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			pairs, _ := cmd.Flags().GetStringArray("setting")
@@ -93,7 +99,7 @@ the store is created with the credential that file holds.`,
 		},
 	}
 	cmd.Flags().StringArray("setting", nil, "A setting of the store, key=value (repeatable)")
-	cmd.Flags().String("credential-file", "", "File holding the store's credential")
+	cmd.Flags().String("credential-file", "", `File holding the store's credential, {"access_key_id": ..., "secret_access_key": ...}`)
 	return cmd
 }
 
@@ -213,8 +219,8 @@ func newSetCredentialCmd(env cmdutil.Env) *cobra.Command {
 		Use:   "set-credential <id>",
 		Short: "Set a remote store's credential",
 		Long: `Set a remote store's credential, read from the file --credential-file names
-or, without it, from a prompt. The server proves the credential before it
-writes it.`,
+or, without it, from a prompt: one JSON object of access_key_id and
+secret_access_key. The server proves the credential before it writes it.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			v, err := cmdutil.NewSecrets(env).Read(cmd, "credential-file", "credential")

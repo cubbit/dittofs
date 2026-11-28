@@ -342,7 +342,7 @@ func TestWiredOperatorReachesNoAdminCredential(t *testing.T) {
 		// with its current password: it applies, to that operator's record,
 		// and the versions below show it reached nothing else.
 		wantStatus(t, "the operator's PUT of a store credential", w.send(t, http.MethodPut, "/api/v1/stores/"+uuid.UUID(storeA).String()+"/credential", w.operator.token,
-			map[string]any{"spec": apiv1.CredentialSpec{Value: []byte("taken over")}}, "If-None-Match", "*"), http.StatusConflict, "unproven")
+			map[string]any{"spec": apiv1.CredentialSpec{Value: []byte(`{"access_key_id":"AKIDFAKE","secret_access_key":"taken over"}`)}}, "If-None-Match", "*"), http.StatusConflict, "unproven")
 		const opPassword = "the operator's password"
 		op := w.h.Account(t, "changing-operator", opPassword, entity.RoleOperator)
 		opBefore := versionOf(t, w.authNode, w.stored(t, op).Password)
@@ -647,7 +647,7 @@ func TestWiredErrorTable(t *testing.T) {
 			{"a store's first credential, its capability unchecked", func() authReply {
 				configureJSON(t, w.h, storeD)
 				return w.send(t, http.MethodPut, "/api/v1/stores/"+uuid.UUID(storeD).String()+"/credential", admin,
-					map[string]any{"spec": apiv1.CredentialSpec{Value: []byte("a credential")}}, "If-None-Match", "*")
+					map[string]any{"spec": apiv1.CredentialSpec{Value: []byte(`{"access_key_id":"AKIDFAKE","secret_access_key":"a credential"}`)}}, "If-None-Match", "*")
 			}, 409, "unproven"},
 		} {
 			wantStatus(t, c.what, c.send(), c.status, c.code)

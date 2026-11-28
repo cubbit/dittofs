@@ -32,7 +32,7 @@ func storeRows() []row {
 			}
 		}},
 		{name: "store create prints the refusal until the settings table declares the remote store", run: func(t *testing.T, run Runner, _ Server, _ *client.Client) {
-			refused(t, run, "unknown_key", "remote.credential", "store", "create", "--setting", "remote.endpoint=https://s3.example.com", "--credential-file", secretFile(t, "a password\n"))
+			refused(t, run, "unknown_key", "remote.credential", "store", "create", "--setting", "remote.endpoint=https://s3.example.com", "--credential-file", secretFile(t, `{"access_key_id":"AKIDFAKE","secret_access_key":"a password"}`+"\n"))
 		}},
 		{name: "namespace create prints the refusal until the settings table declares the namespace", harnessOnly: true, run: func(t *testing.T, run Runner, s Server, _ *client.Client) {
 			refused(t, run, "unknown_key", "remote.prefix", "namespace", "create", "--store", s.putStore(t), "--setting", "remote.prefix=builds/")
@@ -117,7 +117,7 @@ func storeRows() []row {
 		}},
 		{name: "store set-credential prints the server's refusal until the store's capability check is built", harnessOnly: true, run: func(t *testing.T, run Runner, s Server, _ *client.Client) {
 			id := s.putStore(t)
-			_, errOut, status := run(t.Context(), "store", "set-credential", id, "--credential-file", secretFile(t, "a password\n"))
+			_, errOut, status := run(t.Context(), "store", "set-credential", id, "--credential-file", secretFile(t, `{"access_key_id":"AKIDFAKE","secret_access_key":"a password"}`+"\n"))
 			if status == 0 || !strings.Contains(errOut, "409 ") || !strings.Contains(errOut, id) {
 				t.Errorf("store set-credential %s: status %d, stderr %q, want non-zero, the store and the server's 409", id, status, errOut)
 			}

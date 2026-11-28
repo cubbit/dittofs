@@ -530,7 +530,7 @@ func TestCredentialSetRunsTheCapabilityCheck(t *testing.T) {
 				}
 			}
 			before := s.written(t, scope)
-			r := s.do(t, http.MethodPut, path, `{"spec":{"value":"aHVudGVyMi1zM2NyM3Q="}}`, "If-None-Match", "*")
+			r := s.do(t, http.MethodPut, path, `{"spec":{"value":"eyJhY2Nlc3Nfa2V5X2lkIjoiQUtJREZBS0UiLCJzZWNyZXRfYWNjZXNzX2tleSI6Imh1bnRlcjItczNjcjN0In0="}}`, "If-None-Match", "*")
 			if r.status != http.StatusConflict {
 				t.Fatalf("PUT credential: answered %d %s, want 409", r.status, r.body)
 			}
@@ -545,7 +545,7 @@ func TestCredentialSetRunsTheCapabilityCheck(t *testing.T) {
 				t.Fatalf("audit records %q, want the refusal last", outcomes(recs))
 			}
 			b, _ := json.Marshal(recs[len(recs)-1])
-			for _, v := range []string{"aHVudGVyMi1zM2NyM3Q=", "hunter2-s3cr3t"} {
+			for _, v := range []string{"eyJhY2Nlc3Nfa2V5X2lkIjoiQUtJREZBS0UiLCJzZWNyZXRfYWNjZXNzX2tleSI6Imh1bnRlcjItczNjcjN0In0=", "hunter2-s3cr3t"} {
 				if bytes.Contains(b, []byte(v)) {
 					t.Errorf("the refusal's audit record %s holds the value", b)
 				}

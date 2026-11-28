@@ -69,9 +69,10 @@ func tooLong(field string) error {
 }
 
 var (
-	errNoDirectory = &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no directory to ask"}
-	errNoIdentity  = &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no identity service to drive the operation"}
-	errNoSealer    = &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no secret provider to seal the value with"}
+	errNoDirectory       = &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no directory to ask"}
+	errNoIdentity        = &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no identity service to drive the operation"}
+	errNoSealer          = &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no secret provider to seal the value with"}
+	errNoCredentialCheck = &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no check of a remote store's credential"}
 	// decision: a join of a joined installation, online or offline, is
 	// refused unless the request takes it over, so a mistyped join un-joins
 	// nothing; an offline one is refused at its hand-over, before it seals

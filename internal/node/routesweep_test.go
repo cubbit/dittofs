@@ -661,6 +661,13 @@ func TestWiredEveryWriteAudited(t *testing.T) {
 				waitingWrite{wiredWrite: wiredWrite{route: "DELETE " + sc.route + "/settings/{sub}", path: path, hdr: match(path, idemKey()...)}, status: http.StatusBadRequest, code: "unknown_key", why: "the settings table"})
 		}
 		cred := store + "/credential"
+		// Credential values in the form the node's check reads, so each row
+		// reaches the refusal it waits on.
+		const (
+			storeSecret = `{"access_key_id":"AKIDFAKE","secret_access_key":"a store's secret key"}`
+			newSecret   = `{"access_key_id":"AKIDFAKE","secret_access_key":"a new credential"}`
+			badSecret   = "AKIDFAKE:a malformed secret"
+		)
 		// A store holding no credential, for a first credential's write.
 		bare := "/api/v1/stores/" + uuid.UUID(storeD).String()
 		configureJSON(t, w.h, storeD)
@@ -669,11 +676,16 @@ func TestWiredEveryWriteAudited(t *testing.T) {
 			// keeps no idempotency record (RFC 23 §4.5).
 			waitingWrite{wiredWrite: wiredWrite{route: "POST /api/v1/stores", path: "/api/v1/stores", body: map[string]any{"spec": apiv1.StoreSpec{
 				Settings:   map[string]json.RawMessage{"remote.endpoint": json.RawMessage(`"https://s3.example"`), "remote.bucket": json.RawMessage(`"b"`)},
-				Credential: &apiv1.StoreCredential{Value: []byte("a store's secret key")}}}, secrets: secretForms("a store's secret key")},
+				Credential: &apiv1.StoreCredential{Value: []byte(storeSecret)}}}, secrets: secretForms(storeSecret)},
 				status: http.StatusBadRequest, code: "unknown_key", why: "the settings table"},
 			waitingWrite{wiredWrite: wiredWrite{route: "PATCH /api/v1/stores/{id}", path: store, body: json.RawMessage(`{"spec":{"settings":{"remote.region":"eu"}}}`), hdr: match(store)},
 				status: http.StatusBadRequest, code: "unknown_key", why: "the settings table"},
-			waitingWrite{wiredWrite: wiredWrite{route: "PUT /api/v1/stores/{id}/credential", path: bare + "/credential", body: map[string]any{"spec": apiv1.CredentialSpec{Value: []byte("a new credential")}}, hdr: []string{"If-None-Match", "*"}, secrets: secretForms("a new credential")},
+			// A credential that is not the JSON object is refused by the
+			// check the node wires, before anything is sealed.
+			waitingWrite{wiredWrite: wiredWrite{route: "PATCH /api/v1/stores/{id}", path: bare, body: map[string]any{"spec": apiv1.StoreSpec{
+				Credential: &apiv1.StoreCredential{Value: []byte(badSecret)}}}, hdr: match(bare), secrets: secretForms(badSecret)},
+				status: http.StatusBadRequest, code: "invalid", why: "the node's credential check"},
+			waitingWrite{wiredWrite: wiredWrite{route: "PUT /api/v1/stores/{id}/credential", path: bare + "/credential", body: map[string]any{"spec": apiv1.CredentialSpec{Value: []byte(newSecret)}}, hdr: []string{"If-None-Match", "*"}, secrets: secretForms(newSecret)},
 				status: http.StatusConflict, code: "unproven", why: "the store's capability check"},
 			waitingWrite{wiredWrite: wiredWrite{route: "DELETE /api/v1/stores/{id}/credential", path: cred, hdr: append([]string{"If-Match", `"1"`}, idemKey()...)}, status: http.StatusBadRequest, code: "unknown_key", why: "the settings table"},
 			waitingWrite{wiredWrite: wiredWrite{route: "POST /api/v1/namespaces", path: "/api/v1/namespaces", body: json.RawMessage(`{"spec":{"store":"` + uuid.UUID(storeA).String() + `","settings":{"remote.prefix":"p/"}}}`), hdr: idemKey()}, status: http.StatusBadRequest, code: "unknown_key", why: "the settings table"},
