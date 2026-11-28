@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"math"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/cubbit/dittofs/internal/prof"
@@ -22,8 +23,8 @@ func cut(t *testing.T, r io.Reader, base int64, s carver.Settings, buf int) ([]c
 
 	var got []carver.Chunk
 	consumed, err := carve.Cut(r, base, s, make([]byte, buf), true, func(c carver.Chunk, p []byte) error {
-		if len(p) != int(c.Length) {
-			t.Fatalf("chunk at %d: %d bytes handed to emit, Length %d", c.Offset, len(p), c.Length)
+		if len(p) != int(c.Length) || cap(p) != len(p) {
+			t.Fatalf("chunk at %d: %d bytes of capacity %d handed to emit, want Length %d of both, so an append cannot reach the next chunk", c.Offset, len(p), cap(p), c.Length)
 		}
 		got = append(got, c)
 
@@ -207,6 +208,62 @@ func TestCutRefuses(t *testing.T) {
 	got, err := cut(t, bytes.NewReader(data), math.MaxInt64-10, s, s.Max())
 	if !errors.Is(err, fs.ErrInvalid) || len(got) != 0 {
 		t.Errorf("%d bytes at base MaxInt64 - 10: %d chunks and %v, want none and %v", len(data), len(got), err, fs.ErrInvalid)
+	}
+
+	// Across refills, the stretch's next byte is checked, not the buffer's.
+	long := carvetest.Bytes(carvetest.Random, 7, 4*s.Max())
+	if _, err := cut(t, bytes.NewReader(long), math.MaxInt64-int64(len(long)), s, s.Max()); err != nil {
+		t.Errorf("%d bytes whose next byte sits at MaxInt64: got %v, want nil", len(long), err)
+	}
+	got, err = cut(t, bytes.NewReader(long), math.MaxInt64-int64(len(long))+1, s, s.Max())
+	if !errors.Is(err, fs.ErrInvalid) {
+		t.Errorf("%d bytes whose next byte sits past MaxInt64: got %v, want %v", len(long), err, fs.ErrInvalid)
+	}
+	for _, c := range got {
+		if c.Offset > math.MaxInt64-int64(c.Length) {
+			t.Errorf("chunk at %d, %d bytes: ends past MaxInt64", c.Offset, c.Length)
+		}
+	}
+
+	// A stretch may end with its next byte at MaxInt64, not one past it.
+	if _, err := cut(t, bytes.NewReader(data), math.MaxInt64-int64(len(data)), s, s.Max()); err != nil {
+		t.Errorf("%d bytes whose next byte sits at MaxInt64: got %v, want nil", len(data), err)
+	}
+	if got, err := cut(t, bytes.NewReader(data), math.MaxInt64-int64(len(data))+1, s, s.Max()); !errors.Is(err, fs.ErrInvalid) || len(got) != 0 {
+		t.Errorf("%d bytes whose next byte sits past MaxInt64: %d chunks and %v, want none and %v", len(data), len(got), err, fs.ErrInvalid)
+	}
+}
+
+// badCount is a fault wrapper around a real reader: it reads through r and
+// reports n as its count, which the io.Reader contract rules out when n is
+// negative or past len(p).
+type badCount struct {
+	r io.Reader
+	n func(p []byte) int
+}
+
+func (b badCount) Read(p []byte) (int, error) {
+	_, err := b.r.Read(p)
+
+	return b.n(p), err
+}
+
+// A reader reporting an impossible count is refused, never trusted into a
+// slice bound.
+func TestCutRefusesAnImpossibleRead(t *testing.T) {
+	s := settings64K(t, [32]byte{0: 1})
+	for _, tc := range []struct {
+		name string
+		n    func(p []byte) int
+	}{
+		{"one byte past its room", func(p []byte) int { return len(p) + 1 }},
+		{"a negative count", func([]byte) int { return -1 }},
+	} {
+		r := badCount{bytes.NewReader(make([]byte, 4*s.Max())), tc.n}
+		got, err := cut(t, r, 0, s, s.Max())
+		if err == nil || !strings.Contains(err.Error(), "reader returned") || len(got) != 0 {
+			t.Errorf("a reader reporting %s: %d chunks and %v, want none and the bad-count refusal", tc.name, len(got), err)
+		}
 	}
 }
 

@@ -21,12 +21,10 @@ const benchBytes = 64 << 20
 // read by the checker that holds them to RFC 2 §10.5.
 func BenchmarkCut(b *testing.B) {
 	key := [32]byte{0: 1}
-	inputs := map[string][]byte{}
-	for _, k := range []struct {
-		name string
-		kind carvetest.Kind
-	}{{"Random", carvetest.Random}, {"Zeros", carvetest.Zeros}, {"Period64", carvetest.Period64}} {
-		inputs[k.name] = carvetest.Bytes(k.kind, 1, benchBytes)
+	inputs := map[string][]byte{
+		"Random":   carvetest.Bytes(carvetest.Random, 1, benchBytes),
+		"Zeros":    carvetest.Bytes(carvetest.Zeros, 1, benchBytes),
+		"Period64": carvetest.Bytes(carvetest.Period64, 1, benchBytes),
 	}
 
 	for _, target := range carvetest.Targets {
