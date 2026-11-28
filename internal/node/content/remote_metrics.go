@@ -56,14 +56,11 @@ var (
 // no bind named: a series under an op, a result or a namespace nothing
 // declared would be worse than none. A new value (recheck, with RFC 9's
 // calls) needs an RFC 4 amendment, whose review must reach these lists, since
-// no test here can see the store's constants drift.
+// no test here can see the store's constants drift. A denial with no cause
+// is outside them too: every ErrDenied the store returns carries one.
 var (
-	remoteOps = [...]string{"put", "put_control", "get", "get_control", "delete", "list", "health"}
-	// remoteSecondsOps are the histogram's op values; remoteFold maps each of
-	// remoteOps to one of them.
-	remoteSecondsOps = [...]string{"put", "get", "delete", "list", "health", "other"}
-	remoteFold       = [len(remoteOps)]uint8{0, 5, 1, 5, 2, 3, 4}
-	remoteResults    = [...]struct{ result, cause string }{
+	remoteOps     = [...]string{"put", "put_control", "get", "get_control", "delete", "list", "health"}
+	remoteResults = [...]struct{ result, cause string }{
 		{"ok", ""}, {"not_found", ""}, {"invalid", ""}, {"throttled", ""}, {"transient", ""},
 		{"corrupt", ""}, {"local", ""}, {"denied", "access"}, {"denied", "quota"}, {"denied", "size"},
 	}
@@ -83,13 +80,13 @@ type remoteRecorder struct {
 	refs int // under remoteRecorders' lock
 
 	requests [len(remoteOps)][len(remoteResults)]prometheus.Counter
-	seconds  [len(remoteSecondsOps)]prometheus.Observer
+	seconds  [len(remoteOps)]prometheus.Observer // each op's child of its histogram fold
 	bytes    [len(remoteOps)]prometheus.Counter
 	conns    prometheus.Counter
 	foreign  prometheus.Counter
 
 	capability *prometheus.GaugeVec
-	vecs       [6]interface{ DeletePartialMatch(prometheus.Labels) int }
+	vecs       [6]*prometheus.MetricVec
 
 	// bindings maps a prefix to its namespace's binding, copied on write
 	// under bindMu so Capability loads it with no lock.
@@ -110,9 +107,11 @@ type recorderKey struct {
 	store string
 }
 
-// remoteRecorders are the live recorders, one per registry and store label:
-// the vectors' children are shared per label value, so two recorders for
-// one value would delete each other's series.
+// decision: the live recorders are counted here, process-wide, one per
+// registry and store label, rather than by whoever holds them: the vectors'
+// children are shared per registry and label value, so any two recorders for
+// one value, built by any two holders, would delete each other's series. A
+// holder that keeps its own count would need every other holder to share it.
 var remoteRecorders = struct {
 	sync.Mutex
 	live map[recorderKey]*remoteRecorder
@@ -143,15 +142,17 @@ func newRemoteRecorder(m *metrics.Metrics, store string) *remoteRecorder {
 		foreign:    foreign.WithLabelValues(store),
 		capability: m.Gauge(remoteCapabilitySpec),
 	}
-	r.vecs = [...]interface{ DeletePartialMatch(prometheus.Labels) int }{requests, seconds, bytes, conns, foreign, r.capability}
+	r.vecs = [...]*prometheus.MetricVec{requests.MetricVec, seconds.MetricVec, bytes.MetricVec, conns.MetricVec, foreign.MetricVec, r.capability.MetricVec}
 	for i, op := range remoteOps {
 		for j, res := range remoteResults {
 			r.requests[i][j] = requests.WithLabelValues(store, op, res.result, res.cause)
 		}
 		r.bytes[i] = bytes.WithLabelValues(store, op)
-	}
-	for i, op := range remoteSecondsOps {
-		r.seconds[i] = seconds.WithLabelValues(store, op)
+		fold := op // the histogram keeps the five data calls and folds the rest to other
+		if op == "put_control" || op == "get_control" {
+			fold = "other"
+		}
+		r.seconds[i] = seconds.WithLabelValues(store, fold)
 	}
 	r.bindings.Store(&map[string]*remoteBinding{})
 	remoteRecorders.live[key] = r
@@ -167,7 +168,7 @@ func (r *remoteRecorder) Call(op, result, cause string, took time.Duration, byte
 		return
 	}
 	r.requests[i][j].Inc()
-	r.seconds[remoteFold[i]].Observe(took.Seconds())
+	r.seconds[i].Observe(took.Seconds())
 	if bytes > 0 {
 		r.bytes[i].Add(float64(bytes))
 	}
@@ -231,8 +232,9 @@ func (r *remoteRecorder) resolve(prefix string, b *remoteBinding, f int) *promet
 // bind names the namespace a prefix's capability series carry, and counts
 // the caller among the binding's holders; unbind releases it, deleting the
 // namespace's series on the last release. A prefix holds one namespace on a
-// store, as the location is the content (RFC 13 §5.1), so a second bind of
-// a bound prefix shares the first's binding whatever namespace it names.
+// store and a namespace one prefix, since remote.prefix is bound (RFC 13
+// §5.1): a second bind of a bound prefix shares the first's binding whatever
+// namespace it names, and unbind deletes every series of its namespace.
 func (r *remoteRecorder) bind(prefix, namespace string) (unbind func()) {
 	r.bindMu.Lock()
 	defer r.bindMu.Unlock()

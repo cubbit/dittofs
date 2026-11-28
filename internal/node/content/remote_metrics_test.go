@@ -2,6 +2,7 @@ package content
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -262,16 +263,13 @@ func TestRemoteRecorderReleaseDeletesOnlyItsSeries(t *testing.T) {
 	unbindA()
 	s1.Capability("a/", "tiering", true) // unbound now: records nothing
 	w := want("s1")
-	for k, v := range want("s2") {
-		w[k] = v
-	}
+	maps.Copy(w, want("s2"))
 	w[capKey("s1", "B", "list")] = 1
 	w[capKey("s2", "A", "list")] = 1
 	got, _ := scrape(t, m)
 	diff(t, "after unbinding s1's A", got, w)
 
 	s1.close()
-	s1.close() // a release past the last holder deletes nothing more
 	w = want("s2")
 	w[capKey("s2", "A", "list")] = 1
 	got, _ = scrape(t, m)
@@ -279,15 +277,33 @@ func TestRemoteRecorderReleaseDeletesOnlyItsSeries(t *testing.T) {
 
 	again := newRemoteRecorder(m, "s1")
 	again.Call("get", "ok", "", time.Millisecond, 0)
-	w = want("s2")
-	w[capKey("s2", "A", "list")] = 1
-	for k, v := range want("s1") {
-		w[k] = v
-	}
-	w[reqKey("s1", "get", "ok", "")] = 1
-	w[secondsKey("s1", "get")] = 1
+	s1.close() // a stale release past the last holder deletes nothing of the rebuilt recorder
+	again.Call("get", "ok", "", time.Millisecond, 0)
+	maps.Copy(w, want("s1"))
+	w[reqKey("s1", "get", "ok", "")] = 2
+	w[secondsKey("s1", "get")] = 2
 	got, _ = scrape(t, m)
-	diff(t, "after rebuilding s1", got, w)
+	diff(t, "after rebuilding s1 and a stale close", got, w)
+}
+
+// A Capability that loaded a binding before its unbind, and resolves its
+// gauge after it, makes no series: one made then would outlive the delete.
+func TestRemoteRecorderStaleBindingResolvesNothing(t *testing.T) {
+	t.Parallel()
+	m := metrics.New("test", "test")
+	r := newRemoteRecorder(m, "s1")
+	r.bind("a/", "A")()
+	stale := &remoteBinding{namespace: "A"}
+	if g := r.resolve("a/", stale, 0); g != nil {
+		t.Errorf("resolve of an unbound binding = %v, want nil", g)
+	}
+	unbind := r.bind("a/", "A")
+	if g := r.resolve("a/", stale, 0); g != nil {
+		t.Errorf("resolve of a binding replaced since = %v, want nil", g)
+	}
+	unbind()
+	got, _ := scrape(t, m)
+	diff(t, "after resolving stale bindings", got, want("s1"))
 }
 
 // Namespaces binding and unbinding beside a running check race nothing:
@@ -310,6 +326,11 @@ func TestRemoteRecorderBindBesideCapability(t *testing.T) {
 			r.bind(fmt.Sprintf("b%d/", i), fmt.Sprintf("B%d", i))()
 		}
 	})
+	wg.Go(func() {
+		for range 200 {
+			r.bind("a/", "A")() // a second holder of A, released beside its check
+		}
+	})
 	wg.Wait()
 	got, _ := scrape(t, m)
 	for _, f := range rfcFeatures {
@@ -321,7 +342,7 @@ func TestRemoteRecorderBindBesideCapability(t *testing.T) {
 
 // Recording indexes resolved series: Call, ConnOpened, ForeignKey and a
 // bound Capability allocate nothing (RFC 25 §2.9).
-func TestRemoteRecorderAllocatesNothing(t *testing.T) {
+func TestAllocsRemoteRecorder(t *testing.T) {
 	if prof.RaceEnabled {
 		t.Skip("the race detector changes allocation counts")
 	}
