@@ -66,7 +66,7 @@ type Loop interface {
 
 type Server struct {
 	Installation [16]byte
-	Node         uint64
+	Node         [16]byte
 }
 
 type Serving struct {

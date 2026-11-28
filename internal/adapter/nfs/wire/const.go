@@ -41,6 +41,7 @@ const (
 	NFS4ErrResource          uint32 = 10018 // NFS4ERR_RESOURCE
 	NFS4ErrMinorVersMismatch uint32 = 10021 // NFS4ERR_MINOR_VERS_MISMATCH
 	NFS4ErrStaleClientID     uint32 = 10022 // NFS4ERR_STALE_CLIENTID
+	NFS4ErrNotSame           uint32 = 10027 // NFS4ERR_NOT_SAME
 	NFS4ErrBadXDR            uint32 = 10036 // NFS4ERR_BADXDR
 	NFS4ErrOpIllegal         uint32 = 10044 // NFS4ERR_OP_ILLEGAL
 	NFS4ErrSeqMisordered     uint32 = 10063 // NFS4ERR_SEQ_MISORDERED

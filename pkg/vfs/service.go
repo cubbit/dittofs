@@ -61,6 +61,13 @@ type Clients interface {
 	AddSession(ctx context.Context, c Call, cl ClientID, prev, next []byte) (ClientRecord, error)
 	// Record is the record as written, its adapter bytes included.
 	Record(ctx context.Context, c Call, cl ClientID) (ClientRecord, error)
+	// ClientByName is the confirmed record held under (p, name), found false
+	// when there is none, a name only a proposal holds counting as none.
+	// sameOwner is whether the call's mapped principal is the record's Owner,
+	// or the record has none; the record comes back either way, so the caller
+	// reads its verifier and Protect before it answers a principal. It makes
+	// no proposal and changes nothing.
+	ClientByName(ctx context.Context, c Call, p Protocol, name []byte) (rec ClientRecord, found, sameOwner bool, err error)
 	Renew(ctx context.Context, c Call, cl ClientID) (ClientStatus, error)
 	// Disconnect ends one session of client cl as end says: SMB LOGOFF or
 	// a failed re-authentication's teardown with Logoff, closing every open
@@ -212,6 +219,7 @@ const (
 	OpConnect
 	OpAddSession
 	OpRecord
+	OpClientByName
 	OpRenew
 	OpDisconnect
 	OpDestroy
@@ -275,7 +283,7 @@ const (
 )
 
 var opNames = [...]string{
-	OpPropose: "Propose", OpConnect: "Connect", OpAddSession: "AddSession", OpRecord: "Record",
+	OpPropose: "Propose", OpConnect: "Connect", OpAddSession: "AddSession", OpRecord: "Record", OpClientByName: "ClientByName",
 	OpRenew: "Renew", OpDisconnect: "Disconnect",
 	OpDestroy: "Destroy", OpReclaimComplete: "ReclaimComplete",
 	OpFreeState: "FreeState", OpTestState: "TestState", OpReleaseLockOwner: "ReleaseLockOwner",
@@ -310,9 +318,9 @@ func (op Op) String() string {
 // a SignIn or Find a request needs) are true for it too: the handler
 // check exempts them by the request they came in, never by their operation.
 //
-// decision: the calls that change nothing are exactly the twenty-one in the
+// decision: the calls that change nothing are exactly the twenty-two in the
 // switch below, the service contract's list of calls a handler may repeat.
-// Record and Spell are on it: an NFSv4 GETATTR asking for owner and
+// Record, ClientByName and Spell are on it: an NFSv4 GETATTR asking for owner and
 // owner_group spells twice, and a READDIR asking for them once per entry.
 // A call added here must change nothing, as the one-call
 // check stops seeing it.
@@ -320,7 +328,7 @@ func Mutates(op Op) bool {
 	switch op {
 	case OpPropose, OpTestState, OpLookup, OpReadDir, OpGetAttr, OpGetACL, OpXattrs, OpStreams,
 		OpAccess, OpRead, OpSeek, OpTestLock, OpRoot, OpSecInfo, OpListShares, OpStatFS, OpQuota,
-		OpSnapshots, OpMoveTarget, OpRecord, OpSpell:
+		OpSnapshots, OpMoveTarget, OpRecord, OpClientByName, OpSpell:
 		return false
 	}
 	return true

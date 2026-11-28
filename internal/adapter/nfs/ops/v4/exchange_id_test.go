@@ -3,6 +3,7 @@ package v4
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
 	"testing"
 	"time"
@@ -26,12 +27,14 @@ const (
 	statusFault      = 10006
 	statusDelay      = 10008
 	statusInUse      = 10017
+	statusNotSame    = 10027
 	statusEncrAlg    = 10079
 	flagsNonPNFS     = 0x00010000
 	flagsConfirmed   = 0x80010000
 	flagsPNFSBits    = 0x00060000 // USE_PNFS_MDS and USE_PNFS_DS
 	headLen          = 8          // resop and status
 	offClientID      = 8
+	offMinorID       = 28 // so_minor_id, after the client ID, sequence ID, flags and state protection
 	offSeq           = 16
 	offFlags         = 20
 	offProtect       = 24
@@ -91,8 +94,8 @@ type exchange struct {
 	members  *core.OpTable
 }
 
-// newExchange builds a node numbered node over rn's service.
-func newExchange(t *testing.T, rn *adaptertest.Runner, node uint64) *exchange {
+// newExchange builds a node whose ID starts with the byte node over rn's service.
+func newExchange(t *testing.T, rn *adaptertest.Runner, node byte) *exchange {
 	t.Helper()
 
 	e := &exchange{rn: rn}
@@ -100,7 +103,7 @@ func newExchange(t *testing.T, rn *adaptertest.Runner, node uint64) *exchange {
 	e.h = &Handlers{
 		VFS:      rn.Rec,
 		Sessions: e.sessions,
-		Server:   Server{Installation: installation, Node: node},
+		Server:   Server{Installation: installation, Node: [16]byte{node}},
 	}
 	e.members = Table(e.h).Ops[wire.ProcCompound].Members
 
@@ -251,10 +254,16 @@ func recBytes(t *testing.T, minor, seq uint32) []byte {
 	return b
 }
 
-// patchID writes id over the placeholder client ID of a golden result.
+// patchID writes id over the placeholder client ID of a golden result, and
+// the minor ID of node 7, the node the tests that compare a golden build,
+// over its placeholder (the minor ID is a hash of the node's ID, so the
+// golden bytes cannot hold it).
 func patchID(b []byte, id vfs.ClientID) []byte {
 	b = bytes.Clone(b)
 	binary.BigEndian.PutUint64(b[offClientID:], uint64(id))
+
+	sum := sha256.Sum256(append([]byte{7}, make([]byte, 15)...))
+	binary.BigEndian.PutUint64(b[offMinorID:], binary.BigEndian.Uint64(sum[:8]))
 
 	return b
 }
@@ -265,6 +274,22 @@ func (e *exchange) nothingHeld(t *testing.T, id vfs.ClientID) {
 
 	if _, ok := e.sessions.Confirm(id); ok {
 		t.Errorf("the table holds a proposal for client %d, want none", id)
+	}
+}
+
+// noPending fails t if the service holds a proposal for the confirmed client
+// id: an EXCHANGE_ID under UPD_CONFIRMED_REC_A makes none (RFC 21 section
+// 3.5), and the adapter's own table cannot show one the service made.
+func (e *exchange) noPending(t *testing.T, id vfs.ClientID) {
+	t.Helper()
+
+	rec, err := e.rn.Mem.Record(t.Context(), plain(e.rn), id)
+	if err != nil {
+		t.Fatalf("reading client %d's record: %v", id, err)
+	}
+
+	if rec.Pending != nil {
+		t.Errorf("the service holds a proposal for client %d, want none", id)
 	}
 }
 
@@ -495,8 +520,20 @@ func TestExchangeIDFlagsAndScope(t *testing.T) {
 	m7 := binary.BigEndian.Uint64(ra[offMinor:])
 	m9 := binary.BigEndian.Uint64(rb[offMinor:])
 
-	if m7 != 7 || m9 != 9 {
-		t.Errorf("the minor IDs are %d and %d, want 7 and 9", m7, m9)
+	// The minor ID is the first eight bytes of the SHA-256 of the node's ID,
+	// worked out here from the bytes, not read back from the handler.
+	for name, c := range map[string]struct {
+		got  uint64
+		node byte
+	}{"node 7": {m7, 7}, "node 9": {m9, 9}} {
+		sum := sha256.Sum256(append([]byte{c.node}, make([]byte, 15)...))
+		if want := binary.BigEndian.Uint64(sum[:8]); c.got != want {
+			t.Errorf("%s: the minor ID is %#x, want %#x", name, c.got, want)
+		}
+	}
+
+	if m7 == m9 {
+		t.Errorf("two nodes answered the minor ID %#x", m7)
 	}
 }
 
@@ -561,11 +598,11 @@ func TestExchangeIDStateProtect(t *testing.T) {
 	}
 }
 
-// With UPD_CONFIRMED_REC_A, an unknown owner is NOENT and another principal
-// PERM, neither leaving a proposal; the owner's own verifier and principal
-// are answered its client ID and the next sequence ID (RFC 8881 section
-// 18.35.4, items 6 to 9). The answer to another verifier, NOT_SAME, waits on
-// the service reading a record by name.
+// With UPD_CONFIRMED_REC_A, an unknown owner is NOENT, another verifier
+// NOT_SAME whoever asks, and another principal under the record's verifier
+// PERM, none leaving a proposal; the owner's own verifier and principal are
+// answered its client ID and the next sequence ID (RFC 8881 section 18.35.4,
+// items 6 to 9; RFC 21 section 3.5).
 func TestExchangeIDUpdConfirmed(t *testing.T) {
 	rn := adaptertest.NewRunner(t)
 	e := newExchange(t, rn, 7)
@@ -583,6 +620,17 @@ func TestExchangeIDUpdConfirmed(t *testing.T) {
 		statusPerm,
 	)
 	e.nothingHeld(t, id)
+	e.noPending(t, id)
+
+	for _, call := range []vfs.Call{plain(rn), other} {
+		wantStatus(
+			t,
+			e.do(t, call, args("client-a", verifier1, flagUpdConfirmedRecA, spNone())),
+			statusNotSame,
+		)
+		e.nothingHeld(t, id)
+		e.noPending(t, id)
+	}
 
 	got := e.do(t, plain(rn), args("client-a", verifier2, flagUpdConfirmedRecA, spNone()))
 	wantStatus(t, got, statusOK)
@@ -597,6 +645,7 @@ func TestExchangeIDUpdConfirmed(t *testing.T) {
 	}
 
 	e.nothingHeld(t, id)
+	e.noPending(t, id)
 }
 
 // A confirmed owner under a machine credential, asked by a caller that does
@@ -634,6 +683,7 @@ func TestExchangeIDProtectedOwner(t *testing.T) {
 		statusPerm,
 	)
 	e.nothingHeld(t, id)
+	e.noPending(t, id)
 
 	got := e.do(t, call, args("client-a", verifier2, 0, spNone()))
 	wantStatus(t, got, statusOK)
@@ -649,9 +699,10 @@ func TestExchangeIDProtectedOwner(t *testing.T) {
 
 // A confirmed owner under a machine credential, asked with a new verifier by
 // a caller of the same principal that proves no machine credential, is not
-// replaced: CLID_INUSE, or PERM under UPD_CONFIRMED_REC_A, no proposal is
-// held and the stored record is untouched. The owner under its credential
-// still replaces it.
+// replaced: CLID_INUSE, or NOT_SAME under UPD_CONFIRMED_REC_A (the verifier
+// differs, which is answered before the principal), no proposal is held and
+// the stored record is untouched. The owner under its credential still
+// replaces it.
 func TestExchangeIDProtectedOwnerNewVerifier(t *testing.T) {
 	rn := adaptertest.NewRunner(t)
 	e := newExchange(t, rn, 7)
@@ -681,9 +732,10 @@ func TestExchangeIDProtectedOwnerNewVerifier(t *testing.T) {
 	wantStatus(
 		t,
 		e.do(t, plain(rn), args("client-a", verifier2, flagUpdConfirmedRecA, spNone())),
-		statusPerm,
+		statusNotSame,
 	)
 	e.nothingHeld(t, id)
+	e.noPending(t, id)
 
 	rec, err := rn.Mem.Record(t.Context(), call, id)
 	if err != nil || rec.Boot != boot1Minor1 {
@@ -891,5 +943,24 @@ func TestExchangeIDKeepsItsOwnName(t *testing.T) {
 			held.Info.Name,
 			"client-a",
 		)
+	}
+}
+
+// Every EXCHANGE_ID reads the owner with ClientByName before it proposes
+// (RFC 21 section 3.5), with or without UPD_CONFIRMED_REC_A: a failure of that
+// read is the answer, where a Propose alone would have succeeded.
+func TestExchangeIDReadsTheOwnerBeforeItProposes(t *testing.T) {
+	for name, flags := range map[string]uint32{"new": 0, "update": flagUpdConfirmedRecA} {
+		t.Run(name, func(t *testing.T) {
+			rn := adaptertest.NewRunner(t)
+			e := newExchange(t, rn, 7)
+			rn.Faults.Fail(vfs.OpClientByName, &vfs.StateError{Kind: vfs.StateStaleClient})
+
+			wantStatus(
+				t,
+				e.do(t, plain(rn), args("client-a", verifier1, flags, spNone())),
+				statusStaleClient,
+			)
+		})
 	}
 }

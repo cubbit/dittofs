@@ -16,6 +16,7 @@ var errIllegal = errors.New("nfs4: an operation code no minor version defines")
 var (
 	errPerm          = errors.New("nfs4: another principal than the client's")
 	errNoEnt         = errors.New("nfs4: no confirmed client of that owner")
+	errNotSame       = errors.New("nfs4: a verifier that is not the confirmed record's")
 	errInval         = errors.New("nfs4: a machine credential not proved by integrity or privacy")
 	errEncrAlgUnsupp = errors.New("nfs4: SP4_SSV is not served")
 	errBadFlags      = errors.New("nfs4: an eia_flags bit a client may not set")
@@ -76,6 +77,7 @@ func memberErrors() *core.ErrorTable {
 		core.ErrorRow{Err: errIllegal, Status: core.Status(wire.NFS4ErrOpIllegal)},
 		core.ErrorRow{Err: errPerm, Status: core.Status(wire.NFS4ErrPerm)},
 		core.ErrorRow{Err: errNoEnt, Status: core.Status(wire.NFS4ErrNoEnt)},
+		core.ErrorRow{Err: errNotSame, Status: core.Status(wire.NFS4ErrNotSame)},
 		core.ErrorRow{Err: errInval, Status: core.Status(wire.NFS4ErrInval)},
 		core.ErrorRow{Err: errBadFlags, Status: core.Status(wire.NFS4ErrInval)},
 		core.ErrorRow{Err: errEncrAlgUnsupp, Status: core.Status(wire.NFS4ErrEncrAlgUnsupp)},

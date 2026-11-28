@@ -129,6 +129,24 @@ func (fs *Filesystem) AddSession(ctx context.Context, c vfs.Call, cl vfs.ClientI
 	return rec, openErr(err)
 }
 
+// ClientByName reads the confirmed record under (p, name) through open
+// state's table, never the store, and compares the call's mapped principal
+// with its Owner there, as Propose does. It proposes nothing and writes
+// nothing.
+func (fs *Filesystem) ClientByName(ctx context.Context, c vfs.Call, p vfs.Protocol, name []byte) (vfs.ClientRecord, bool, bool, error) {
+	ctx, done, err := fs.enter(ctx)
+	if err != nil {
+		return vfs.ClientRecord{}, false, false, err
+	}
+	defer done()
+	who, err := fs.who(ctx, c, 0)
+	if err != nil {
+		return vfs.ClientRecord{}, false, false, err
+	}
+	rec, found, same, err := fs.clients.ByName(ctx, p, name, who.Principal)
+	return rec, found, same, openErr(err)
+}
+
 func (fs *Filesystem) Record(ctx context.Context, c vfs.Call, cl vfs.ClientID) (vfs.ClientRecord, error) {
 	ctx, done, err := fs.enter(ctx)
 	if err != nil {

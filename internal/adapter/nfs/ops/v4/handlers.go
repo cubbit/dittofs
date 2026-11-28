@@ -22,9 +22,9 @@ type Handlers struct {
 	Server Server
 }
 
-// Server is the installation's ID and this node's number, which EXCHANGE_ID
+// Server is the installation's ID and this node's ID, which EXCHANGE_ID
 // answers as the server owner and scope (RFC 21 section 3.3).
 type Server struct {
 	Installation [16]byte
-	Node         uint64
+	Node         [16]byte
 }

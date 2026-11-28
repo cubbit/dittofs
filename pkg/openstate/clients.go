@@ -84,6 +84,13 @@ type Clients interface {
 	Connect(ctx context.Context, c Client, p *Proposal) (id entity.ClientID, gen uint64, err error)
 	// Record is the record as written, Adapter included; it changes nothing.
 	Record(ctx context.Context, c entity.ClientID) (Client, error)
+	// ByName is the confirmed record under (p, name) as Propose reads it,
+	// through the table and never a pending proposal: found is false when
+	// there is none or its lease has lapsed. sameOwner is whether who is
+	// the record's Owner, or the record has none, and the record comes
+	// back either way so the caller can answer a verifier before a
+	// principal. It changes nothing and holds no proposal.
+	ByName(ctx context.Context, p entity.Protocol, name []byte, who entity.Principal) (c Client, found, sameOwner bool, err error)
 	// AddSession records node's session, listing node in Reach.Sessions
 	// under this node's epoch with its Gen raised, replacing the entry it
 	// had, and writes next as Adapter if it still equals prev; otherwise it
@@ -265,11 +272,11 @@ func (v clients) Propose(ctx context.Context, c Client, from netip.Addr) (Propos
 	case err != nil:
 		return Proposal{}, err
 	case found && (refuses(cur, rec.Owner) || cur.Protect && !c.Proved):
-		// decision: the caller's proof is read here, from a flag the service
-		// sets, not from a by-name read of the stored record by the service
-		// before it proposes, which no service surface offers yet. Overturned
-		// when it does; the field and the refusal here go with the proof the
-		// adapter reads from the stored record then.
+		// decision: the caller's proof is checked here too, from a flag the
+		// service sets, though the adapter reads the stored record by name
+		// first and checks it: that read can be stale, and the Connect that
+		// confirms a proposal reads the same flag. Overturned when the
+		// adapter's check and the Connect's are the table's own, in one step.
 		return Proposal{}, ErrClientInUse
 	case found && cur.Boot == rec.Boot:
 		p.ID, known = cur.ID, true
@@ -524,6 +531,30 @@ func (v clients) Record(ctx context.Context, c entity.ClientID) (Client, error) 
 		cl.Pending = &pd.Pending
 	}
 	return cl, nil
+}
+
+// ByName reads the record as Propose does, a lapsed lease counting as no
+// record, and compares who with its Owner by the same rule: the anonymous
+// principal is the zero one.
+func (v clients) ByName(ctx context.Context, p entity.Protocol, name []byte, who entity.Principal) (Client, bool, bool, error) {
+	t := v.t
+	if _, err := t.running(); err != nil {
+		return Client{}, false, false, err
+	}
+	cur, found, err := t.byName(ctx, entity.ClientRecord{Protocol: p, Name: name})
+	if err != nil || !found {
+		return Client{}, false, false, err
+	}
+	t.cmu.Lock()
+	end := t.leases[cur.ID]
+	t.cmu.Unlock()
+	if t.lapsed(cur.ID) {
+		return Client{}, false, false, nil
+	}
+	if who == entity.AnonymousPrincipal {
+		who = entity.Principal{}
+	}
+	return Client{ClientRecord: cur, Expires: end}, true, !refuses(cur, who), nil
 }
 
 func (v clients) AddSession(ctx context.Context, c entity.ClientID, node entity.NodeID, prev, next []byte) (Client, error) {

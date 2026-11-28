@@ -109,7 +109,7 @@ type node struct {
 }
 
 // newNode is newExchange with a callbacks constructor.
-func newNode(t *testing.T, rn *adaptertest.Runner, id uint64) *node {
+func newNode(t *testing.T, rn *adaptertest.Runner, id byte) *node {
 	t.Helper()
 
 	n := &node{exchange: newExchange(t, rn, id)}

@@ -1192,3 +1192,64 @@ func TestASecondStartRaisesNoEpoch(t *testing.T) {
 		t.Errorf("the epoch after a refused second Start: next raise %d, want %d", next, f.epoch+1)
 	}
 }
+
+// ByName finds the confirmed record under (protocol, name) and says whether
+// the caller is its owner: another principal still gets the record, and a
+// record with no owner is anyone's. It writes nothing.
+func TestByNameFindsTheConfirmedRecordAndItsOwner(t *testing.T) {
+	f := newFixture(t)
+	alice, bob := entity.NewUser(), entity.NewUser()
+	id := f.connect(t, nfs("host-a", 7, alice))
+	anon := f.connect(t, nfs("host-n", 3, entity.Principal{}))
+
+	f.fs.Counts.Take()
+	for _, tc := range []struct {
+		name      string
+		who       entity.Principal
+		want      entity.ClientID
+		boot      byte
+		sameOwner bool
+	}{
+		{"host-a", alice, id, 7, true},
+		{"host-a", bob, id, 7, false},
+		{"host-n", bob, anon, 3, true},
+	} {
+		c, found, same, err := f.ByName(ctx, entity.ProtocolNFSv4, []byte(tc.name), tc.who)
+		if err != nil || !found || same != tc.sameOwner || c.ID != tc.want || c.Boot != [8]byte{tc.boot} {
+			t.Errorf("%s: id %d boot %v found %v sameOwner %v, %v; want id %d boot %d found, sameOwner %v",
+				tc.name, c.ID, c.Boot, found, same, err, tc.want, tc.boot, tc.sameOwner)
+		}
+		if c.Pending != nil {
+			t.Errorf("%s: a proposal came back with the record: %+v", tc.name, c.Pending)
+		}
+	}
+	if n := f.fs.Counts.Take(); n.Sets+n.Deletes != 0 {
+		t.Errorf("ByName wrote %d keys, want none", n.Sets+n.Deletes)
+	}
+}
+
+// A name nobody confirmed, one held only by a proposal, another protocol's
+// name and a record whose lease has lapsed are not found.
+func TestByNameIgnoresProposalsOtherProtocolsAndLapsedLeases(t *testing.T) {
+	f := newFixture(t)
+	alice := entity.NewUser()
+	if _, err := f.Propose(ctx, nfs("only-pending", 1, alice), addr); err != nil {
+		t.Fatal(err)
+	}
+	f.connect(t, nfs("host-a", 1, alice))
+
+	if _, found, _, err := f.ByName(ctx, entity.ProtocolNFSv4, []byte("nobody"), alice); err != nil || found {
+		t.Errorf("an unknown name: found %v, %v; want not found", found, err)
+	}
+	if c, found, _, err := f.ByName(ctx, entity.ProtocolNFSv4, []byte("only-pending"), alice); err != nil || found {
+		t.Errorf("a name only a proposal holds: found %v (%+v), %v; want not found", found, c.ClientRecord, err)
+	}
+	if _, found, _, err := f.ByName(ctx, entity.ProtocolSMB, []byte("host-a"), alice); err != nil || found {
+		t.Errorf("the same name under another protocol: found %v, %v; want not found", found, err)
+	}
+
+	f.clock.advance(leasePeriod + time.Second)
+	if _, found, _, err := f.ByName(ctx, entity.ProtocolNFSv4, []byte("host-a"), alice); err != nil || found {
+		t.Errorf("a record whose lease lapsed: found %v, %v; want not found", found, err)
+	}
+}

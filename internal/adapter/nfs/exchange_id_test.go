@@ -2,6 +2,7 @@ package nfs
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
 	"testing"
 	"time"
@@ -60,7 +61,7 @@ func TestExchangeIDOverTheWire(t *testing.T) {
 	d := leakChecked(t)
 	d.Server = adapter.Server{
 		Installation: [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
-		Node:         3,
+		Node:         [16]byte{3, 15: 9},
 	}
 
 	mem := d.VFS.(*memory.Service)
@@ -110,8 +111,11 @@ func TestExchangeIDOverTheWire(t *testing.T) {
 			t.Errorf("uid %d: the flags are %#x, want %#x", uid, f, flagUseNonPNF)
 		}
 
-		if m := binary.BigEndian.Uint64(b[replyMinor:]); m != 3 {
-			t.Errorf("uid %d: the minor ID is %d, want 3", uid, m)
+		// The node's minor ID is the first eight bytes of the SHA-256 of its
+		// ID, worked out here from the bytes.
+		sum := sha256.Sum256(d.Server.Node[:])
+		if m, want := binary.BigEndian.Uint64(b[replyMinor:]), binary.BigEndian.Uint64(sum[:8]); m != want {
+			t.Errorf("uid %d: the minor ID is %#x, want %#x", uid, m, want)
 		}
 
 		if !bytes.Equal(b[replyMajor:replyMajor+16], d.Server.Installation[:]) {

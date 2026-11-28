@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 
@@ -150,10 +151,11 @@ func bootOf(verifier [8]byte, minor byte) [8]byte {
 	return [8]byte(sum[:8])
 }
 
-// ExchangeID answers EXCHANGE_ID (RFC 8881 section 18.35): a confirmed owner
-// with the same verifier and principal is answered its client ID again, any
-// other is a proposal the adapter holds for CREATE_SESSION to confirm. It
-// writes nothing: the service's Propose and Record change no state.
+// ExchangeID answers EXCHANGE_ID (RFC 8881 section 18.35): it reads the owner
+// with ClientByName first, then a confirmed owner with the same verifier and
+// principal is answered its client ID again, any other is a proposal the
+// adapter holds for CREATE_SESSION to confirm. It writes nothing: the
+// service's ClientByName, Propose and Record change no state.
 func (h *Handlers) ExchangeID(
 	ctx context.Context,
 	r *core.Request,
@@ -202,18 +204,31 @@ func (h *Handlers) ExchangeID(
 		Recovery: recoverStatus,
 	}
 
-	// decision: every EXCHANGE_ID goes through Propose, since open state
-	// cannot read a confirmed record by name, so the answers that need that
-	// read are not the RFC's: under UPD_CONFIRMED_REC_A a new verifier is
-	// NOENT, not NOT_SAME, and a caller that does not prove the credential of
-	// a protected owner is PERM, not NOT_SAME. Open state refuses that caller
-	// the protected name, so no later check of the stored record is needed.
-	// Overturned when open state reads a confirmed record by name.
-	proposal, err := h.VFS.Propose(ctx, r.Call, info)
-	if errors.Is(err, &vfs.StateError{Kind: vfs.StateClientInUse}) && update {
-		return exchangeIDRes{}, errPerm
+	cur, found, sameOwner, err := h.VFS.ClientByName(ctx, r.Call, vfs.ProtocolNFSv4, info.Name)
+	if err != nil {
+		return exchangeIDRes{}, err
 	}
 
+	// A protected record is the owner's only to a caller that proves the
+	// machine credential: one that does not counts as another principal
+	// (RFC 21 section 3.5).
+	if found && cur.Protect && !provesMachine(r.Call.Identity) {
+		sameOwner = false
+	}
+
+	if update {
+		return h.update(r, a, info, cur, found, sameOwner)
+	}
+
+	if found && !sameOwner {
+		return exchangeIDRes{}, &vfs.StateError{Kind: vfs.StateClientInUse}
+	}
+
+	// Propose still reads the caller's proof from the proposal
+	// (Client.Proved) and refuses a protected name to one that lacks it. The
+	// read above can be stale by the time Propose runs, and the same flag
+	// guards CREATE_SESSION's connect, so the service keeps its own check.
+	proposal, err := h.VFS.Propose(ctx, r.Call, info)
 	if err != nil {
 		return exchangeIDRes{}, err
 	}
@@ -222,16 +237,37 @@ func (h *Handlers) ExchangeID(
 
 	switch {
 	case errors.Is(err, &vfs.StateError{Kind: vfs.StateStaleClient}):
-		if update {
-			return exchangeIDRes{}, errNoEnt
-		}
-
 		return h.propose(info, proposal, confirm, a)
 	case err != nil:
 		return exchangeIDRes{}, err
 	}
 
-	return h.confirmed(r, stored, update, a)
+	return h.confirmed(r, stored, a)
+}
+
+// update answers an EXCHANGE_ID with UPD_CONFIRMED_REC_A from the record
+// ClientByName read, proposing nothing: NOENT when no confirmed record holds
+// the owner, NOT_SAME when its Boot is not the one the request's verifier
+// gives, PERM when the verifier matches and the caller is not the owner, and
+// otherwise the record's client ID (RFC 21 section 3.5; RFC 8881 section
+// 18.35.4, items 6 to 9).
+func (h *Handlers) update(
+	r *core.Request,
+	a exchangeIDArgs,
+	info vfs.ClientInfo,
+	cur vfs.ClientRecord,
+	found, sameOwner bool,
+) (exchangeIDRes, error) {
+	switch {
+	case !found:
+		return exchangeIDRes{}, errNoEnt
+	case cur.Boot != info.Boot:
+		return exchangeIDRes{}, errNotSame
+	case !sameOwner:
+		return exchangeIDRes{}, errPerm
+	}
+
+	return h.confirmed(r, cur, a)
 }
 
 // provesMachine reports whether the caller is proved by a ticket under
@@ -267,7 +303,6 @@ func (h *Handlers) propose(
 func (h *Handlers) confirmed(
 	r *core.Request,
 	stored vfs.ClientRecord,
-	update bool,
 	a exchangeIDArgs,
 ) (exchangeIDRes, error) {
 	rec, err := protocol.ReadRecord(stored.ID, stored.Adapter)
@@ -288,6 +323,21 @@ func withOp(bitmap []uint32, op int) []uint32 {
 	out[op/32] |= 1 << (op % 32)
 
 	return out
+}
+
+// minorID is the node's so_minor_id: the first eight bytes of the SHA-256 of
+// the node's ID, big endian. The ID is a UUID, whose leading bytes may be a
+// timestamp or carry fixed version bits, so the bytes are hashed rather than
+// cut: every node has one value, the same at each restart, and two nodes
+// share one only on a 64-bit collision.
+//
+// decision: RFC 21 section 3.3 asks only for a minor ID unique to the node, so
+// this derivation is the adapter's own choice. Overturned if the RFC fixes
+// another one.
+func minorID(node [16]byte) uint64 {
+	sum := sha256.Sum256(node[:])
+
+	return binary.BigEndian.Uint64(sum[:8])
 }
 
 // reply is EXCHANGE_ID4resok: the client ID and sequence ID, the protection
@@ -315,7 +365,7 @@ func (h *Handlers) reply(id uint64, seq, flags uint32, a exchangeIDArgs) exchang
 		SequenceID: seq,
 		Flags:      flags,
 		Protect:    protect,
-		Owner:      serverOwner{MinorID: h.Server.Node, MajorID: installation},
+		Owner:      serverOwner{MinorID: minorID(h.Server.Node), MajorID: installation},
 		Scope:      installation,
 	}}
 }
