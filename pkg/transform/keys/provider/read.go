@@ -1,0 +1,294 @@
+package provider
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"sync"
+
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/transform/keys"
+)
+
+// The key record states the read path tells apart (RFC 5 Appendix B.2).
+// retiring and retired records are served by Get like current ones.
+const (
+	stateCurrent   = "current"
+	stateDestroyed = "destroyed"
+)
+
+var _ keys.Provider = (*Provider)(nil)
+
+// slot names one key record within its namespace.
+type slot struct{ kind, id string }
+
+// entry is one key record as the provider caches it. row never changes once
+// the entry is in a set; key, fp and logged are written under cache.mu.
+type entry struct {
+	row    Row
+	key    []byte   // the unwrapped key, checked against fp; nil until first served
+	fp     [32]byte // its recorded fingerprint, set with key
+	logged bool     // a failure to serve it has been logged
+}
+
+// cache holds each namespace's key records and the keys unwrapped from them.
+// A set, once installed, is never changed: a reload or an update installs a
+// new one.
+//
+// ponytail: never evicts, so every namespace's rows and every unwrapped key
+// stay until stop, about 32 bytes and an ID per key. Replace it with a bounded
+// cache that re-reads on a miss when one node serves about 10⁶ namespaces.
+type cache struct {
+	mu    sync.RWMutex
+	epoch uint64 // raised by every update, so a load that began before one installs nothing
+	sets  map[entity.NamespaceID]map[slot]*entry
+
+	// updateMu orders the provider's own updates, so each one's refresh of
+	// the cache lands in the order its commit did.
+	updateMu sync.Mutex
+}
+
+// Open loads ns's key records and unwraps and checks every current one,
+// returning the first that cannot be served as Get would return it, so a
+// namespace whose keys cannot be reached does not open. The content wiring
+// calls it as it opens each namespace.
+func (p *Provider) Open(ctx context.Context, ns entity.NamespaceID) error {
+	set, err := p.load(ctx, ns)
+	if err != nil {
+		return err
+	}
+	for _, e := range set {
+		if e.row.State != stateCurrent {
+			continue
+		}
+		if _, _, err := p.serve(ns, e); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Current is the current material of kind in ns, served only as Get would
+// serve it. A kind ns holds no current record of is ErrUnknownMaterial,
+// answered from the cache: a kind is given only through the provider's own
+// update, which refreshes it.
+func (p *Provider) Current(ctx context.Context, ns entity.NamespaceID, kind string) (keys.MaterialID, error) {
+	set, err := p.set(ctx, ns)
+	if err != nil {
+		return keys.MaterialID{}, err
+	}
+
+	var cur *entry
+	for s, e := range set {
+		if s.kind != kind || e.row.State != stateCurrent {
+			continue
+		}
+		if cur != nil {
+			return keys.MaterialID{}, fmt.Errorf("provider: namespace %s holds two current %s records: %w", ns, kind, keys.ErrMaterialUnavailable)
+		}
+		cur = e
+	}
+	if cur == nil {
+		return keys.MaterialID{}, fmt.Errorf("provider: namespace %s holds no current %s: %w", ns, kind, keys.ErrUnknownMaterial)
+	}
+
+	_, fp, err := p.serve(ns, cur)
+	if err != nil {
+		return keys.MaterialID{}, err
+	}
+	return keys.MaterialID{Namespace: ns, Kind: kind, ID: cur.row.ID, Fingerprint: fp}, nil
+}
+
+// Get returns a copy of the content of id, looked up by its namespace, kind
+// and ID; id.Fingerprint is not consulted, since the record's own is checked.
+// An ID the cached records lack reloads the namespace once before it is
+// ErrUnknownMaterial, so a record another writer added is found.
+func (p *Provider) Get(ctx context.Context, id keys.MaterialID) ([]byte, error) {
+	s := slot{id.Kind, id.ID}
+
+	p.cache.mu.RLock()
+	e := p.cache.sets[id.Namespace][s]
+	// A key is cached only once its row was served, and a row's state never
+	// changes within its entry, so a cached key is never a destroyed one.
+	if e != nil && e.key != nil {
+		key := e.key
+		p.cache.mu.RUnlock()
+		return bytes.Clone(key), nil
+	}
+	p.cache.mu.RUnlock()
+
+	if e == nil {
+		// One load either way: the first of a namespace never read, or the
+		// reload of one whose cached rows lack the ID.
+		set, err := p.load(ctx, id.Namespace)
+		if err != nil {
+			return nil, err
+		}
+		if e = set[s]; e == nil {
+			return nil, fmt.Errorf("provider: %s %x of namespace %s: %w", id.Kind, id.ID, id.Namespace, keys.ErrUnknownMaterial)
+		}
+	}
+
+	key, _, err := p.serve(id.Namespace, e)
+	if err != nil {
+		return nil, err
+	}
+	return bytes.Clone(key), nil
+}
+
+// set returns ns's cached records, loading them on first use.
+func (p *Provider) set(ctx context.Context, ns entity.NamespaceID) (map[slot]*entry, error) {
+	p.cache.mu.RLock()
+	set, ok := p.cache.sets[ns]
+	p.cache.mu.RUnlock()
+	if ok {
+		return set, nil
+	}
+	return p.load(ctx, ns)
+}
+
+// load reads ns's records and installs them, keeping the key of every record
+// whose state and bytes are unchanged. A failed read is
+// ErrMaterialUnavailable and installs nothing; a read that began before an
+// update installs nothing either, since the update's set is newer.
+func (p *Provider) load(ctx context.Context, ns entity.NamespaceID) (map[slot]*entry, error) {
+	p.cache.mu.RLock()
+	epoch := p.cache.epoch
+	p.cache.mu.RUnlock()
+
+	rows, err := p.records.Load(ctx, ns)
+	if err != nil {
+		return nil, fmt.Errorf("provider: load the key records of namespace %s: %w: %w", ns, keys.ErrMaterialUnavailable, err)
+	}
+
+	p.cache.mu.Lock()
+	defer p.cache.mu.Unlock()
+
+	if p.cache.epoch != epoch {
+		if set, ok := p.cache.sets[ns]; ok {
+			return set, nil
+		}
+		return p.newSet(rows, nil), nil
+	}
+	set := p.newSet(rows, p.cache.sets[ns])
+	p.cache.sets[ns] = set
+	return set, nil
+}
+
+// newSet builds a set of rows, a later row replacing an earlier one of its
+// kind and ID, and carries over from old the key of every row whose state and
+// bytes are unchanged. cache.mu must be held.
+func (p *Provider) newSet(rows []Row, old map[slot]*entry) map[slot]*entry {
+	set := make(map[slot]*entry, len(rows))
+	for _, row := range rows {
+		s := slot{row.Kind, row.ID}
+		e := &entry{row: row}
+		if o := old[s]; o != nil && o.row.State == row.State && bytes.Equal(o.row.Record, row.Record) {
+			e.key, e.fp, e.logged = o.key, o.fp, o.logged
+		}
+		set[s] = e
+	}
+	return set
+}
+
+// update runs fn on ns's key records through the view's Update and then makes
+// the cached rows those fn last saw with the rows it returned written over
+// them, as Update wrote them. After an error ns's rows are dropped, since the
+// commit may have happened. Every write of a key record by the provider goes
+// through update.
+func (p *Provider) update(ctx context.Context, ns entity.NamespaceID, fn func(rows []Row) ([]Row, error)) error {
+	p.cache.updateMu.Lock()
+	defer p.cache.updateMu.Unlock()
+
+	var seen, out []Row
+	err := p.records.Update(ctx, ns, func(rows []Row) ([]Row, error) {
+		o, err := fn(rows)
+		seen, out = rows, o
+		return o, err
+	})
+
+	p.cache.mu.Lock()
+	defer p.cache.mu.Unlock()
+
+	p.cache.epoch++
+	if err != nil {
+		delete(p.cache.sets, ns)
+		return err
+	}
+	p.cache.sets[ns] = p.newSet(append(seen[:len(seen):len(seen)], out...), p.cache.sets[ns])
+	return nil
+}
+
+// serve returns e's key and its recorded fingerprint once its state, its
+// unwrap and its fingerprint have been checked, caching the key.
+func (p *Provider) serve(ns entity.NamespaceID, e *entry) ([]byte, [32]byte, error) {
+	if e.row.State == stateDestroyed {
+		return nil, [32]byte{}, fmt.Errorf("provider: %s %x of namespace %s: %w", e.row.Kind, e.row.ID, ns, keys.ErrMaterialDestroyed)
+	}
+
+	p.cache.mu.RLock()
+	key, fp := e.key, e.fp
+	p.cache.mu.RUnlock()
+	if key != nil {
+		return key, fp, nil
+	}
+
+	key, fp, err := p.open(ns, e.row)
+	if err != nil {
+		// decision: a record that fails its codec, whose two master key IDs
+		// differ, whose wrap names a master key this provider does not hold,
+		// whose unwrap fails or whose key no longer matches its fingerprint is
+		// unavailable, never destroyed: the right record or key may come back,
+		// and only a destroyed state is loss for good (RFC 5 Appendix B.4).
+		// Withdraw it if a record can ever be known lost from its bytes alone.
+		err = fmt.Errorf("provider: %s %x of namespace %s: %w: %w", e.row.Kind, e.row.ID, ns, keys.ErrMaterialUnavailable, err)
+		p.cache.mu.Lock()
+		first := !e.logged
+		e.logged = true
+		p.cache.mu.Unlock()
+		if first {
+			p.log.Error("key record cannot be served", "namespace", ns.String(), "kind", e.row.Kind, "id", fmt.Sprintf("%x", e.row.ID), "err", err)
+		}
+		return nil, [32]byte{}, err
+	}
+
+	p.cache.mu.Lock()
+	e.key, e.fp = key, fp
+	p.cache.mu.Unlock()
+	return key, fp, nil
+}
+
+// open decodes row's record of ns and returns its key, unwrapped when it is
+// wrapped, and its recorded fingerprint, which the key must match.
+func (p *Provider) open(ns entity.NamespaceID, row Row) ([]byte, [32]byte, error) {
+	rec, err := decodeKeyRecord(row.Record)
+	if err != nil {
+		return nil, [32]byte{}, err
+	}
+
+	var key []byte
+	if len(rec.masterKeyID) == 0 {
+		// Only a non-encrypting namespace's chunk-ID key is held in the clear.
+		if row.Kind != keys.KindChunkIDKey {
+			return nil, [32]byte{}, fmt.Errorf("%w: a %s held in the clear", errKeyRecord, row.Kind)
+		}
+		key = bytes.Clone(rec.key)
+	} else {
+		s, err := parseStoredWrap(rec.key)
+		if err != nil {
+			return nil, [32]byte{}, err
+		}
+		if !bytes.Equal(s.masterKeyID, rec.masterKeyID) {
+			return nil, [32]byte{}, fmt.Errorf("%w: record names master key %x, its wrap %x", errKeyRecord, rec.masterKeyID, s.masterKeyID)
+		}
+		if key, err = p.unwrap(rec.key, wrapAAD(ns[:], row.Kind, row.ID)); err != nil {
+			return nil, [32]byte{}, err
+		}
+	}
+
+	if fingerprint(key) != rec.fingerprint {
+		clear(key)
+		return nil, [32]byte{}, fmt.Errorf("key no longer matches its recorded fingerprint %x", rec.fingerprint)
+	}
+	return key, rec.fingerprint, nil
+}
