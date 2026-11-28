@@ -175,3 +175,128 @@ func (e truncateReply) after(resp *http.Response) (*http.Response, error) {
 	resp.Body = &cut{ReadCloser: resp.Body, left: e.n, end: io.EOF}
 	return resp, nil
 }
+
+// FlipByte inverts the byte at offset at of the request's body when it has
+// one, else of the reply's, changing no length. A body shorter than at+1 is
+// left whole.
+func FlipByte(at int64) Effect {
+	if at < 0 {
+		panic(fmt.Sprintf("s3fault: FlipByte at %d, before the body", at))
+	}
+	return flipByte{at}
+}
+
+type flipByte struct{ at int64 }
+
+func (e flipByte) before(req *http.Request, _, _ string) (*http.Request, *http.Response) {
+	if !hasBody(req) {
+		return req, nil
+	}
+	req = req.Clone(req.Context())
+	req.Body = &flip{ReadCloser: req.Body, at: e.at}
+	if get := req.GetBody; get != nil {
+		// net/http resends a body through GetBody; the resent one is flipped too.
+		req.GetBody = func() (io.ReadCloser, error) {
+			b, err := get()
+			if err != nil {
+				return nil, err
+			}
+			return &flip{ReadCloser: b, at: e.at}, nil
+		}
+	}
+	return req, nil
+}
+
+// after tells the sides apart by resp.Request, which net/http sets to the
+// request sent.
+func (e flipByte) after(resp *http.Response) (*http.Response, error) {
+	if resp.Request != nil && hasBody(resp.Request) {
+		return resp, nil // the request's body was the one flipped
+	}
+	resp.Body = &flip{ReadCloser: resp.Body, at: e.at}
+	return resp, nil
+}
+
+func hasBody(req *http.Request) bool { return req.Body != nil && req.Body != http.NoBody }
+
+// flip inverts the byte at offset at of the body it reads.
+type flip struct {
+	io.ReadCloser
+	at, off int64
+}
+
+func (f *flip) Read(p []byte) (int, error) {
+	n, err := f.ReadCloser.Read(p)
+	if i := f.at - f.off; i >= 0 && i < int64(n) {
+		p[i] ^= 0xff
+	}
+	f.off += int64(n)
+	return n, err
+}
+
+// StripHeaders removes the named headers from the request before it is sent,
+// leaving the record with them as the client built them. With Rule.MinBody it
+// strips only from requests at or above that size. Host, Content-Length and
+// Transfer-Encoding are written from the request's fields, not its header,
+// so they cannot be stripped this way.
+//
+// decision: the headers are removed after the client signed them, so a
+// service that validates the signature refuses the request. LocalStack checks
+// no signature, which a test pins; against a service that does, a strip needs
+// the request signed again.
+func StripHeaders(names ...string) Effect { return stripHeaders(names) }
+
+type stripHeaders []string
+
+func (e stripHeaders) before(req *http.Request, _, _ string) (*http.Request, *http.Response) {
+	req = req.Clone(req.Context())
+	for _, name := range e {
+		req.Header.Del(name)
+	}
+	return req, nil
+}
+
+func (stripHeaders) after(resp *http.Response) (*http.Response, error) { return resp, nil }
+
+// RecodeError rewrites a service's error reply whose S3 error code is from to
+// status and code, as a service that refuses the same request under another
+// code would. Every other reply passes as the service gave it: a success, an
+// error under another code, and one with no error document, as a HEAD's.
+// A status outside 300-599 panics: only an error replaces an error.
+func RecodeError(from string, status int, code string) Effect {
+	if status < 300 || status > 599 {
+		panic(fmt.Sprintf("s3fault: RecodeError to the status %d: only an error status, 300-599, replaces one", status))
+	}
+	return recodeError{from: from, status: status, code: code}
+}
+
+type recodeError struct {
+	from, code string
+	status     int
+}
+
+func (recodeError) before(req *http.Request, _, _ string) (*http.Request, *http.Response) {
+	return req, nil
+}
+
+func (e recodeError) after(resp *http.Response) (*http.Response, error) {
+	if resp.StatusCode < 300 {
+		return resp, nil
+	}
+	body, err := io.ReadAll(resp.Body) // an error document is small
+	_ = resp.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	var doc struct{ Code string }
+	from := []byte("<Code>" + e.from + "</Code>")
+	if xml.Unmarshal(body, &doc) == nil && doc.Code == e.from && bytes.Contains(body, from) {
+		body = bytes.Replace(body, from, []byte("<Code>"+e.code+"</Code>"), 1)
+		resp.StatusCode = e.status
+		resp.Status = strconv.Itoa(e.status) + " " + http.StatusText(e.status)
+		resp.ContentLength = int64(len(body))
+		resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+	}
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	return resp, nil
+}
