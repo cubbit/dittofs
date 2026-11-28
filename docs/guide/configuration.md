@@ -27,6 +27,7 @@ For the first setup, follow [Getting started](getting-started.md) instead.
 - [Reading a refusal](#refusals)
 - [Checking a config file](#the-commands)
 - [The management API and settings](#the-management-api)
+- [Remote stores](#remote-stores)
 
 ## A first config file
 
@@ -494,3 +495,171 @@ These settings exist today, all at the `installation` scope only:
 > $ dfsctl adapter set nfs --enabled
 > Error: dfsctl adapter set: writing adapter nfs: 400 unknown_key: Bad Request: refused by the settings table (field adapters.nfs.enabled)
 > ```
+
+### Remote stores
+
+A remote store is an S3 bucket, on Amazon S3 or a service compatible with it, that
+DittoFS keeps file data in. A store's settings say where the bucket is and how to
+reach it; each namespace on the store adds the prefix its objects live under.
+
+> **Not available yet on this version:** the node's settings table does not carry
+> these keys, so `dfsctl store create` and `dfsctl namespace create` are refused
+> with `unknown_key`, as the note above shows. This section describes the keys and
+> the credential as the node takes them once it does.
+
+#### The keys
+
+| Key | Scope | Class | Default | What it is |
+| --- | --- | --- | --- | --- |
+| `remote.endpoint` | remote store | live | required | the service's URL: `https://` and a host, with an optional port and path |
+| `remote.credential` | remote store | live | required | the access key and secret, set as a secret, never as a setting ([below](#the-credential)) |
+| `remote.region` | remote store | live | `us-east-1` | the region requests are signed for |
+| `remote.trust_roots` | remote store | live | `""`, the system's roots | CA certificates the endpoint's certificate is verified against ([below](#trust-roots)) |
+| `remote.bucket` | remote store | bound | required | the bucket every object of the store lives in |
+| `remote.storage_class` | remote store | next write | `STANDARD` | the class every object is written in |
+| `remote.block_target` | remote store | next write | `4MiB` | the data carried per block, from `1MiB` to `64MiB` |
+| `remote.prefix` | namespace | bound | required | the key prefix of the namespace's objects; ends in `/` |
+| `remote.block_format_version` | namespace | next write | `1` | the block format version written |
+
+The class says when a change takes effect:
+
+- **live** applies to the running store. A new `remote.endpoint` or a new credential
+  must reach the same content, which the store's capability check proves; until
+  the API runs that check, only the first value is accepted.
+- **bound** cannot change once the store or namespace holds content. On this
+  version only the value written at creation is accepted.
+- **next write** applies to blocks written after the change; blocks already in the
+  bucket keep theirs.
+
+Every value is checked when it is written and again when the node starts, and a
+value that breaks a rule is refused, naming the key and the rule. Nothing is
+clamped or replaced by its default:
+
+- `remote.endpoint` must be `https://` with a host. User info
+  (`https://key:secret@host`), a query and a fragment are refused, so no credential
+  rides in the URL. Plain `http://` is refused: the client speaks only HTTPS.
+- `remote.region` and `remote.storage_class` may be left unset for their default,
+  but an explicit empty value is refused.
+- `remote.storage_class` takes only a class whose objects can be read back without
+  a restore: `STANDARD`, `REDUCED_REDUNDANCY`, `STANDARD_IA`, `ONEZONE_IA`,
+  `INTELLIGENT_TIERING`, `GLACIER_IR` or `EXPRESS_ONEZONE`, spelt as S3 spells them.
+  `GLACIER`, `DEEP_ARCHIVE` and any class not on the list are refused. When a store
+  opens, the node logs `remote store opened` with the class and its
+  `failure_domain`: `one zone` for `ONEZONE_IA` and `EXPRESS_ONEZONE`, whose objects
+  live in a single availability zone and are lost with it, and
+  `as the service documents` for the others.
+- `remote.block_target` outside `1MiB` to `64MiB` is refused; `512KiB` and `128MiB`
+  both are.
+- `remote.prefix` must end in `/`, so one namespace's keys never run into
+  another's (`ns/` beside `ns2/`), and must be valid UTF-8 with no control
+  characters.
+- `remote.block_format_version` takes only a version this binary's codec writes,
+  which is `1` today.
+
+No key sets how many connections the client opens to the service, and no key turns
+off certificate verification.
+
+For example, a store on a service at `s3.example.com`, then a namespace on it:
+
+```console
+$ dfsctl store create \
+    --setting remote.endpoint=https://s3.example.com \
+    --setting remote.bucket=dittofs-data \
+    --setting remote.region=eu-west-1 \
+    --credential-file s3-credential.json
+$ dfsctl namespace create --store <store-id> --setting remote.prefix=builds/
+```
+
+#### The credential
+
+The credential is one JSON object holding the access key ID and the secret access
+key, under exactly these two names:
+
+```json
+{"access_key_id": "EXAMPLEACCESSKEYID", "secret_access_key": "example-secret-access-key"}
+```
+
+Put it in a file only you can read and pass the file with `--credential-file`, to
+`dfsctl store create` or to `dfsctl store set-credential <id>`. The server seals it
+as a secret; the store's `remote.credential` setting holds only a reference to it,
+and no answer, audit record or log line holds the key or the secret. On this
+version `set-credential` is refused `409 unproven`, since a credential set there
+must first pass the store's capability check, which the API does not run yet.
+
+A value that is not this object is refused when it is written, with `400 invalid`
+on the credential, and again when the node builds the store's client. The names are
+matched exactly, in lower case; each must appear once with a non-empty string; and
+nothing but whitespace may follow the object. So `KEY:SECRET`, a third field such
+as a session token, `"Access_Key_Id"` or an empty secret are all refused. The
+refusal names the field that is missing, empty or repeated, and never prints the
+value.
+
+#### Trust roots
+
+The client connects to the endpoint over HTTPS only and always verifies the
+service's certificate; no key skips that check. `remote.trust_roots` is how you
+reach an endpoint whose certificate comes from a CA your system does not trust.
+Set it for:
+
+- a private or company CA;
+- an on-premises S3 service, such as MinIO or Ceph, behind such a CA;
+- a test endpoint with a self-signed certificate, such as LocalStack.
+
+Leave it unset, or set it to `""`, to use the system's roots, which is what
+Amazon S3 and most hosted services need.
+
+The value is a PEM bundle of `CERTIFICATE` blocks, and it **replaces** the
+system's roots for that store; it does not add to them. So it must hold every CA
+the endpoint's certificate chain needs: a store on a private CA, set this way,
+cannot reach a service whose certificate a public CA signed.
+
+For example, for a service whose certificate your company's CA signed, with the CA
+in `company-ca.pem`:
+
+```console
+$ cat company-ca.pem
+-----BEGIN CERTIFICATE-----
+MIIBszCCAVmgAwIBAgIUJ3m0o6c1i0f9V0aJ2pbq9dF8Q0kwCgYIKoZIzj0EAwIw
+...
+-----END CERTIFICATE-----
+$ dfsctl store create \
+    --setting remote.endpoint=https://minio.internal.example:9000 \
+    --setting remote.bucket=dittofs-data \
+    --setting "remote.trust_roots=$(cat company-ca.pem)" \
+    --credential-file s3-credential.json
+```
+
+In a request body the bundle is a JSON string, its line breaks written `\n`:
+
+```json
+{"spec": {"settings": {
+  "remote.endpoint": "https://minio.internal.example:9000",
+  "remote.bucket": "dittofs-data",
+  "remote.trust_roots": "-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIU...\n-----END CERTIFICATE-----\n"
+}}}
+```
+
+For LocalStack on your own machine, save the certificate it serves and trust that
+one certificate:
+
+```console
+$ openssl s_client -connect localhost.localstack.cloud:4566 \
+    -servername localhost.localstack.cloud </dev/null 2>/dev/null \
+    | openssl x509 > localstack.pem
+$ dfsctl store create \
+    --setting remote.endpoint=https://localhost.localstack.cloud:4566 \
+    --setting remote.bucket=test-bucket \
+    --setting "remote.trust_roots=$(cat localstack.pem)" \
+    --credential-file localstack-credential.json
+```
+
+LocalStack accepts any credential, so `localstack-credential.json` can hold
+`{"access_key_id": "test", "secret_access_key": "test"}`. Its certificate can change
+when the container is recreated; save it again then.
+
+Each block of the bundle must be a `CERTIFICATE` that parses, and only whitespace
+may sit between and around the blocks. A value with no certificate, a block of
+another type (a private key, say), a corrupted block or stray text is refused when
+it is written and again when the node starts, naming the block's position, for
+example `trust_roots: block 2 is not a well-formed PEM block`. A malformed CA is
+caught there, not later as connections that fail.
