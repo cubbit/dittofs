@@ -66,9 +66,19 @@ func (k keyed) Encode(_ context.Context, _ entity.NamespaceID, m []keys.Material
 	return transform.Encoded{Body: append(body, plain...), Applied: true, Version: k.version, Material: m}, nil
 }
 
-// The decoding half lands with the chain's decode, and its tests.
-func (k keyed) Decode(context.Context, entity.NamespaceID, []byte, [32]byte, []byte, int, keys.Provider) ([]byte, error) {
-	return nil, errors.ErrUnsupported
+// Decode skips one length-prefixed material ID per kind and returns the
+// rest. It asks the provider for nothing, so it decodes without material.
+func (k keyed) Decode(_ context.Context, _ entity.NamespaceID, dst []byte, _ [32]byte, body []byte, limit int, _ keys.Provider) ([]byte, error) {
+	for range k.kinds {
+		if len(body) == 0 || len(body) < 1+int(body[0]) {
+			return nil, transform.ErrMalformed
+		}
+		body = body[1+int(body[0]):]
+	}
+	if len(body) > limit {
+		return nil, transform.ErrTooLarge
+	}
+	return append(dst, body...), nil
 }
 
 // factory builds k, its length key the settings' level when they carry one.
