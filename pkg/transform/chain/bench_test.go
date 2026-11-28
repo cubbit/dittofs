@@ -14,10 +14,10 @@ import (
 // compressor and a redundancy step, against the same two transforms called
 // directly into buffers made once, for each direction and chunk size: compare
 // the two with benchstat -col /via over -count=10 runs on one machine. It
-// gates nothing. The chain case includes the step buffer it makes per call and,
-// on encode, the copy behind the envelope, which its ponytail: marker
-// accepts, so its gap is RFC 5 §8.3's overhead, to be held within 2%, only
-// once those are paid off.
+// gates nothing. The transforms only copy, so the gap is the chain's own fixed
+// cost per call, the step buffer it makes and, on encode, the copy behind the
+// envelope, which its ponytail: marker accepts, among it. RFC 5 §8.3's 2% is
+// judged over real transforms and its corpora, not here.
 func BenchmarkChainOverhead(b *testing.B) {
 	ctx := context.Background()
 	steps := []transform.Transform{
