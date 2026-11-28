@@ -172,6 +172,9 @@ func (m *Memory) Destroy(id keys.MaterialID) {
 // against a provider.
 const memoryIncarnation = 1
 
+// memoryBatch is the most IDs one DestroyedSince returns, the provider's bound.
+const memoryBatch = 256
+
 // DestroyedSince returns, at most 256 at a time, the IDs Destroy marked after
 // cursor, each once, and the cursor to pass next, with the cursor a provider
 // gives: an incarnation in its high 32 bits and an index into the list in its
@@ -185,7 +188,7 @@ func (m *Memory) DestroyedSince(_ context.Context, cursor uint64) ([]keys.Materi
 	if cursor>>32 == memoryIncarnation && uint32(cursor) <= uint32(len(m.destroyed)) {
 		i = uint64(uint32(cursor))
 	}
-	j := min(i+256, uint64(len(m.destroyed)))
+	j := min(i+memoryBatch, uint64(len(m.destroyed)))
 
 	return slices.Clone(m.destroyed[i:j]), memoryIncarnation<<32 | j, nil
 }

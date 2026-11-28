@@ -6,6 +6,7 @@ import (
 	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -182,9 +183,11 @@ func New(ctx context.Context, cfg Config, deps Deps) (*Provider, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := p.notice.drawIncarnation(deps.Rand); err != nil {
-		return nil, err
+	var inc [4]byte
+	if _, err := io.ReadFull(deps.Rand, inc[:]); err != nil {
+		return nil, fmt.Errorf("provider: draw the notice's incarnation: %w", err)
 	}
+	p.notice.incarnation = binary.BigEndian.Uint32(inc[:])
 	p.setConfig(cfg)
 	return p, nil
 }

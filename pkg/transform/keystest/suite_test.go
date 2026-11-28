@@ -384,6 +384,34 @@ func (p dropsRest) DestroyedSince(ctx context.Context, cursor uint64) ([]keys.Ma
 	return ids, memoryIncarnation<<32 | uint64(len(p.destroyed)), err
 }
 
+// relistsDestroyed lists an ID again at each Destroy of it.
+type relistsDestroyed struct{ *Memory }
+
+func (p relistsDestroyed) Destroy(id keys.MaterialID) {
+	p.mu.Lock()
+	again := p.entries[slot{id.Namespace, id.Kind, id.ID}].destroyed
+	if again {
+		p.destroyed = append(p.destroyed, id)
+	}
+	p.mu.Unlock()
+
+	p.Memory.Destroy(id)
+}
+
+// unknownAsDestroyed lists an ID a Get found never given as destroyed.
+type unknownAsDestroyed struct{ *Memory }
+
+func (p unknownAsDestroyed) Get(ctx context.Context, id keys.MaterialID) ([]byte, error) {
+	b, err := p.Memory.Get(ctx, id)
+	if errors.Is(err, keys.ErrUnknownMaterial) {
+		p.mu.Lock()
+		p.destroyed = append(p.destroyed, id)
+		p.mu.Unlock()
+	}
+
+	return b, err
+}
+
 // Every row fails on the broken providers written for it and on no other,
 // and passes on Memory, so a row failing for the wrong reason fails here too;
 // and every row has a broken provider.
@@ -419,6 +447,8 @@ func TestEachBrokenProviderFailsItsRow(t *testing.T) {
 		{"Give counted as a call", func() Harness { return &countsGives{Memory: NewMemory()} }, []string{"calls"}},
 		{"a replaced key reported destroyed", func() Harness { return reportsReplaced{NewMemory()} }, []string{"notice"}},
 		{"the cursor ignored", func() Harness { return repeatsDestroyed{NewMemory()} }, []string{"notice", "notice-batches"}},
+		{"a second Destroy listed again", func() Harness { return relistsDestroyed{NewMemory()} }, []string{"notice"}},
+		{"an unknown ID reported destroyed", func() Harness { return unknownAsDestroyed{NewMemory()} }, []string{"notice"}},
 		{"no batch bound", func() Harness { return unbatched{NewMemory()} }, []string{"notice-batches"}},
 		{"the rest past a batch dropped", func() Harness { return dropsRest{NewMemory()} }, []string{"notice-batches"}},
 	} {
@@ -472,6 +502,8 @@ func TestEachBrokenProviderFailsOnItsCheck(t *testing.T) {
 		}, owned, "after a Replace and a Destroy"},
 		{"a replaced key reported destroyed", func() Harness { return reportsReplaced{NewMemory()} }, notice, "before any Destroy"},
 		{"the cursor ignored", func() Harness { return repeatsDestroyed{NewMemory()} }, notice, "from the cursor naming the first Destroy"},
+		{"a second Destroy listed again", func() Harness { return relistsDestroyed{NewMemory()} }, notice, "after destroying the first again"},
+		{"an unknown ID reported destroyed", func() Harness { return unknownAsDestroyed{NewMemory()} }, notice, "before any Destroy"},
 		{"no batch bound", func() Harness { return unbatched{NewMemory()} }, noticeBatches, "first batch of 300 destroyed"},
 		{"the rest past a batch dropped", func() Harness { return dropsRest{NewMemory()} }, noticeBatches, "second batch of 300 destroyed"},
 	} {

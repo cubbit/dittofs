@@ -23,9 +23,10 @@ import (
 
 // harness adapts the provider to keystest.Harness over the in-memory view.
 // Give, Replace and Destroy write rows as another writer of the metadata
-// store would, then reload the provider and open the namespace written, so
-// one provider serves the whole run, Calls is its own, and a row Destroy
-// marks reaches DestroyedSince as an Open finds it, under one incarnation.
+// store would, then reload the provider, so one provider serves the whole
+// run and Calls is its own. Destroy also opens the namespace, which a reload
+// re-opens only once held, so the row it marks reaches DestroyedSince as an
+// Open finds it.
 type harness struct {
 	*Provider
 	t       *testing.T
@@ -44,9 +45,7 @@ func newHarness(t *testing.T) keystest.Harness {
 	return harness{Provider: p, t: t, records: records}
 }
 
-// write runs fn on ns's rows through the view, then reloads the provider and
-// opens ns. An Open refused for its material is left for the row's own reads
-// to see.
+// write runs fn on ns's rows through the view, then reloads the provider.
 func (h harness) write(ns entity.NamespaceID, fn func(rows []Row) []Row) {
 	h.t.Helper()
 
@@ -55,7 +54,6 @@ func (h harness) write(ns entity.NamespaceID, fn func(rows []Row) []Row) {
 		h.t.Fatalf("Update of namespace %s: %v", ns, err)
 	}
 	h.reload(ctx)
-	_ = h.Open(ctx, ns)
 }
 
 // row is id's row among rows, failing the test when there is none.
@@ -113,7 +111,8 @@ func (h harness) Replace(id keys.MaterialID, material []byte) {
 	})
 }
 
-// Destroy marks id's record destroyed, keeping only its fingerprint.
+// Destroy marks id's record destroyed, keeping only its fingerprint, and
+// opens its namespace.
 func (h harness) Destroy(id keys.MaterialID) {
 	h.write(id.Namespace, func(rows []Row) []Row {
 		r := h.row(rows, id)
@@ -123,6 +122,8 @@ func (h harness) Destroy(id keys.MaterialID) {
 		}
 		return []Row{{Kind: r.Kind, ID: r.ID, State: stateDestroyed, Record: h.record(old.fingerprint, nil, nil)}}
 	})
+	// An Open refused for other material is left for the row's reads to see.
+	_ = h.Open(context.Background(), id.Namespace)
 }
 
 // The provider passes the provider suite every keys.Provider is held to.

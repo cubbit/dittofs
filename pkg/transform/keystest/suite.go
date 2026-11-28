@@ -14,10 +14,10 @@ import (
 
 // Harness is a provider under the suite: the provider with its destroyed
 // material notice, and the calls the suite sets it up and reads it through,
-// as Memory's methods of the same names define them. A real provider is adapted to it over its own records, and an
-// adapter that cannot set one up fails the test through t.Fatal on the t
-// newHarness was given. A row gives each ID once, so an adapter may refuse a
-// second Give of one.
+// as Memory's methods of the same names define them. A real provider is
+// adapted to it over its own records, and an adapter that cannot set one up
+// fails the test through t.Fatal on the t newHarness was given. A row gives
+// each ID once, so an adapter may refuse a second Give of one.
 type Harness interface {
 	keys.Provider
 	keys.DestroyedNotice

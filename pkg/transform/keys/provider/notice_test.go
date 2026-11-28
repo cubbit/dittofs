@@ -120,11 +120,45 @@ func TestNoticeFedByOpenOnly(t *testing.T) {
 		t.Fatalf("DestroyedSince(0) after a refused Open = %+v, want %+v", ids, []keys.MaterialID{id})
 	}
 
-	_ = f.p.Open(ctx, ns)
+	if err := f.p.Open(ctx, ns); err == nil {
+		t.Fatal("second Open over an unreadable current record = nil, want its refusal")
+	}
 	if ids, _ := destroyedSince(t, f.p, next); len(ids) != 0 {
 		t.Errorf("DestroyedSince after a second Open = %+v, want nothing more", ids)
 	}
-	if ids, _ := destroyedSince(t, f.p, 0); len(ids) != 1 {
-		t.Errorf("DestroyedSince(0) after a second Open = %+v, want the one ID once", ids)
+	if ids, _ := destroyedSince(t, f.p, 0); !slices.Equal(ids, []keys.MaterialID{id}) {
+		t.Errorf("DestroyedSince(0) after a second Open = %+v, want %+v once", ids, []keys.MaterialID{id})
+	}
+}
+
+// A destroyed record that no longer decodes is named with a zero
+// fingerprint, and once: rewritten as a destroyed record that decodes, it is
+// not named again under its fingerprint. A record skipped for its bytes, or
+// a notice that lists one ID per fingerprint, fails here.
+func TestNoticeOfARecordThatNoLongerDecodes(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	f := newReadFixture(t)
+	ctx := context.Background()
+	ns := entity.NewNamespaceID()
+	gone, id := destroyedRow(f.p, ns, keys.KindDataKey, "d", key32(1))
+	torn := gone
+	torn.Record = []byte{2}
+	put(t, f.records, ns, torn)
+
+	if err := f.p.Open(ctx, ns); err != nil {
+		t.Fatalf("Open over a destroyed record only: %v", err)
+	}
+	unnamed := id
+	unnamed.Fingerprint = [32]byte{}
+	ids, next := destroyedSince(t, f.p, 0)
+	if !slices.Equal(ids, []keys.MaterialID{unnamed}) {
+		t.Fatalf("DestroyedSince(0) over a destroyed record that does not decode = %+v, want %+v, its fingerprint zero", ids, []keys.MaterialID{unnamed})
+	}
+
+	put(t, f.records, ns, gone)
+	f.p.reload(ctx)
+	if ids, _ := destroyedSince(t, f.p, next); len(ids) != 0 {
+		t.Errorf("DestroyedSince after the record decodes again = %+v, want nothing: the ID was named", ids)
 	}
 }
