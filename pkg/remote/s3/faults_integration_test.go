@@ -135,8 +135,8 @@ func readAll(rc io.ReadCloser, _ remote.StoredSum, err error) error {
 }
 
 // once makes c's call under rule's effect, applied to c's one request, and
-// returns its error and how many requests it made.
-func (r *faultRig) once(t *testing.T, c storeCall, e s3fault.Effect) (error, int) {
+// returns how many requests it made and its error.
+func (r *faultRig) once(t *testing.T, c storeCall, e s3fault.Effect) (int, error) {
 	t.Helper()
 
 	remove := r.tr.Inject(s3fault.Rule{Op: c.op, Times: 1}, e)
@@ -145,7 +145,7 @@ func (r *faultRig) once(t *testing.T, c storeCall, e s3fault.Effect) (error, int
 	before := len(r.tr.Requests())
 	err := c.run(t.Context(), r)
 
-	return err, len(r.tr.Requests()) - before
+	return len(r.tr.Requests()) - before, err
 }
 
 // failsOnce fails t unless err is a failure wrapping exactly one sentinel,
@@ -195,7 +195,7 @@ func TestEveryReplyWrapsOneSentinel(t *testing.T) {
 				}
 
 				for _, rp := range replies {
-					err, n := r.once(t, c, s3fault.Answer(status, rp.code, rp.body))
+					n, err := r.once(t, c, s3fault.Answer(status, rp.code, rp.body))
 
 					what := fmt.Sprintf("%s answered %d %q (unparseable %v)", c.name, status, rp.code, rp.body != nil)
 					if err == nil && c.name == "delete_one_name" && status == 404 && rp.code == "NoSuchKey" {
@@ -236,14 +236,14 @@ func TestRefusalsCarryTheirCause(t *testing.T) {
 
 	for _, c := range everyCall {
 		for _, rf := range quota {
-			err, n := r.once(t, c, s3fault.Answer(rf.status, rf.code, rf.body))
+			n, err := r.once(t, c, s3fault.Answer(rf.status, rf.code, rf.body))
 			what := fmt.Sprintf("%s answered %d %q", c.name, rf.status, rf.code)
 			failsOnce(t, what, err, n)
 			checkErr(t, what, err, nil, remote.CauseQuota)
 		}
 
 		for _, rf := range access {
-			err, n := r.once(t, c, s3fault.Answer(rf.status, rf.code, rf.body))
+			n, err := r.once(t, c, s3fault.Answer(rf.status, rf.code, rf.body))
 			what := fmt.Sprintf("%s answered %d %q", c.name, rf.status, rf.code)
 			failsOnce(t, what, err, n)
 			checkErr(t, what, err, nil, remote.CauseAccess)
@@ -254,7 +254,7 @@ func TestRefusalsCarryTheirCause(t *testing.T) {
 
 	for _, c := range everyCall[:2] { // put, then put_control
 		for _, rf := range size {
-			err, n := r.once(t, c, s3fault.Answer(rf.status, rf.code, rf.body))
+			n, err := r.once(t, c, s3fault.Answer(rf.status, rf.code, rf.body))
 			what := fmt.Sprintf("%s answered %d %q", c.name, rf.status, rf.code)
 			failsOnce(t, what, err, n)
 
@@ -315,13 +315,13 @@ func TestFaultsWithoutAReplyWrapOneSentinel(t *testing.T) {
 			t.Errorf("%s = %v: the fault's own error is reachable", what, err)
 		}
 
-		err, n := r.once(t, c, s3fault.LoseReply())
+		n, err := r.once(t, c, s3fault.LoseReply())
 		what = c.name + " with its reply lost"
 		failsOnce(t, what, err, n)
 		checkErr(t, what, err, remote.ErrTransient, 0)
 
 		if c.body {
-			err, n = r.once(t, c, s3fault.TruncateReply(10))
+			n, err = r.once(t, c, s3fault.TruncateReply(10))
 			what = c.name + " with its reply cut after 10 bytes"
 			failsOnce(t, what, err, n)
 			checkErr(t, what, err, remote.ErrTransient, 0)
@@ -337,7 +337,7 @@ func TestFaultsWithoutAReplyWrapOneSentinel(t *testing.T) {
 		{everyCall[2], remote.ErrTransient}, // get: the response checksum mismatches
 		{everyCall[4], remote.ErrTransient}, // get_control
 	} {
-		err, n := r.once(t, tc.call, s3fault.FlipByte(7))
+		n, err := r.once(t, tc.call, s3fault.FlipByte(7))
 		what := tc.call.name + " with a byte of its body flipped"
 		failsOnce(t, what, err, n)
 		checkErr(t, what, err, tc.want, 0)
