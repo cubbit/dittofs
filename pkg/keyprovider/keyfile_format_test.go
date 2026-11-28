@@ -68,8 +68,9 @@ func unwrapMasterKey(kf *localKeyFile, passphrase string) ([]byte, error) {
 }
 
 // A file internal/keyfile generates loads here under the ID this package's
-// own copy of the format reads from it, as a master key a block key wraps
-// under and unwraps from.
+// own copy of the format reads from it. The read goes through keyfile.Open,
+// so this pins only the ID field's name; the golden file in internal/keyfile
+// guards the format against a split.
 func TestAFileKeyfileGeneratesLoadsHere(t *testing.T) {
 	raw, err := keyfile.Generate(testPassphrase, true)
 	if err != nil {
@@ -97,11 +98,25 @@ func TestAFileKeyfileGeneratesLoadsHere(t *testing.T) {
 func TestAKeyFileErrorKeepsThisPackagesSentinelAndMessage(t *testing.T) {
 	kf := loadKeyFile(t, testPassphrase)
 	kf.Version = 99
-	_, err := newLocalProvider(Config{Kind: KindLocal, File: writeMutatedKeyFile(t, kf)}, testPassphrase)
-	if want := "keyprovider: key file corrupt: unsupported version 99"; err == nil || err.Error() != want {
-		t.Errorf("an unsupported version: got %v, want %q", err, want)
-	}
-	if errors.Is(err, keyfile.ErrCorrupt) {
-		t.Errorf("an unsupported version: %v matches keyfile.ErrCorrupt, want only ErrKeyFileCorrupt", err)
+	_, corrupt := newLocalProvider(Config{Kind: KindLocal, File: writeMutatedKeyFile(t, kf)}, testPassphrase)
+	_, _, unwrap := loadLocalKeyFile(writeKeyFile(t, testPassphrase), "another passphrase")
+	_, passphrase := GenerateKeyFile("")
+	for _, tc := range []struct {
+		name    string
+		err     error
+		want    error
+		inner   error
+		message string
+	}{
+		{"an unsupported version", corrupt, ErrKeyFileCorrupt, keyfile.ErrCorrupt, "keyprovider: key file corrupt: unsupported version 99"},
+		{"the wrong passphrase", unwrap, ErrUnwrapFailed, keyfile.ErrUnwrap, "keyprovider: unwrap failed: cipher: message authentication failed"},
+		{"an empty passphrase", passphrase, ErrPassphraseMissing, keyfile.ErrPassphrase, "keyprovider: DITTOFS_ENCRYPTION_PASSPHRASE is unset"},
+	} {
+		if !errors.Is(tc.err, tc.want) || tc.err.Error() != tc.message {
+			t.Errorf("%s: got %v, want %v with message %q", tc.name, tc.err, tc.want, tc.message)
+		}
+		if errors.Is(tc.err, tc.inner) {
+			t.Errorf("%s: %v matches %v, want only %v", tc.name, tc.err, tc.inner, tc.want)
+		}
 	}
 }
