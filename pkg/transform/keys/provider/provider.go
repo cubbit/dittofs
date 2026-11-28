@@ -70,7 +70,7 @@ type Deps struct {
 	StorageKeys []StorageKey // every storage key the node holds, current and retired
 	Logger      *slog.Logger
 	Now         func() time.Time
-	Rand        io.Reader // keys, nonces and IDs; crypto/rand.Reader in production
+	Rand        io.Reader // keys, nonces and IDs, safe for concurrent use; crypto/rand.Reader in production
 }
 
 // Provider is the material provider of one store configuration. It is safe
@@ -105,6 +105,13 @@ func parseMasterKeyID(s string) ([16]byte, error) {
 		return [16]byte{}, fmt.Errorf("master key ID %q is not a UUID's text", s)
 	}
 	return u, nil
+}
+
+// sameID reports whether a storage key's ID names the master key id: as one
+// UUID in any of its spellings, or as the same text.
+func sameID(storage, id string) bool {
+	u, err := uuid.Parse(storage)
+	return storage == id || (err == nil && u.String() == id)
 }
 
 // ValidateConfig checks cfg's shape and reads nothing, so a setting is checked
@@ -157,8 +164,8 @@ func New(ctx context.Context, cfg Config, deps Deps) (*Provider, error) {
 		// bytes cannot be read here, is matched by its ID alone, so its bytes
 		// in a key file under another ID are not caught. Withdraw it once
 		// every storage key's fingerprint reaches the provider.
-		if sk.ID == id || (sk.Fingerprint != [32]byte{} && sk.Fingerprint == fp) {
-			return nil, fmt.Errorf("provider: master key %x is a storage wrapping key, which never wraps a namespace key", masterKeyID)
+		if sameID(sk.ID, id) || (sk.Fingerprint != [32]byte{} && sk.Fingerprint == fp) {
+			return nil, fmt.Errorf("provider: master key %s is a storage wrapping key, which never wraps a namespace key", id)
 		}
 	}
 

@@ -107,7 +107,7 @@ func (p *Provider) wrap(ctx context.Context, in ...sealIn) ([][]byte, error) {
 		return nil, fmt.Errorf("provider: raise the wrap count of master key %x: %w", p.masterKeyID, err)
 	}
 	if !ok {
-		return nil, fmt.Errorf("%w: master key %x cannot wrap %d more", keys.ErrWrapLimit, p.masterKeyID, len(in))
+		return nil, fmt.Errorf("%w: master key %x has no room for %d more of its 2³² wraps; rotate it", keys.ErrWrapLimit, p.masterKeyID, len(in))
 	}
 
 	out := make([][]byte, 0, len(in))
