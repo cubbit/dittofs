@@ -123,10 +123,6 @@ func (s *store) refuseClosed(op opKind) error {
 // The calls below are not served yet: each refuses with remote.ErrInvalid
 // and sends nothing.
 
-func (s *store) List(_ context.Context, after remote.Cursor, _ int) ([]remote.Info, remote.Cursor, bool, error) {
-	return nil, after, false, unserved(opList)
-}
-
 func (s *store) Health(context.Context, remote.Direction) error {
 	return fmt.Errorf("remote/s3: health is not served: %w", remote.ErrInvalid)
 }
