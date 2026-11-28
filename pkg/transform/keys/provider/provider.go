@@ -33,18 +33,31 @@ type Row = struct {
 }
 
 // KeyRecords is what the provider needs of the metadata store: one
-// namespace's key records and the master keys' wrap counts.
+// namespace's key records and its key lock, the master keys' wrap counts, and
+// the namespaces of a remote store.
 type KeyRecords interface {
 	// Load returns every key record of ns.
 	Load(ctx context.Context, ns entity.NamespaceID) ([]Row, error)
-	// Update runs fn on ns's key records in one transaction that conflicts
-	// with any other write of them, and writes the rows fn returns, each
-	// replacing the record of its kind and ID. It deletes nothing. fn may run
-	// more than once and must have no other effect.
-	Update(ctx context.Context, ns entity.NamespaceID, fn func(rows []Row) ([]Row, error)) error
+	// Update runs fn on ns's key records and on the last sequence recorded
+	// for ns's own keys object, in one transaction that conflicts with any
+	// other write of either, and writes the rows fn returns, each replacing
+	// the record of its kind and ID, and the sequence it returns. It deletes
+	// nothing. fn may run more than once and must have no other effect.
+	Update(ctx context.Context, ns entity.NamespaceID, fn func(seq uint64, rows []Row) (uint64, []Row, error)) error
 	// RaiseWrapCount adds n to masterKeyID's wrap count if the sum stays at
 	// most limit, and reports whether it did.
 	RaiseWrapCount(ctx context.Context, masterKeyID []byte, n, limit uint64) (bool, error)
+	// Namespaces returns every namespace whose namespace record names the
+	// remote store.
+	//
+	// decision: a key record under no namespace record is not listed, so a
+	// walk of the namespaces never reaches it. Such rows come only from a
+	// namespace's create whose transaction failed after its keys were
+	// created: they name no block and no namespace, so leaving them under an
+	// old master key loses nothing, and a retried create that reuses one
+	// fails to unwrap, closed. Withdraw this once keys are created outside a
+	// namespace's create.
+	Namespaces(ctx context.Context, store [16]byte) ([]entity.NamespaceID, error)
 }
 
 // Config is a store configuration's provider settings.
@@ -70,6 +83,7 @@ type StorageKey struct {
 // Deps is what the provider is built over.
 type Deps struct {
 	Records     KeyRecords
+	Store       [16]byte     // the scope ID of the remote store whose configuration the provider serves
 	StorageKeys []StorageKey // every storage key the node holds, current and retired
 	Logger      *slog.Logger
 	Now         func() time.Time

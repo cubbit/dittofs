@@ -135,14 +135,15 @@ const (
 
 // Sub-kinds under NS‖ns, and under NS‖ns‖gc.
 const (
-	NSGc    byte = 0x01
-	NSClaim byte = 0x02
-	NSPk    byte = 0x03
-	NSKey   byte = 0x04
-	NSBk    byte = 0x05
-	NSDrain byte = 0x06
-	NSInfo  byte = 0x0A // the namespace's own record
-	NSShare byte = 0x0B // namespace to share: NS‖ns‖share‖ShareID, empty
+	NSGc     byte = 0x01
+	NSClaim  byte = 0x02
+	NSPk     byte = 0x03
+	NSKey    byte = 0x04
+	NSBk     byte = 0x05
+	NSDrain  byte = 0x06
+	NSKeyseq byte = 0x07 // the key lock: NS‖ns‖keyseq‖target, the last keys object sequence
+	NSInfo   byte = 0x0A // the namespace's own record
+	NSShare  byte = 0x0B // namespace to share: NS‖ns‖share‖ShareID, empty
 
 	GcLease   byte = 0x01
 	GcRecheck byte = 0x02

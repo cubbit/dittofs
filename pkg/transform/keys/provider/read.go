@@ -213,18 +213,19 @@ func newSet(rows []Row, old map[slot]*entry) map[slot]*entry {
 
 // update runs fn on ns's key records through the view's Update and then makes
 // the cached rows those fn last saw with the rows it returned written over
-// them, as Update wrote them. After an error ns's rows are dropped, since the
-// commit may have happened. Every write of a key record by the provider goes
-// through update.
+// them, as Update wrote them; the keys object's sequence passes through as
+// Update read it. After an error ns's rows are dropped, since the commit may
+// have happened. Every write of a key record by the provider goes through
+// update.
 func (p *Provider) update(ctx context.Context, ns entity.NamespaceID, fn func(rows []Row) ([]Row, error)) error {
 	p.cache.updateMu.Lock()
 	defer p.cache.updateMu.Unlock()
 
 	var seen, out []Row
-	err := p.records.Update(ctx, ns, func(rows []Row) ([]Row, error) {
+	err := p.records.Update(ctx, ns, func(seq uint64, rows []Row) (uint64, []Row, error) {
 		o, err := fn(rows)
 		seen, out = rows, o
-		return o, err
+		return seq, o, err
 	})
 
 	p.cache.mu.Lock()

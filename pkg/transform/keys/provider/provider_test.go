@@ -85,7 +85,7 @@ func wrapped(t *testing.T, p *Provider, ns entity.NamespaceID, kind, id, state s
 func put(t *testing.T, records KeyRecords, ns entity.NamespaceID, rows ...Row) {
 	t.Helper()
 
-	if err := records.Update(context.Background(), ns, func([]Row) ([]Row, error) { return rows, nil }); err != nil {
+	if err := records.Update(context.Background(), ns, func(seq uint64, _ []Row) (uint64, []Row, error) { return seq, rows, nil }); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 }
