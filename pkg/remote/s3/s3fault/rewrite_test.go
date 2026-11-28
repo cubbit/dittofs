@@ -17,7 +17,8 @@ import (
 	awsmiddleware "github.com/aws/aws-sdk-go-v2/aws/middleware"
 )
 
-// testdata reads a body LocalStack 4.13.1 wrote, kept under testdata/.
+// testdata reads a body kept under testdata/: a request the SDK sent
+// LocalStack 4.13.1, or its reply.
 func testdata(t *testing.T, name string) []byte {
 	t.Helper()
 	b, err := os.ReadFile("testdata/" + name)

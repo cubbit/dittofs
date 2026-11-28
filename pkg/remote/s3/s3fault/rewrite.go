@@ -74,8 +74,10 @@ func (h *holdNewKeys) after(resp *http.Response) (*http.Response, error) {
 
 // FailBatchKey refuses key inside a DeleteObjects batch with code, and lets the
 // service delete every other key in it. A batch that does not hold key passes
-// as it is. A batch of key alone panics: there is no batch left to send, and
-// a single refusal is an Answer.
+// as it is, though it counts against the rule's Times. A batch of key alone
+// panics: there is no batch left to send, and a single refusal is an Answer.
+// It matches by key alone, so it fits an unversioned batch that names each
+// key once.
 //
 // decision: the key is refused for real. It is taken out of the request,
 // whose checksum is recomputed as a Content-MD5, so the service never deletes
