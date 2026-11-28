@@ -8,6 +8,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/carver"
 	"github.com/cubbit/dittofs/pkg/carver/assembler"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
 
 // valid is a configuration New accepts; each case changes one field of it.
@@ -212,4 +213,149 @@ func TestFoldPanicsAfterFinish(t *testing.T) {
 			tc.use(f)
 		})
 	}
+}
+
+// The P3 check: no plan carries an all-zero chunk, and each is a ZeroRef.
+func TestFoldNeverCarriesAZeroChunk(t *testing.T) {
+	s := stream(4096, lengths(3000, 1<<10))
+	for i := 0; i < len(s); i += 3 {
+		zero(s, i, i+1)
+	}
+	c := cfg(1<<20, 1024)
+	r := fold(t, c, s, t0)
+	checkPlans(t, c, s, r.plans, t0, r.held)
+	// 2,000 carried chunks of 1 KiB at a 1 MiB target.
+	if len(r.plans) != 2 {
+		t.Fatalf("got %d plans, want 2", len(r.plans))
+	}
+	if got := len(r.plans[0].Carried); got != 1024 {
+		t.Errorf("first plan: got %d carried chunks, want 1024", got)
+	}
+}
+
+// The P5 check: the target counts carried bytes alone, so runs of zero refs
+// between carried chunks close no block short.
+func TestFoldCountsOnlyCarriedBytesTowardTheTarget(t *testing.T) {
+	var files [][]int32
+	for range 8 {
+		files = append(files, append(lengths(64, 1<<20), lengths(24, 64<<10)...))
+	}
+	s := stream(0, files...)
+	for i := 0; i < len(s); i += 88 {
+		zero(s, i, i+64)
+	}
+	c := cfg(4<<20, 1024)
+	r := fold(t, c, s, t0)
+	checkPlans(t, c, s, r.plans, t0, r.held)
+	// 8 runs of 1.5 MiB carried at a 4 MiB target.
+	if len(r.plans) != 3 {
+		t.Errorf("got %d plans, want 3", len(r.plans))
+	}
+}
+
+// Zero refs ride in the nearest block's commit: those before the first
+// carried chunk in the first plan, those between two full blocks in the
+// earlier one, those after the last in the last. A full block stays open for
+// the zero refs after it.
+func TestFoldPlacesZeroRefsInTheNearestPlan(t *testing.T) {
+	// 3 zeros, 16 carried (a full block), 3 zeros, 16 carried, 3 zeros.
+	s := stream(0, lengths(41, 64<<10))
+	zero(s, 0, 3)
+	zero(s, 19, 22)
+	zero(s, 38, 41)
+	c := cfg(1<<20, 1024)
+	r := fold(t, c, s, t0)
+	checkPlans(t, c, s, r.plans, t0, r.held)
+	want := [][2]int{{0, 22}, {22, 41}} // each plan's span of the input
+	if len(r.plans) != len(want) {
+		t.Fatalf("got %d plans, want %d", len(r.plans), len(want))
+	}
+	for i, p := range r.plans {
+		if len(p.Refs) == 0 {
+			t.Fatalf("plan %d: no refs", i)
+		}
+		if first, n := p.Refs[0], len(p.Refs); first != s[want[i][0]] || n != want[i][1]-want[i][0] {
+			t.Errorf("plan %d: got %d refs from %+v, want input chunks %d to %d", i, n, first, want[i][0], want[i][1])
+		}
+	}
+}
+
+// A pass of zero chunks alone gives one plan with no carried chunk, the
+// zero-ref commit, which is never held: holding it would leave the pass's
+// zeros dirty until the age ceiling.
+func TestFinishPutsAPassOfZerosAlone(t *testing.T) {
+	s := stream(0, lengths(10, 64<<10))
+	zero(s, 0, len(s))
+	c := cfg(1<<20, 1024)
+	r := fold(t, c, s, t0)
+	checkPlans(t, c, s, r.plans, t0, r.held)
+	if len(r.plans) != 1 || r.held {
+		t.Errorf("got %d plans, held %v; want 1 plan, not held", len(r.plans), r.held)
+	}
+}
+
+// A short last plan's age counts its zero refs: one at MaxAge before young
+// carried chunks puts it.
+func TestFinishAgesAShortLastPlanByItsZeroRefs(t *testing.T) {
+	s := stream(0, lengths(4, 64<<10))
+	zero(s, 0, 1)
+	s[0].Oldest = t0.Add(-time.Minute)
+	c := cfg(1<<20, 1024)
+	r := fold(t, c, s, t0)
+	checkPlans(t, c, s, r.plans, t0, r.held)
+	if len(r.plans) != 1 || r.held {
+		t.Errorf("got %d plans, held %v; want 1 plan, put", len(r.plans), r.held)
+	}
+}
+
+// The P6 check: a chunk repeated within one block's span is carried once and
+// referenced each time, and carried again in a later block; a repeat adds no
+// carried bytes toward the target.
+func TestFoldCarriesARepeatOncePerBlock(t *testing.T) {
+	// The first chunk three times in the first block's span, which holds 16
+	// distinct chunks of 64 KiB in 18 refs, and once as the next chunk after
+	// it fills, which closes it though the plan carries that hash.
+	three := stream(0, lengths(21, 64<<10))
+	three[5].Hash, three[10].Hash, three[18].Hash = three[0].Hash, three[0].Hash, three[0].Hash
+	// One chunk, 100 repeats of it, 15 more distinct chunks and one past them.
+	many := stream(0, lengths(117, 64<<10))
+	for i := 1; i <= 100; i++ {
+		many[i].Hash = many[0].Hash
+	}
+	for _, tc := range []struct {
+		name string
+		s    []carver.ChunkInfo
+		refs []int // refs in each plan
+		reps []int // refs to the repeated hash in each plan
+	}{
+		{"three in one block, once past it", three, []int{18, 3}, []int{3, 1}},
+		{"a block of repeats", many, []int{116, 1}, []int{101, 0}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := cfg(1<<20, 1024)
+			r := fold(t, c, tc.s, t0)
+			checkPlans(t, c, tc.s, r.plans, t0, r.held)
+			if len(r.plans) != len(tc.refs) {
+				t.Fatalf("got %d plans, want %d", len(r.plans), len(tc.refs))
+			}
+			h := tc.s[0].Hash
+			for i, p := range r.plans {
+				if len(p.Refs) != tc.refs[i] || countHash(p.Refs, h) != tc.reps[i] {
+					t.Errorf("plan %d: got %d refs, %d to the repeated hash; want %d, %d to it",
+						i, len(p.Refs), countHash(p.Refs, h), tc.refs[i], tc.reps[i])
+				}
+			}
+		})
+	}
+}
+
+// countHash counts the chunks of cs whose hash is h.
+func countHash(cs []carver.ChunkInfo, h entity.ChunkHash) int {
+	n := 0
+	for _, c := range cs {
+		if c.Hash == h {
+			n++
+		}
+	}
+	return n
 }

@@ -55,8 +55,9 @@ type folded struct {
 }
 
 // fold runs one pass as the Assemble state does: New, Add over the stream and
-// Finish at now. It fails when Add closes more than one plan, or gives a chunk
-// that is not all zeros a disposition other than Carried.
+// Finish at now. It fails when Add closes more than one plan, or gives an
+// all-zero chunk a disposition other than ZeroRef or any other chunk one
+// other than Carried.
 func fold(t *testing.T, cfg carver.AssemblerConfig, s []carver.ChunkInfo, now time.Time) folded {
 	t.Helper()
 	f, err := assembler.New(cfg)
@@ -69,8 +70,12 @@ func fold(t *testing.T, cfg carver.AssemblerConfig, s []carver.ChunkInfo, now ti
 		if len(closed) > 1 {
 			t.Fatalf("Add(chunk %d): got %d plans, want at most 1", i, len(closed))
 		}
-		if !c.Zero && d != carver.Carried {
-			t.Fatalf("Add(chunk %d): got disposition %d, want Carried", i, d)
+		want := carver.Carried
+		if c.Zero {
+			want = carver.ZeroRef
+		}
+		if d != want {
+			t.Fatalf("Add(chunk %d, Zero %v): got disposition %d, want %d", i, c.Zero, d, want)
 		}
 		r.plans = append(r.plans, closed...)
 		r.disp = append(r.disp, d)
@@ -105,7 +110,10 @@ func full(cfg carver.AssemblerConfig, p carver.BlockPlan) bool {
 // of its own, at most MaxChunks of them, under the target without the last;
 // A3, every plan but the last full, a held last plan short and younger than
 // MaxAge at now, a short last plan that is not held at least MaxAge old; A5,
-// each file's carried chunks in a plan contiguous and in offset order.
+// each file's carried chunks in a plan contiguous and in offset order; A2, no
+// all-zero chunk carried; A6, no hash carried twice in a plan, and every ref
+// that is not all zeros carried by its own plan. A plan with no carried chunk
+// is never held.
 func checkPlans(t *testing.T, cfg carver.AssemblerConfig, s []carver.ChunkInfo, plans []carver.BlockPlan, now time.Time, held bool) {
 	t.Helper()
 
@@ -141,6 +149,7 @@ func checkPlans(t *testing.T, cfg carver.AssemblerConfig, s []carver.ChunkInfo, 
 				i, len(plans), carriedBytes(p.Carried), len(p.Carried), cfg.BlockTarget, cfg.MaxChunks)
 		}
 		checkContiguous(t, i, p.Carried)
+		checkCarried(t, i, p)
 	}
 
 	if len(plans) == 0 {
@@ -149,11 +158,13 @@ func checkPlans(t *testing.T, cfg carver.AssemblerConfig, s []carver.ChunkInfo, 
 	last := plans[len(plans)-1]
 	age := now.Sub(oldestRef(last))
 	switch {
+	case held && len(last.Carried) == 0:
+		t.Errorf("last plan: held with no carried chunk, %d zero refs", len(last.Refs))
 	case held && full(cfg, last):
 		t.Errorf("last plan: held though full, %d bytes in %d chunks", carriedBytes(last.Carried), len(last.Carried))
 	case held && age >= cfg.MaxAge:
 		t.Errorf("last plan: held at age %v, want put at MaxAge %v", age, cfg.MaxAge)
-	case !held && !full(cfg, last) && age < cfg.MaxAge:
+	case !held && len(last.Carried) > 0 && !full(cfg, last) && age < cfg.MaxAge:
 		t.Errorf("last plan: short and put at age %v, want held under MaxAge %v", age, cfg.MaxAge)
 	}
 }
@@ -166,6 +177,28 @@ func isRef(p carver.BlockPlan, c carver.ChunkInfo) bool {
 		}
 	}
 	return false
+}
+
+// checkCarried asserts A2 and A6 of plan p: its carried chunks are not all
+// zeros and name each hash once, and each of its refs that is not all zeros
+// names a hash it carries.
+func checkCarried(t *testing.T, plan int, p carver.BlockPlan) {
+	t.Helper()
+	carried := map[entity.ChunkHash]bool{}
+	for _, c := range p.Carried {
+		if c.Zero {
+			t.Errorf("plan %d: carries all-zero chunk %+v", plan, c)
+		}
+		if carried[c.Hash] {
+			t.Errorf("plan %d: carries hash %v twice", plan, c.Hash)
+		}
+		carried[c.Hash] = true
+	}
+	for _, r := range p.Refs {
+		if !r.Zero && !carried[r.Hash] {
+			t.Errorf("plan %d: ref %+v names hash %v, which the plan does not carry", plan, r, r.Hash)
+		}
+	}
 }
 
 // checkContiguous asserts that each file's chunks in carried sit together, in
@@ -196,4 +229,13 @@ func oldestRef(p carver.BlockPlan) time.Time {
 		}
 	}
 	return o
+}
+
+// zero marks s[from:to] all zeros, with the one hash all-zero chunks of a
+// length share.
+func zero(s []carver.ChunkInfo, from, to int) {
+	for i := from; i < to; i++ {
+		s[i].Zero = true
+		s[i].Hash = entity.ChunkHash{0xff, byte(s[i].Length >> 16)}
+	}
 }
