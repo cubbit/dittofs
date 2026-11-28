@@ -114,6 +114,12 @@ func TestProbePassesOnLocalStack(t *testing.T) {
 		t.Errorf("%d DeleteObjects requests, want 1", batches)
 	}
 
+	// Step 3's listing of the batch's keys, not taken from its reply, then
+	// step 4's one listing and its walk of three one-key pages.
+	if n := len(requestsOf(r.tr, "ListObjectsV2")); n != 5 {
+		t.Errorf("%d listings, want 5: step 3's one and step 4's four", n)
+	}
+
 	if c := conditional(r.tr.Requests()); len(c) != 1 || c[0].Op != "PutObject" || c[0].Key != firstListKey(r.ns) {
 		t.Errorf("conditional requests %+v, want one PutObject to %s", c, firstListKey(r.ns))
 	}
@@ -154,6 +160,11 @@ func TestProbeNamesEachWrongAnswer(t *testing.T) {
 		{"batch_key_refused", func(tr *s3fault.Transport, ns string) {
 			tr.Inject(s3fault.Rule{Op: "DeleteObjects"}, s3fault.FailBatchKey(ns+"delete/a", "AccessDenied"))
 		}, []feature{featBatchDelete}, nil, false, "delete/a"},
+		// The never-written key refused: the two keys are gone, so only the
+		// reply misreports.
+		{"batch_absent_refused", func(tr *s3fault.Transport, ns string) {
+			tr.Inject(s3fault.Rule{Op: "DeleteObjects"}, s3fault.FailBatchKey(ns+"delete/absent", "InternalError"))
+		}, []feature{featBatchDelete}, nil, false, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newCheckRig(t)
@@ -285,11 +296,18 @@ func TestProbeRelistWaitEndsWithTheContext(t *testing.T) {
 	case <-armed:
 	case err := <-done:
 		t.Fatalf("probe returned %v before waiting to re-list", err)
+	case <-time.After(2 * time.Minute): // a backstop only
+		t.Fatal("the probe never waited to re-list")
 	}
 	cancel()
 
-	if err := <-done; !errors.Is(err, context.Canceled) {
-		t.Errorf("probe = %v, want context.Canceled", err)
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("probe = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Minute): // a backstop only; the clock is never advanced
+		t.Fatal("the probe still waits on the clock after its context ended")
 	}
 }
 
