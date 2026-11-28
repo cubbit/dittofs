@@ -137,14 +137,6 @@ func (s *store) Health(context.Context, remote.Direction) error {
 	return fmt.Errorf("remote/s3: health is not served: %w", remote.ErrInvalid)
 }
 
-func (s *store) PutControl(context.Context, remote.Role, []byte) error {
-	return unserved(opPutControl)
-}
-
-func (s *store) GetControl(context.Context, remote.Role) ([]byte, remote.Version, error) {
-	return nil, "", unserved(opGetControl)
-}
-
 // unserved is the refusal of a call the store does not serve yet.
 func unserved(op opKind) error {
 	return fmt.Errorf("remote/s3: %s is not served: %w", op, remote.ErrInvalid)
