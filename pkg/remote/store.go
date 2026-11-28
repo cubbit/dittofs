@@ -20,14 +20,19 @@ type Store interface {
 	Checksum() Checksum
 
 	// Put streams one whole encoded block of exactly size bytes, with sum when
-	// Checksum is not None. It returns nil only once the block is stored
-	// (RFC 4 §4.3).
+	// Checksum is not None. sum is the raw digest of the store's checksum kind,
+	// as hash.Hash's Sum returns it (4 bytes for CRC32C, 16 for MD5), never hex
+	// or base64; a store encodes it for its wire itself. A sum missing or of the
+	// wrong length for the kind is the caller's error, ErrInvalid, before any
+	// byte is sent; a sum that does not match the bytes is ErrCorrupt. It
+	// returns nil only once the block is stored (RFC 4 §4.3).
 	Put(ctx context.Context, name Name, body io.Reader, size int64, sum []byte) error
 
 	// Get returns exactly the bytes of r, or of the whole block when r is the
 	// zero Range. The reader yields exactly that many bytes or fails. stored is
 	// the service's whole-object checksum, reported with a whole-block get
-	// (RFC 4 §4.4).
+	// (RFC 4 §4.4). A range of no bytes other than the zero Range (a Len of zero
+	// or less) is ErrInvalid, refused before any request is sent.
 	Get(ctx context.Context, name Name, r Range) (body io.ReadCloser, stored StoredSum, err error)
 
 	// Delete removes blocks, as many as the caller passes. It returns one error
@@ -56,6 +61,7 @@ type Store interface {
 	GetControl(ctx context.Context, role Role) (body []byte, v Version, err error)
 
 	// Close releases the client. Stores are shared across shares; only the
-	// holder that opened one closes it (RFC 4 §4.10).
+	// holder that opened one closes it (RFC 4 §4.10). Every other call after
+	// Close is refused with ErrInvalid; Close again returns nil.
 	Close() error
 }
