@@ -111,6 +111,7 @@ func (r *lsRig) open(t *testing.T, class string, ch choice) (*store, *s3fault.Tr
 		SecretAccessKey: "test",
 		TrustRoots:      r.roots,
 		Limit:           4,
+		MaxBlockSize:    testMaxBlock,
 	}, Deps{
 		Logger:    slog.New(slog.NewJSONHandler(l, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		Recorder:  rec,

@@ -26,6 +26,7 @@ const (
 	opDelete                       // a one-name DeleteObject
 	opList                         // a ListObjectsV2 page
 	opDeleteKey                    // one key's error inside a DeleteObjects reply
+	opSetting                      // a bucket-setting read of the capability check
 )
 
 func (o opKind) String() string {
@@ -44,6 +45,8 @@ func (o opKind) String() string {
 		return "list"
 	case opDeleteKey:
 		return "delete_key"
+	case opSetting:
+		return "setting"
 	}
 
 	return fmt.Sprintf("opKind(%d)", uint8(o))

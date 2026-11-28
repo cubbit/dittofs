@@ -43,7 +43,7 @@ func TestProveIntegrityFailsOnAReplyThatIsNoVerdict(t *testing.T) {
 		var tr *s3fault.Transport
 
 		c, err := NewClient(ClientConfig{
-			Endpoint: srv.URL, Bucket: "b", AccessKeyID: "AKIDFAKE", SecretAccessKey: "fake-secret", TrustRoots: roots, Limit: 4,
+			Endpoint: srv.URL, Bucket: "b", AccessKeyID: "AKIDFAKE", SecretAccessKey: "fake-secret", TrustRoots: roots, Limit: 4, MaxBlockSize: 1 << 20,
 		}, Deps{
 			Logger:    slog.New(slog.DiscardHandler),
 			Recorder:  &calls{},

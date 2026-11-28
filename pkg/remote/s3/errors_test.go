@@ -25,7 +25,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/remote"
 )
 
-var allOps = []opKind{opPut, opPutControl, opGet, opGetControl, opDelete, opList, opDeleteKey}
+var allOps = []opKind{opPut, opPutControl, opGet, opGetControl, opDelete, opList, opDeleteKey, opSetting}
 
 // sentinels are the closed set, ErrThrottled apart from the ErrTransient it
 // also matches.

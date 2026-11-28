@@ -34,7 +34,7 @@ func newFaultRig(t *testing.T) *faultRig {
 
 	r := &faultRig{f: &armed{}, block: remote.Name{0xfa}}
 	r.batch, r.tr = newGetRig(t).openFaulted(t, deleting, r.f)
-	t.Cleanup(func() { checkSigned(t, []*s3fault.Transport{r.tr}) })
+	t.Cleanup(func() { checkSigned(t, []*s3fault.Transport{r.tr}, 0) })
 
 	var err error
 	if r.oneName, err = open(r.batch.c, r.batch.prefix, remote.Mutable, crc); err != nil {

@@ -53,6 +53,7 @@ func (r *lsRig) openFaulted(t *testing.T, ch choice, f s3fault.Fault) (*store, *
 		SecretAccessKey: "test",
 		TrustRoots:      r.roots,
 		Limit:           4,
+		MaxBlockSize:    testMaxBlock,
 	}, Deps{
 		Logger:    slog.New(slog.DiscardHandler),
 		Recorder:  &calls{},

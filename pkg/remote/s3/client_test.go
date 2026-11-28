@@ -34,6 +34,7 @@ type sink struct{ opened atomic.Int64 }
 func (*sink) Call(string, string, string, time.Duration, int64) {}
 func (s *sink) ConnOpened()                                     { s.opened.Add(1) }
 func (*sink) ForeignKey()                                       {}
+func (*sink) Capability(string, string, bool)                   {}
 
 // tlsServer serves h over TLS on 127.0.0.1:0, offering HTTP/2 when h2 is set,
 // with cert in place of httptest's when it is not nil.
@@ -65,6 +66,7 @@ func testClient(t *testing.T, srv *httptest.Server, mod func(*ClientConfig)) (*C
 		SecretAccessKey: "fake-secret",
 		TrustRoots:      roots,
 		Limit:           4,
+		MaxBlockSize:    testMaxBlock,
 	}
 	if mod != nil {
 		mod(&cfg)
@@ -88,7 +90,7 @@ func ok(w http.ResponseWriter, r *http.Request) {
 }
 
 func TestNewClientRefuses(t *testing.T) {
-	good := ClientConfig{Endpoint: "https://127.0.0.1:1", Bucket: "b", AccessKeyID: "AKIDFAKE", SecretAccessKey: "fake-secret", Limit: 1}
+	good := ClientConfig{Endpoint: "https://127.0.0.1:1", Bucket: "b", AccessKeyID: "AKIDFAKE", SecretAccessKey: "fake-secret", Limit: 1, MaxBlockSize: 1}
 	deps := Deps{Logger: slog.New(slog.DiscardHandler), Recorder: &sink{}}
 
 	for _, tc := range []struct {
@@ -103,6 +105,8 @@ func TestNewClientRefuses(t *testing.T) {
 		{"an empty secret", func(c *ClientConfig, _ *Deps) { c.SecretAccessKey = "" }},
 		{"a limit of 0", func(c *ClientConfig, _ *Deps) { c.Limit = 0 }},
 		{"a negative limit", func(c *ClientConfig, _ *Deps) { c.Limit = -1 }},
+		{"a largest block of 0", func(c *ClientConfig, _ *Deps) { c.MaxBlockSize = 0 }},
+		{"a negative largest block", func(c *ClientConfig, _ *Deps) { c.MaxBlockSize = -1 }},
 		{"a nil recorder", func(_ *ClientConfig, d *Deps) { d.Recorder = nil }},
 		{"a nil logger", func(_ *ClientConfig, d *Deps) { d.Logger = nil }},
 	} {
@@ -520,7 +524,7 @@ func TestClientCloseUnderAWrappedTransport(t *testing.T) {
 
 	roots := x509.NewCertPool()
 	roots.AddCert(srv.Certificate())
-	c, err := NewClient(ClientConfig{Endpoint: srv.URL, Bucket: "b", AccessKeyID: "AKIDFAKE", SecretAccessKey: "fake-secret", TrustRoots: roots, Limit: 1},
+	c, err := NewClient(ClientConfig{Endpoint: srv.URL, Bucket: "b", AccessKeyID: "AKIDFAKE", SecretAccessKey: "fake-secret", TrustRoots: roots, Limit: 1, MaxBlockSize: 1},
 		Deps{Logger: slog.New(slog.DiscardHandler), Recorder: &sink{}, Transport: func(rt http.RoundTripper) http.RoundTripper { return passThrough{rt} }})
 	if err != nil {
 		t.Fatal(err)

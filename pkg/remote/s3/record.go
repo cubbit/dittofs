@@ -15,4 +15,7 @@ type Recorder interface {
 	// ForeignKey records one key under the block namespace a listing skipped
 	// because it is not a block name.
 	ForeignKey()
+	// Capability records one feature's verdict at the last capability check
+	// of the namespace under prefix: present, or missing or unverified.
+	Capability(prefix, feature string, present bool)
 }
