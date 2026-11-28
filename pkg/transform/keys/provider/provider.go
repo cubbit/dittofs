@@ -150,20 +150,11 @@ func New(ctx context.Context, cfg Config, deps Deps) (*Provider, error) {
 		return nil, errors.New("provider: Deps needs Records and Rand")
 	}
 
-	raw, err := os.ReadFile(cfg.KeyFile)
+	id, masterKeyID, key, err := openKeyFile(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("provider: read the key file: %w", err)
-	}
-	id, key, err := keyfile.Open(raw, cfg.Passphrase)
-	if err != nil {
-		return nil, fmt.Errorf("provider: open key file %s: %w", cfg.KeyFile, err)
+		return nil, err
 	}
 	defer clear(key)
-
-	masterKeyID, err := parseMasterKeyID(id)
-	if err != nil {
-		return nil, fmt.Errorf("provider: key file %s: %w: %w", cfg.KeyFile, keyfile.ErrCorrupt, err)
-	}
 	fp := fingerprint(key)
 
 	for _, sk := range deps.StorageKeys {
@@ -180,9 +171,27 @@ func New(ctx context.Context, cfg Config, deps Deps) (*Provider, error) {
 	if err != nil {
 		return nil, err
 	}
-	p.masterKeyFP = fp
 	p.setConfig(cfg)
 	return p, nil
+}
+
+// openKeyFile reads and opens cfg's key file, returning its master key ID as
+// the file records it and as 16 bytes, and its master key, which the caller
+// clears.
+func openKeyFile(cfg Config) (id string, masterKeyID [16]byte, key []byte, err error) {
+	raw, err := os.ReadFile(cfg.KeyFile)
+	if err != nil {
+		return "", masterKeyID, nil, fmt.Errorf("provider: read the key file: %w", err)
+	}
+	id, key, err = keyfile.Open(raw, cfg.Passphrase)
+	if err != nil {
+		return "", masterKeyID, nil, fmt.Errorf("provider: open key file %s: %w", cfg.KeyFile, err)
+	}
+	if masterKeyID, err = parseMasterKeyID(id); err != nil {
+		clear(key)
+		return "", masterKeyID, nil, fmt.Errorf("provider: key file %s: %w: %w", cfg.KeyFile, keyfile.ErrCorrupt, err)
+	}
+	return id, masterKeyID, key, nil
 }
 
 // build is the provider of the master key key, named masterKeyID, over deps.
@@ -196,5 +205,5 @@ func build(masterKeyID [16]byte, key []byte, deps Deps) (*Provider, error) {
 		return nil, fmt.Errorf("provider: master key %x: %w", masterKeyID, err)
 	}
 
-	return &Provider{records: deps.Records, rand: deps.Rand, masterKeyID: masterKeyID, aead: aead}, nil
+	return &Provider{records: deps.Records, rand: deps.Rand, masterKeyID: masterKeyID, aead: aead, masterKeyFP: fingerprint(key)}, nil
 }

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"golang.org/x/crypto/argon2"
 
 	"github.com/cubbit/dittofs/internal/keyfile"
@@ -24,21 +25,21 @@ import (
 	"github.com/cubbit/dittofs/pkg/transform/keystest"
 )
 
-// escrowProvider builds a provider over a fresh key file with escrowed as its
-// passes, and returns the file's path, master key ID and master key beside it.
-func escrowProvider(t *testing.T, escrowed ...Escrow) (p *Provider, records *keystest.Records, path, id string, key []byte) {
+// escrowProvider builds a provider over a fresh key file with no escrow pass,
+// and returns the file's path, master key ID and master key beside it.
+func escrowProvider(t *testing.T) (p *Provider, records *keystest.Records, path, id string, key []byte) {
 	t.Helper()
 
 	path, id, key = keyFile(t)
 	records = keystest.NewRecords()
-	p, err := New(context.Background(), Config{KeyFile: path, Passphrase: passphrase, Escrowed: escrowed}, Deps{Records: records, Rand: rand.Reader})
+	p, err := New(context.Background(), Config{KeyFile: path, Passphrase: passphrase}, Deps{Records: records, Rand: rand.Reader})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	return p, records, path, id, key
 }
 
-func read(t *testing.T, path string) []byte {
+func readFile(t *testing.T, path string) []byte {
 	t.Helper()
 
 	raw, err := os.ReadFile(path)
@@ -65,7 +66,7 @@ func TestVerifyEscrow(t *testing.T) {
 	otherPath, _, _ := keyFile(t)
 	ctx := context.Background()
 
-	got, err := p.VerifyEscrow(ctx, read(t, path))
+	got, err := p.VerifyEscrow(ctx, readFile(t, path))
 	if err != nil {
 		t.Fatalf("VerifyEscrow of the master key file's copy = %v, want nil", err)
 	}
@@ -80,8 +81,8 @@ func TestVerifyEscrow(t *testing.T) {
 		name string
 		copy []byte
 	}{
-		{"another key file", read(t, otherPath)},
-		{"other bytes under the master key's ID", read(t, relabel(t, otherPath, id))},
+		{"another key file", readFile(t, otherPath)},
+		{"other bytes under the master key's ID", readFile(t, relabel(t, otherPath, id))},
 		{"unreadable bytes", []byte("not a key file")},
 	} {
 		got, err := p.VerifyEscrow(ctx, tc.copy)
@@ -106,7 +107,7 @@ func TestVerifyEscrowCountsOneWrap(t *testing.T) {
 		t.Fatalf("raise the count to 2³² − 2 = %v, %v; want true, nil", ok, err)
 	}
 
-	copy := read(t, path)
+	copy := readFile(t, path)
 	for i := 1; i <= 2; i++ {
 		if _, err := p.VerifyEscrow(ctx, copy); err != nil {
 			t.Fatalf("escrow check %d from 2³² − 2 = %v, want nil", i, err)
@@ -126,7 +127,7 @@ func TestEscrowGateFromConfig(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	p, _, path, id, _ := escrowProvider(t)
-	pass, err := p.VerifyEscrow(context.Background(), read(t, path))
+	pass, err := p.VerifyEscrow(context.Background(), readFile(t, path))
 	if err != nil {
 		t.Fatalf("VerifyEscrow: %v", err)
 	}
@@ -139,6 +140,7 @@ func TestEscrowGateFromConfig(t *testing.T) {
 		{"the pass", []Escrow{pass}, true},
 		{"no pass", nil, false},
 		{"the ID with another fingerprint", []Escrow{{MasterKeyID: id, Fingerprint: [32]byte{1}}}, false},
+		{"the fingerprint under another ID", []Escrow{{MasterKeyID: uuid.NewString(), Fingerprint: pass.Fingerprint}}, false},
 	} {
 		fresh, err := New(context.Background(), Config{KeyFile: path, Passphrase: passphrase, Escrowed: tc.escrowed}, Deps{Records: keystest.NewRecords(), Rand: rand.Reader})
 		if err != nil {
@@ -168,65 +170,60 @@ func TestReconfigure(t *testing.T) {
 	ctx := context.Background()
 	pass := Escrow{MasterKeyID: id, Fingerprint: fingerprint(key)}
 
-	if err := p.Reconfigure(ctx, Config{KeyFile: path}); err == nil {
-		t.Errorf("Reconfigure with no passphrase = nil, want its refusal")
+	ns := entity.NewNamespaceID()
+	aad := wrapAAD(ns[:], keys.KindDataKey, "k1")
+	before, err := p.wrap(ctx, sealIn{aad: aad, key: make([]byte, 32)})
+	if err != nil {
+		t.Fatalf("wrap before Reconfigure: %v", err)
 	}
-	for _, tc := range []struct{ name, path, id string }{
-		{"another key file", otherPath, otherID},
-		{"other bytes under the master key's ID", relabel(t, otherPath, id), id},
+
+	if err := p.Reconfigure(ctx, Config{KeyFile: path}); err == nil || !strings.Contains(err.Error(), "no key-file passphrase") {
+		t.Errorf("Reconfigure with no passphrase = %v, want ValidateConfig's refusal", err)
+	}
+	for _, tc := range []struct{ name, path, want string }{
+		{"another key file", otherPath, fmt.Sprintf("master key %s, not %s", hexID(otherID), hexID(id))},
+		{"other bytes under the master key's ID", relabel(t, otherPath, id), "other bytes under master key " + hexID(id)},
 	} {
 		err := p.Reconfigure(ctx, Config{KeyFile: tc.path, Passphrase: passphrase, Escrowed: []Escrow{pass}})
-		if err == nil || !strings.Contains(err.Error(), hexID(t, tc.id)) || !strings.Contains(err.Error(), hexID(t, id)) {
-			t.Errorf("Reconfigure with %s = %v, want a refusal naming %s and %s", tc.name, err, tc.id, id)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("Reconfigure with %s = %v, want a refusal containing %q", tc.name, err, tc.want)
 		}
 		if err := p.checkEscrow(); !isNotEscrowed(p, err) {
 			t.Errorf("gate after the refused Reconfigure with %s = %v, want still shut", tc.name, err)
 		}
 	}
 
-	ns := entity.NewNamespaceID()
-	aad := wrapAAD(ns[:], keys.KindDataKey, "k1")
-	stored, err := p.wrap(ctx, sealIn{aad: aad, key: make([]byte, 32)})
-	if err != nil {
-		t.Fatalf("wrap after the refused Reconfigures: %v", err)
-	}
-	if _, err := p.unwrap(stored[0], aad); err != nil {
-		t.Errorf("unwrap after the refused Reconfigures: %v", err)
+	if _, err := p.unwrap(before[0], aad); err != nil {
+		t.Errorf("unwrap, after the refused Reconfigures, of a wrap made before them: %v", err)
 	}
 
 	const newPassphrase = "a new passphrase for the same key"
 	newPath := repassphrase(t, path, newPassphrase)
-	if err := p.Reconfigure(ctx, Config{KeyFile: newPath, Passphrase: newPassphrase, Escrowed: []Escrow{pass}}); err != nil {
+	escrowed := []Escrow{pass}
+	if err := p.Reconfigure(ctx, Config{KeyFile: newPath, Passphrase: newPassphrase, Escrowed: escrowed}); err != nil {
 		t.Fatalf("Reconfigure with a new passphrase and a pass = %v, want nil", err)
 	}
+	escrowed[0] = Escrow{}
 	if err := p.checkEscrow(); err != nil {
-		t.Errorf("gate after Reconfigure handed it the pass = %v, want open", err)
+		t.Errorf("gate after Reconfigure handed it the pass, the caller's slice since cleared = %v, want open", err)
 	}
-	if _, err := p.VerifyEscrow(ctx, read(t, newPath)); err != nil {
+	if _, err := p.VerifyEscrow(ctx, readFile(t, newPath)); err != nil {
 		t.Errorf("VerifyEscrow of a copy under the new passphrase = %v, want nil", err)
 	}
-	if _, err := p.VerifyEscrow(ctx, read(t, path)); !isNotEscrowed(p, err) {
+	if _, err := p.VerifyEscrow(ctx, readFile(t, path)); !isNotEscrowed(p, err) {
 		t.Errorf("VerifyEscrow of a copy under the old passphrase = %v, want ErrNotEscrowed", err)
 	}
 }
 
-// hexID is a UUID's text as the provider's errors print it.
-func hexID(t *testing.T, id string) string {
-	t.Helper()
-
-	b, err := parseMasterKeyID(id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return fmt.Sprintf("%x", b)
-}
+// hexID is a UUID's canonical text as the provider's errors print it.
+func hexID(id string) string { return strings.ReplaceAll(id, "-", "") }
 
 // repassphrase copies the key file at path with its master key re-wrapped
 // under passphrase, keeping its ID, salt and cost.
 func repassphrase(t *testing.T, path, newPassphrase string) string {
 	t.Helper()
 
-	raw := read(t, path)
+	raw := readFile(t, path)
 	_, key, err := keyfile.Open(raw, passphrase)
 	if err != nil {
 		t.Fatal(err)
