@@ -27,6 +27,7 @@ const (
 	opList                         // a ListObjectsV2 page
 	opDeleteKey                    // one key's error inside a DeleteObjects reply
 	opSetting                      // a bucket-setting read of the capability check
+	opHealth                       // a probe of the health object, either direction
 )
 
 func (o opKind) String() string {
@@ -47,6 +48,8 @@ func (o opKind) String() string {
 		return "delete_key"
 	case opSetting:
 		return "setting"
+	case opHealth:
+		return "health"
 	}
 
 	return fmt.Sprintf("opKind(%d)", uint8(o))

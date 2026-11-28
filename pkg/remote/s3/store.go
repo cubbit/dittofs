@@ -172,13 +172,6 @@ func (s *store) refuseClosed(op opKind) error {
 	return nil
 }
 
-// The calls below are not served yet: each refuses with remote.ErrInvalid
-// and sends nothing.
-
-func (s *store) Health(context.Context, remote.Direction) error {
-	return fmt.Errorf("remote/s3: health is not served: %w", remote.ErrInvalid)
-}
-
 // record records one call through the client's Recorder: its op, its result
 // and cause labels, how long it took and the body bytes it moved.
 func (s *store) record(op opKind, err error, took time.Duration, n int64) {
