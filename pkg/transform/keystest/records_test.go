@@ -247,8 +247,8 @@ func (v seqInView) Update(_ context.Context, ns entity.NamespaceID, fn func(uint
 	}
 }
 
-// listsLoaded lists only the namespaces of a store whose records it has
-// been asked to load or update.
+// listsLoaded lists only the namespaces of a store that an Update has
+// touched.
 type listsLoaded struct{ *Records }
 
 func (v listsLoaded) Namespaces(_ context.Context, store [16]byte) ([]entity.NamespaceID, error) {
@@ -263,6 +263,102 @@ func (v listsLoaded) Namespaces(_ context.Context, store [16]byte) ([]entity.Nam
 	}
 
 	return out, nil
+}
+
+// anyStore lists every namespace added, whatever store it was added under.
+type anyStore struct{ *Records }
+
+func (v anyStore) Namespaces(context.Context, [16]byte) ([]entity.NamespaceID, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	var out []entity.NamespaceID
+	for ns := range v.stores {
+		out = append(out, ns)
+	}
+
+	return out, nil
+}
+
+// seqOnRefusal records the sequence fn returned even when the Update fails.
+type seqOnRefusal struct{ *Records }
+
+func (v seqOnRefusal) Update(ctx context.Context, ns entity.NamespaceID, fn func(uint64, []record) (uint64, []record, error)) error {
+	var next uint64
+
+	err := v.Records.Update(ctx, ns, func(seq uint64, rows []record) (uint64, []record, error) {
+		n, out, err := fn(seq, rows)
+		next = n
+		return n, out, err
+	})
+	if err != nil {
+		v.mu.Lock()
+		defer v.mu.Unlock()
+
+		if v.sets[ns] == nil {
+			v.sets[ns] = &recordSet{rows: make(map[recordSlot]record)}
+		}
+		v.sets[ns].seq = next
+	}
+
+	return err
+}
+
+// seqWritesOnly makes only a writer of the sequence conflict with another
+// write of it: a writer that leaves the sequence as it read it commits over
+// a raise made since its snapshot, as an untracked read of it would.
+type seqWritesOnly struct {
+	*Records
+	seqVersions map[entity.NamespaceID]uint64 // under Records.mu
+}
+
+func newSeqWritesOnly(r *Records) view { return seqWritesOnly{r, make(map[entity.NamespaceID]uint64)} }
+
+func (v seqWritesOnly) Update(_ context.Context, ns entity.NamespaceID, fn func(uint64, []record) (uint64, []record, error)) error {
+	for {
+		rows, seen, seq := v.snapshot(ns)
+
+		v.mu.Lock()
+		seenSeq := v.seqVersions[ns]
+		v.mu.Unlock()
+
+		next, out, err := fn(seq, rows)
+		if err != nil {
+			return err
+		}
+
+		for _, row := range out {
+			if err := checkNames(row); err != nil {
+				return err
+			}
+		}
+
+		v.mu.Lock()
+		set := v.sets[ns]
+		if set == nil {
+			set = &recordSet{rows: make(map[recordSlot]record)}
+			v.sets[ns] = set
+		}
+
+		ok := set.version == seen && (next == seq || v.seqVersions[ns] == seenSeq)
+		if ok {
+			for _, row := range out {
+				set.rows[recordSlot{row.Kind, row.ID}] = row
+			}
+			if len(out) > 0 {
+				set.version++
+			}
+			if next != seq {
+				set.seq = next
+				v.seqVersions[ns]++
+			}
+		}
+		v.mu.Unlock()
+
+		if ok {
+			return nil
+		}
+	}
 }
 
 // Every view row fails on the broken views written for it and on no other,
@@ -287,6 +383,9 @@ func TestEachBrokenViewFailsItsRow(t *testing.T) {
 		{"a sequence read outside the transaction", func(r *Records) view { return seqOutside{r} }, []string{"lock"}},
 		{"a sequence kept in the view", newSeqInView, []string{"sequence"}},
 		{"a listing of the namespaces loaded", func(r *Records) view { return listsLoaded{r} }, []string{"listing"}},
+		{"a listing of every store's namespaces", func(r *Records) view { return anyStore{r} }, []string{"listing"}},
+		{"a sequence recorded by a refused Update", func(r *Records) view { return seqOnRefusal{r} }, []string{"refusals"}},
+		{"a sequence read untracked", newSeqWritesOnly, []string{"lock"}},
 	} {
 		var failed []string
 
@@ -332,7 +431,10 @@ func TestEachBrokenViewFailsOnItsCheck(t *testing.T) {
 		{"any kind and state written", func(r *Records) view { return anyName{r} }, onView(refusals), "a kind RFC 5 does not name succeeded"},
 		{"a sequence read outside the transaction", func(r *Records) view { return seqOutside{r} }, onView(locking), "both claimed one sequence"},
 		{"a sequence kept in the view", newSeqInView, sequenceKept, "want the 9223372041149743111 written"},
-		{"a listing of the namespaces loaded", func(r *Records) view { return listsLoaded{r} }, listing, "want [00000000-0000-0000-0000-000000000001"},
+		{"a listing of the namespaces loaded", func(r *Records) view { return listsLoaded{r} }, listing, "Namespaces(61000000000000000000000000000000)"},
+		{"a listing of every store's namespaces", func(r *Records) view { return anyStore{r} }, listing, "Namespaces(62000000000000000000000000000000)"},
+		{"a sequence recorded by a refused Update", func(r *Records) view { return seqOnRefusal{r} }, onView(refusals), "left the sequence at"},
+		{"a sequence read untracked", newSeqWritesOnly, onView(locking), "its read of the sequence was not tracked"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			err := c.row(t.Context(), brokenStore(c.view))

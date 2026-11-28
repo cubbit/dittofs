@@ -208,7 +208,10 @@ func (k KeyRecords) Update(ctx context.Context, ns entity.NamespaceID, fn func(s
 }
 
 // Namespaces returns every namespace whose namespace record names the remote
-// store, in ID order, from the store index NSR‖store‖ns (RFC 16 §4.2).
+// store, from the store index NSR‖store‖ns (RFC 16 §4.2).
+//
+// decision: key records under no namespace record are not listed; the
+// provider's KeyRecords.Namespaces says why that loses nothing.
 func (k KeyRecords) Namespaces(ctx context.Context, store [16]byte) ([]entity.NamespaceID, error) {
 	prefix := keys.ID([]byte{keys.KindNSR}, store[:])
 	var out []entity.NamespaceID

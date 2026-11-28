@@ -3,6 +3,7 @@ package kvstore_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/google/uuid"
@@ -170,5 +171,31 @@ func TestKeyRecordsRefuseUnknownStoredValues(t *testing.T) {
 				t.Errorf("Update over %s succeeded, want an error", c.name)
 			}
 		})
+	}
+}
+
+// Update refuses a stored sequence it cannot decode before running fn, and
+// Namespaces refuses a store-index key that does not end in one namespace
+// ID, rather than read either as some other value.
+func TestKeyRecordsRefuseMalformedLockAndIndex(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	ns, store := entity.NamespaceID{15: 1}, [16]byte{0: 's'}
+
+	v, db := keyRecordsOn(t, badger(badgerkv.Options{}))
+	set(t, db, keys.String(append(keys.ID([]byte{keys.KindNS}, ns[:]), keys.NSKeyseq), nil), []byte{1, 0, 0})
+
+	err := v.Update(t.Context(), ns, func(seq uint64, rows []keyRow) (uint64, []keyRow, error) {
+		t.Errorf("Update over a malformed sequence ran fn on sequence %d, want it refused before", seq)
+		return seq, nil, nil
+	})
+	if err == nil {
+		t.Errorf("Update over a malformed sequence succeeded, want an error")
+	}
+
+	set(t, db, append(keys.ID([]byte{keys.KindNSR}, store[:]), 1, 2, 3), nil)
+
+	if got, err := v.Namespaces(t.Context(), store); !errors.Is(err, keys.ErrMalformed) {
+		t.Errorf("Namespaces over a short store-index key = %v, %v; want keys.ErrMalformed", got, err)
 	}
 }

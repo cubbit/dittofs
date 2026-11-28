@@ -435,6 +435,9 @@ func locking(ctx context.Context, v view) error {
 func readerRerun(ctx context.Context, v view, ns entity.NamespaceID, at uint64) error {
 	snapped, raised := make(chan struct{}), make(chan struct{})
 
+	var release sync.Once
+	defer release.Do(func() { close(raised) })
+
 	var runs atomic.Int32
 
 	done := make(chan error, 1)
@@ -462,7 +465,7 @@ func readerRerun(ctx context.Context, v view, ns entity.NamespaceID, at uint64) 
 	}
 
 	err := v.Update(ctx, ns, raiseTo(at+1))
-	close(raised)
+	release.Do(func() { close(raised) })
 
 	if err != nil {
 		return fmt.Errorf("Update raising the sequence to %d while another held its snapshot: %w", at+1, err)
@@ -552,7 +555,7 @@ func listing(ctx context.Context, s RecordStore[view]) error {
 	for _, c := range []struct {
 		store [16]byte
 		want  []entity.NamespaceID
-	}{{storeA, sortIDs(append(slices.Clone(onA), empty))}, {storeB, onB}, {[16]byte{0: 'c'}, nil}} {
+	}{{storeB, onB}, {storeA, sortIDs(append(slices.Clone(onA), empty))}, {[16]byte{0: 'c'}, nil}} {
 		got, err := v.Namespaces(ctx, c.store)
 		if err != nil {
 			return fmt.Errorf("Namespaces(%x): %w", c.store, err)

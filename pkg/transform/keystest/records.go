@@ -1,7 +1,6 @@
 package keystest
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"slices"
@@ -80,8 +79,8 @@ func (r *Records) AddNamespace(ns entity.NamespaceID, store [16]byte) {
 	r.stores[ns] = store
 }
 
-// Namespaces returns every namespace added under the remote store, in ID
-// order, so a test reads one order run after run.
+// Namespaces returns every namespace added under the remote store, in no
+// order a caller may rely on.
 func (r *Records) Namespaces(_ context.Context, store [16]byte) ([]entity.NamespaceID, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -92,8 +91,6 @@ func (r *Records) Namespaces(_ context.Context, store [16]byte) ([]entity.Namesp
 			out = append(out, ns)
 		}
 	}
-
-	slices.SortFunc(out, func(a, b entity.NamespaceID) int { return bytes.Compare(a[:], b[:]) })
 
 	return out, nil
 }
@@ -165,7 +162,8 @@ func (r *Records) commit(ns entity.NamespaceID, seen, seq uint64, out []record) 
 	return r.commitLocked(ns, seen, seq, out)
 }
 
-// commitLocked is commit with r.mu held.
+// commitLocked is commit with r.mu held, for a broken view in the tests that
+// commits more than Records does under the same lock.
 func (r *Records) commitLocked(ns entity.NamespaceID, seen, seq uint64, out []record) bool {
 	set := r.sets[ns]
 	if set == nil {
