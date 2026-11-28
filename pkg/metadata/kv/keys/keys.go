@@ -73,6 +73,7 @@ const (
 	KindATA    byte = 0x44 // per-account token index: ATA‖principal‖tokenID, empty
 	KindSF     byte = 0x49 // sign-in counts: SF‖tagged
 	KindSSA    byte = 0x4C // per-account session index: SSA‖principal‖session, empty
+	KindMKW    byte = 0x4D // a master key's wrap count: MKW‖masterKeyID
 )
 
 // Sub-kinds under F‖id. The File itself has none.
