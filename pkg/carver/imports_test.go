@@ -42,7 +42,7 @@ func TestImportRule(t *testing.T) {
 		t.Error(v)
 	}
 
-	unwalked, err := archtest.Unwalked(".")
+	unwalked, err := archtest.Unwalked(".", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func TestImportRule(t *testing.T) {
 // one built for another platform by its file name. One built for a walked
 // platform, with cgo, or without the race detector is not.
 func TestImportRuleNamesUnwalkedFiles(t *testing.T) {
-	got, err := archtest.Unwalked("testdata/walk/pkg/carver")
+	got, err := archtest.Unwalked("testdata/walk/pkg/carver", true)
 	if err != nil {
 		t.Fatal(err)
 	}

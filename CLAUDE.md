@@ -298,10 +298,10 @@ entry (§4.7 fails a run whose known failure passes).
 
 **Integration** (`-tags=integration`, `-p 1`) is for a backend the host must provide: a KMIP
 server for the key provider, and a real S3-compatible endpoint. Postgres is gone: the stores are
-Badger, and FoundationDB for a cluster, so don't add a Postgres test. CI starts no S3 endpoint
-yet, so a test that needs one skips in every run and guards nothing until one is wired in; don't
-count it as coverage. Badger under `t.TempDir()` is a real implementation, and its
-tests run untagged. Durability and ordering changes need a test on a real filesystem with
+Badger, and FoundationDB for a cluster, so don't add a Postgres test. CI starts LocalStack for
+`integration`, over HTTPS at `LOCALSTACK_HTTPS_ENDPOINT` beside the plain `LOCALSTACK_ENDPOINT`;
+`s3fault.LocalStack` reads it, and fails rather than skips when `CI` is set. Badger under
+`t.TempDir()` is a real implementation, and its tests run untagged. Durability and ordering changes need a test on a real filesystem with
 the crash simulated beneath the code under test (RFC 1 §1.3), because a memory backend proves
 nothing about fsync or a crash. A backend the host lacks is a skip that names the environment
 variable to set; it is reported, never counted as a pass. Each test builds its own state and

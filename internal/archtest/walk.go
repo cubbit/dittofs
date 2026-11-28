@@ -323,8 +323,10 @@ var Support = []string{"internal/archtest", "internal/prof"}
 // builds: one whose name carries another platform's suffix, or whose build
 // constraint no target satisfies with cgo on and no build tags, such as a
 // custom tag or !cgo. go list leaves such a file out of every graph, so a test
-// that walks dir calls this too and fails on what it returns.
-func Unwalked(dir string) ([]string, error) {
+// that walks dir calls this too and fails on what it returns. tests must be
+// the walk's own flag: a walk without tests reads no _test.go file, so a
+// tagged integration test hides nothing from it.
+func Unwalked(dir string, tests bool) ([]string, error) {
 	ctxs := make([]build.Context, 0, len(targets))
 	for _, target := range targets {
 		c := build.Default
@@ -348,7 +350,7 @@ func Unwalked(dir string) ([]string, error) {
 		// The go command ignores a file whose name starts with _ or . on
 		// every platform, so no build reaches it.
 		name := d.Name()
-		if d.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasPrefix(name, "_") || strings.HasPrefix(name, ".") {
+		if d.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasPrefix(name, "_") || strings.HasPrefix(name, ".") || !tests && strings.HasSuffix(name, "_test.go") {
 			return nil
 		}
 

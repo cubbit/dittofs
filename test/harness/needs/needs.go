@@ -189,19 +189,25 @@ func Check(root, n string) error {
 	return nil
 }
 
-// services say, per service, the prefix of the variables its tests read, the
+// services say, per service, the prefixes of the variables its tests read, the
 // one holding its address, and the one that must be 1 to enable them, if
 // any. When the address isn't set, the values are the local service's, as
 // dt services starts it: written here, or in a file it writes.
 var services = map[string]struct {
-	prefix, address, enabled string
-	local                    []string
-	localFile                string
-	parse                    func(string) (string, error)
+	prefixes         []string
+	address, enabled string
+	local            []string
+	localFile        string
+	parse            func(string) (string, error)
 }{
-	"localstack": {prefix: "LOCALSTACK_ENDPOINT", address: "LOCALSTACK_ENDPOINT",
-		local: []string{"LOCALSTACK_ENDPOINT=http://127.0.0.1:4566"}, parse: urlAddress},
-	"kmip": {prefix: "DITTOFS_TEST_KMIP", address: "DITTOFS_TEST_KMIP_ENDPOINT", enabled: "DITTOFS_TEST_KMIP",
+	// Localstack serves HTTPS on its one port too, under a certificate that
+	// covers localhost.localstack.cloud, a public name for 127.0.0.1, and
+	// neither 127.0.0.1 nor localhost when it downloaded its certificate.
+	// Its two endpoints are named whole, so a LOCALSTACK_AUTH_TOKEN stays
+	// out of the cell, and out of a root cell's sudo command line.
+	"localstack": {prefixes: []string{"LOCALSTACK_ENDPOINT=", "LOCALSTACK_HTTPS_ENDPOINT="}, address: "LOCALSTACK_ENDPOINT",
+		local: []string{"LOCALSTACK_ENDPOINT=http://127.0.0.1:4566", "LOCALSTACK_HTTPS_ENDPOINT=https://localhost.localstack.cloud:4566"}, parse: urlAddress},
+	"kmip": {prefixes: []string{"DITTOFS_TEST_KMIP"}, address: "DITTOFS_TEST_KMIP_ENDPOINT", enabled: "DITTOFS_TEST_KMIP",
 		localFile: "test/harness/state/kmip.env", parse: hostPort},
 }
 
@@ -219,7 +225,7 @@ func serviceVars(root, name string) ([]string, error) {
 	if os.Getenv(s.address) != "" {
 		var vars []string
 		for _, kv := range os.Environ() {
-			if strings.HasPrefix(kv, s.prefix) {
+			if slices.ContainsFunc(s.prefixes, func(p string) bool { return strings.HasPrefix(kv, p) }) {
 				vars = append(vars, kv)
 			}
 		}
@@ -265,7 +271,27 @@ func checkService(root, name string) error {
 		return fmt.Errorf("%s: %w", s.address, err)
 	}
 	if name == "localstack" {
-		return localstackS3(value(s.address))
+		// decision: the HTTPS endpoint must be set too, so a developer's
+		// own Localstack, named by its plain address alone, is reported
+		// unmet rather than met with every HTTPS test skipped.
+		https := value("LOCALSTACK_HTTPS_ENDPOINT")
+		if https == "" {
+			return errors.New("LOCALSTACK_HTTPS_ENDPOINT isn't set")
+		}
+		if err := localstackS3(value(s.address)); err != nil {
+			return err
+		}
+		// Its host may be a public name that an offline machine, or a
+		// resolver refusing public names for 127.0.0.1, can't resolve.
+		addr, err := urlAddress(https)
+		if err != nil {
+			return fmt.Errorf("LOCALSTACK_HTTPS_ENDPOINT: %w", err)
+		}
+		conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
+		if err != nil {
+			return fmt.Errorf("LOCALSTACK_HTTPS_ENDPOINT: nothing answers at %s: %v", addr, err)
+		}
+		return conn.Close()
 	}
 	// decision: every other service is met by a connection to its port,
 	// which dtc's port forwarder accepts whether or not the service runs.

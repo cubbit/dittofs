@@ -103,7 +103,7 @@ To see what CI will run for your branch, `test/harness/bin/dt plan --tier pr --b
 | `settings-scan-smoke` | the reconcile scan benchmark once per change at `-benchtime=1x`, non-blocking | pr | any machine |
 | `reconcile-settings-smoke` | the reconcile benchmark's settings case, the whole settings reconcile, once per change at `-benchtime=1x`, non-blocking | pr | any machine |
 | `adapter-conformance` | the adapters' conformance specifications, behind their own tag | pr | any machine |
-| `integration` | `-tags=integration` tests against real services | pr | Docker with KMIP up; `integration/portmap` needs a Linux host with rpcbind |
+| `integration` | `-tags=integration` tests against real services | pr | Docker with KMIP and LocalStack up; `integration/portmap` needs a Linux host with rpcbind |
 | `operator` | the Kubernetes operator: `make test`, `make lint`, manifests, kustomize | pr | any machine with `make` and `kubectl` |
 | `e2e` | `-tags=e2e` tests through real kernel NFS and SMB mounts, as root | merge | Linux, or dtc |
 | `pjdfstest` | POSIX semantics over an NFS mount, on NFSv3, v4 and v4.1 | pr | Linux, or dtc |
@@ -172,7 +172,7 @@ The suites that need a backend find it on localhost. `dt run` never starts one, 
 first:
 
 ```bash
-test/harness/bin/dt services up localstack           # S3 for the badger-s3 profile and e2e
+test/harness/bin/dt services up localstack           # S3 for integration, the badger-s3 profile and e2e
 test/harness/bin/dt services up kmip                 # for integration
 test/harness/bin/dt services status                  # both
 test/harness/bin/dt services down
@@ -180,10 +180,10 @@ test/harness/bin/dt services down
 
 | Service | Address | Used by |
 |---|---|---|
-| `localstack` | `127.0.0.1:4566`, S3 only | `e2e`, and every `badger-s3` cell: pjdfstest, pynfs, wpts, smbtorture, cthon04, nfstest, clients, fio-verify |
+| `localstack` | `127.0.0.1:4566`, S3 only, over HTTP and over HTTPS at `https://localhost.localstack.cloud:4566` | `integration`, `e2e`, and every `badger-s3` cell: pjdfstest, pynfs, wpts, smbtorture, cthon04, nfstest, clients, fio-verify |
 | `kmip` | `127.0.0.1:5696`, with throwaway certificates under `test/harness/state/` | `integration` |
 
-To use services of your own instead, set `LOCALSTACK_ENDPOINT` or the
+To use services of your own instead, set `LOCALSTACK_ENDPOINT` and `LOCALSTACK_HTTPS_ENDPOINT`, or the
 `DITTOFS_TEST_KMIP*` variables.
 
 ### dtc, the Linux container
@@ -681,6 +681,7 @@ go test ./pkg/metadata/...                        # plain go test works for a qu
 
 ```bash
 test/harness/bin/dt services up kmip
+test/harness/bin/dt services up localstack
 test/harness/bin/dt run integration
 test/harness/bin/dt run integration --kerberos    # against a real KDC, in Docker
 test/harness/bin/dt run integration --portmap     # Linux, with rpcbind running

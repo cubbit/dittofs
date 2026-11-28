@@ -221,11 +221,39 @@ func TestLocalstackHealth(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Setenv("LOCALSTACK_ENDPOINT", c.endpoint)
+			t.Setenv("LOCALSTACK_HTTPS_ENDPOINT", strings.Replace(c.endpoint, "http:", "https:", 1))
 			err := Check("", "service:localstack")
 			if (err == nil) != (c.want == "") || err != nil && !strings.Contains(err.Error(), c.want) {
 				t.Errorf("got %v, want %q", err, c.want)
 			}
 		})
+	}
+}
+
+// A developer's own Localstack passes both its endpoints to the cell, and no
+// other LOCALSTACK_ variable; one named by its plain endpoint alone leaves the
+// need unmet, naming the HTTPS one, so its HTTPS tests can't all skip unseen;
+// and an HTTPS endpoint that nothing answers at leaves it unmet too.
+func TestLocalstackHTTPSEndpoint(t *testing.T) {
+	t.Setenv("LOCALSTACK_ENDPOINT", "http://192.0.2.1:4566")
+	t.Setenv("LOCALSTACK_HTTPS_ENDPOINT", "https://ls.example:4566")
+	t.Setenv("LOCALSTACK_AUTH_TOKEN", "secret")
+	env := ServiceEnv("", []string{"service:localstack"})
+	if want := []string{"LOCALSTACK_ENDPOINT=http://192.0.2.1:4566", "LOCALSTACK_HTTPS_ENDPOINT=https://ls.example:4566"}; !slices.Equal(slices.Sorted(slices.Values(env)), want) {
+		t.Errorf("service env %q, want %q", env, want)
+	}
+	healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"services": {"s3": "running"}}`)
+	}))
+	t.Cleanup(healthy.Close)
+	t.Setenv("LOCALSTACK_ENDPOINT", healthy.URL)
+	t.Setenv("LOCALSTACK_HTTPS_ENDPOINT", "https://127.0.0.1:"+refusedPort)
+	if err := Check("", "service:localstack"); err == nil || !strings.Contains(err.Error(), "LOCALSTACK_HTTPS_ENDPOINT: nothing answers at 127.0.0.1:"+refusedPort) {
+		t.Errorf("service:localstack with its HTTPS endpoint refused: %v, want nothing answers at it", err)
+	}
+	t.Setenv("LOCALSTACK_HTTPS_ENDPOINT", "")
+	if err := Check("", "service:localstack"); err == nil || err.Error() != "LOCALSTACK_HTTPS_ENDPOINT isn't set" {
+		t.Errorf("service:localstack with LOCALSTACK_ENDPOINT alone: %v, want LOCALSTACK_HTTPS_ENDPOINT isn't set", err)
 	}
 }
 
@@ -238,7 +266,7 @@ func TestServiceFallback(t *testing.T) {
 		t.Setenv(k, "")
 	}
 	root := t.TempDir()
-	if got, _ := serviceVars(root, "localstack"); !slices.Equal(got, []string{"LOCALSTACK_ENDPOINT=http://127.0.0.1:4566"}) {
+	if got, _ := serviceVars(root, "localstack"); !slices.Equal(got, []string{"LOCALSTACK_ENDPOINT=http://127.0.0.1:4566", "LOCALSTACK_HTTPS_ENDPOINT=https://localhost.localstack.cloud:4566"}) {
 		t.Errorf("localstack: %q", got)
 	}
 	if err := Check(root, "service:kmip"); err == nil || !strings.Contains(err.Error(), "test/harness/state/kmip.env") {
