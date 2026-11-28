@@ -127,11 +127,6 @@ func (s *store) Health(context.Context, remote.Direction) error {
 	return fmt.Errorf("remote/s3: health is not served: %w", remote.ErrInvalid)
 }
 
-// unserved is the refusal of a call the store does not serve yet.
-func unserved(op opKind) error {
-	return fmt.Errorf("remote/s3: %s is not served: %w", op, remote.ErrInvalid)
-}
-
 // record records one call through the client's Recorder: its op, its result
 // and cause labels, how long it took and the body bytes it moved.
 func (s *store) record(op opKind, err error, took time.Duration, n int64) {
