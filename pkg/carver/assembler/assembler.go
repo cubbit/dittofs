@@ -71,9 +71,7 @@ func New(c carver.AssemblerConfig) (*Fold, error) {
 // opening a plan if none is open, and is carried by none. A chunk the open plan
 // already carries is referenced again and carried once (RFC 2 P6). Neither adds
 // carried bytes or a slot of MaxChunks. A chunk that would take the open
-// plan's commit past KeyBudget closes it first, short or not, and starts the
-// next plan, so no plan's keys pass KeyBudget unless it holds that one chunk
-// alone.
+// plan's commit past KeyBudget closes it first, short or not.
 //
 // decision: Add takes no dedup lookup and returns no error, and Carried and
 // ZeroRef are the only dispositions (RFC 2 §5.1): with no lookup nothing can
@@ -96,9 +94,8 @@ func (f *Fold) Add(c carver.ChunkInfo) ([]carver.BlockPlan, carver.Disposition) 
 	// block's end is carried again. The choice moves only which commit a zero
 	// ref rides in, never a block's bytes, so it can change with no migration.
 	//
-	// decision: a chunk whose keys alone pass KeyBudget gets a plan of its
-	// own, the one plan over it, with no code of its own: it closes the open
-	// plan and the next ref closes its plan in turn. RFC 2 P2 has the caller
+	// decision: at the key-budget close, a chunk whose keys alone pass
+	// KeyBudget is planned alone, the one plan over it. RFC 2 P2 has the caller
 	// end its stretch before any chunk could, so such a chunk is a caller
 	// fault, and Add has no error to report it with. Its ceiling: the commit
 	// cannot apply that plan, so the chunk is carved, planned and refused on
@@ -147,9 +144,7 @@ func (f *Fold) Finish(now time.Time) (last *carver.BlockPlan, held bool) {
 	return f.open, now.Sub(oldest(f.open.Refs)) < f.cfg.MaxAge
 }
 
-// cost is the keys c adds to the open plan's commit: its own, the per-file
-// keys when its file is not the previous ref's, and the per-block keys when it
-// would be the plan's first carried chunk.
+// cost is the keys c adds to the open plan's commit; f.open must be non-nil.
 func (f *Fold) cost(c carver.ChunkInfo) int {
 	k := c.Keys
 	// decision: the per-file keys are charged at a plan's first ref and

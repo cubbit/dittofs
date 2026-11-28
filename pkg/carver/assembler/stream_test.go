@@ -2,6 +2,7 @@ package assembler_test
 
 import (
 	"encoding/binary"
+	"slices"
 	"testing"
 	"time"
 
@@ -115,7 +116,7 @@ func full(cfg carver.AssemblerConfig, p carver.BlockPlan) bool {
 // that is not all zeros carried by its own plan; A7 and the key budget, every
 // plan but the last full or closed by KeyBudget, its keys with the next plan's
 // first ref passing it, and no plan's keys over KeyBudget unless it holds a
-// single ref. A plan with no carried chunk is never held.
+// single carried chunk. A plan with no carried chunk is never held.
 func checkPlans(t *testing.T, cfg carver.AssemblerConfig, s []carver.ChunkInfo, plans []carver.BlockPlan, now time.Time, held bool) {
 	t.Helper()
 
@@ -146,15 +147,14 @@ func checkPlans(t *testing.T, cfg carver.AssemblerConfig, s []carver.ChunkInfo, 
 				t.Errorf("plan %d: carries %d bytes before its last chunk, want under the target %d", i, under, cfg.BlockTarget)
 			}
 		}
-		if k := planKeys(cfg, p.Refs); k > cfg.KeyBudget && len(p.Refs) != 1 {
+		if k := planKeys(cfg, p.Refs); k > cfg.KeyBudget && (len(p.Refs) != 1 || p.Refs[0].Zero) {
 			t.Errorf("plan %d: %d keys in %d refs, want at most KeyBudget %d", i, k, len(p.Refs), cfg.KeyBudget)
 		}
 		if i < len(plans)-1 && !full(cfg, p) {
 			if len(plans[i+1].Refs) == 0 {
 				t.Fatalf("plan %d: no refs", i+1)
 			}
-			next := append(p.Refs[:len(p.Refs):len(p.Refs)], plans[i+1].Refs[0])
-			if k := planKeys(cfg, next); k <= cfg.KeyBudget {
+			if k := planKeys(cfg, slices.Concat(p.Refs, plans[i+1].Refs[:1])); k <= cfg.KeyBudget {
 				t.Errorf("plan %d of %d: short, %d bytes in %d chunks, and %d keys with the next ref; want the target %d, MaxChunks %d or over KeyBudget %d",
 					i, len(plans), carriedBytes(p.Carried), len(p.Carried), k, cfg.BlockTarget, cfg.MaxChunks, cfg.KeyBudget)
 			}
