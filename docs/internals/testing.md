@@ -1271,6 +1271,7 @@ Flags:
       --smb21[=true|false]                        run the suite's smb21 option
       --stress[=true|false]                       run the suite's stress option
       --tier string                               run at tier T, or at a suite's own tier when wider: it sets args, env and select (default "pr")
+      --transform-allocs[=true|false]             run the suite's transform-allocs option
       --whole-tree[=true|false]                   run the suite's whole-tree option
       --windows[=true|false]                      run the suite's windows option
 ```
