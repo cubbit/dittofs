@@ -201,17 +201,8 @@ func TestGoldenBoundariesHoldTheBounds(t *testing.T) {
 			t.Errorf("%s: length %d, want 16 × Target = %d", name, gd.Length, want)
 		}
 
-		start := 0
-		for i, end := range gd.Ends {
-			n := end - start
-			last := i == len(gd.Ends)-1
-			if n > 4*gd.Target || n <= 0 || (!last && n < gd.Target/4) {
-				t.Errorf("%s: chunk %d is %d bytes, want %d to %d (the last may be shorter)", name, i, n, gd.Target/4, 4*gd.Target)
-			}
-			start = end
-		}
-		if start != gd.Length {
-			t.Errorf("%s: chunks end at %d, want the length %d", name, start, gd.Length)
+		if err := tiles(gd.Target, gd.Length, gd.Ends); err != nil {
+			t.Errorf("%s: %v", name, err)
 		}
 	}
 

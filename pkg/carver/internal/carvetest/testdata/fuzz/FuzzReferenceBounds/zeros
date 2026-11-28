@@ -1,0 +1,6 @@
+go test fuzz v1
+uint64(2)
+byte(1)
+uint32(600000)
+byte(1)
+uint64(2)
