@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/md5"
 	"errors"
+	"fmt"
 	"hash/crc32"
 	"io"
 	"slices"
@@ -366,4 +367,83 @@ func TestNewPanicsOnAnUnknownChecksumKind(t *testing.T) {
 	}()
 
 	memory.New(sim.NewTestClock(epoch).Now, remote.Checksum(7))
+}
+
+// A listing reports the time the store's clock read at the put, never the
+// host's: the clock sits at a fixed past instant when the block is put.
+func TestAListingReportsTheClocksTimeAtThePut(t *testing.T) {
+	clock := sim.NewTestClock(epoch)
+	clock.Advance(time.Hour)
+
+	s := memory.New(clock.Now, remote.ChecksumNone)
+	mustPut(t, s, blockA, first)
+
+	clock.Advance(time.Hour)
+
+	page, _, _, err := s.List(t.Context(), "", 10)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+
+	if want := epoch.Add(time.Hour); len(page) != 1 || !page[0].ModTime.Equal(want) {
+		t.Fatalf("List after one put at %v: %+v, want one block with that ModTime", want, page)
+	}
+}
+
+// A batch naming one block three times and one never written returns one nil
+// per name, in order, not one per distinct name.
+func TestADeleteReturnsOneResultPerNameItWasGiven(t *testing.T) {
+	s := newStore(remote.ChecksumNone)
+	mustPut(t, s, blockA, first)
+
+	batch := []remote.Name{blockA, {0xb}, blockA, blockA}
+
+	errs := s.Delete(t.Context(), batch)
+	if len(errs) != len(batch) {
+		t.Fatalf("Delete of %d names: %d results, want %d", len(batch), len(errs), len(batch))
+	}
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("Delete: result %d is %v, want nil", i, err)
+		}
+	}
+
+	if _, err := read(t, s, blockA); !errors.Is(err, remote.ErrNotFound) {
+		t.Errorf("Get after Delete: %v, want ErrNotFound", err)
+	}
+}
+
+// A page of no keys asked for is ErrInvalid; an empty store's page is done at
+// the cursor it was given.
+func TestAListOfNoKeysIsRefusedAndAnEmptyStoreIsDone(t *testing.T) {
+	s := newStore(remote.ChecksumNone)
+
+	for _, n := range []int{0, -1} {
+		_, _, _, err := s.List(t.Context(), "", n)
+		checkErr(t, fmt.Sprintf("List of %d keys", n), err, remote.ErrInvalid)
+	}
+
+	page, next, done, err := s.List(t.Context(), "", 10)
+	if err != nil || len(page) != 0 || next != "" || !done {
+		t.Errorf("List of an empty store: %d blocks, next %q, done %v, error %v; want none, the zero Cursor, done, nil", len(page), next, done, err)
+	}
+}
+
+// A delete under a context already ended returns the context's error for
+// every name and deletes nothing.
+func TestADeleteUnderAnEndedContextDeletesNothing(t *testing.T) {
+	s := newStore(remote.ChecksumNone)
+	mustPut(t, s, blockA, first)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	for i, err := range s.Delete(ctx, []remote.Name{blockA, {0xb}}) {
+		checkErr(t, fmt.Sprintf("Delete under an ended context, result %d", i), err, context.Canceled)
+	}
+
+	if got, err := read(t, s, blockA); err != nil || !bytes.Equal(got, first) {
+		t.Errorf("Get after a Delete under an ended context: %d bytes and error %v, want the %d bytes put", len(got), err, len(first))
+	}
 }
