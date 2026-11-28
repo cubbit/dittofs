@@ -388,7 +388,10 @@ func TestCancelledCallReturnsTheContextsError(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(t.Context())
 	body := bytes.Repeat([]byte("x"), 64<<10)
-	err := r.batch.Put(ctx, remote.Name{0xca}, &cancelsOnRead{r: bytes.NewReader(body), cancel: cancel}, int64(len(body)), crc32cOf(body))
+	// net/http's writer can still send the whole body after Put returns, and
+	// the service apply it after the bucket's cleanup listed it; a checksum
+	// that is not the body's makes the service refuse any put that arrives.
+	err := r.batch.Put(ctx, remote.Name{0xca}, &cancelsOnRead{r: bytes.NewReader(body), cancel: cancel}, int64(len(body)), crc32cOf(body[1:]))
 	cancelled(t, "put cancelled while its body streams", err)
 }
 
