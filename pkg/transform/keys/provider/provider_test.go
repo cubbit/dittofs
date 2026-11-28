@@ -90,6 +90,10 @@ func put(t *testing.T, records KeyRecords, ns entity.NamespaceID, rows ...Row) {
 	}
 }
 
+// exportKey is the export key's kind, which no consumer outside the provider
+// names.
+const exportKey = "export-key"
+
 // key32 is a 32-byte key of one repeated byte.
 func key32(b byte) []byte { return bytes.Repeat([]byte{b}, 32) }
 
@@ -121,7 +125,7 @@ func TestGetAndCurrentAnswers(t *testing.T) {
 	edit := func(row Row, fn func(*keyRecord)) Row {
 		r, err := decodeKeyRecord(row.Record)
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("decode the record to edit: %v", err)
 		}
 		fn(&r)
 		row.Record = r.encode()
@@ -185,20 +189,12 @@ func TestGetAndCurrentAnswers(t *testing.T) {
 			// Current of its kind answers as Get did, on a provider that has
 			// not served it yet.
 			mid, err := f.fresh(t).Current(ctx, ns, row.Kind)
-			switch {
-			case row.State == stateDestroyed:
-				// A destroyed record is not current: Current finds none.
-				if !isOnly(err, keys.ErrUnknownMaterial) {
-					t.Errorf("Current with only a destroyed record = %v, want ErrUnknownMaterial alone", err)
-				}
-			case tc.want == nil:
-				if want := (keys.MaterialID{Namespace: ns, Kind: row.Kind, ID: row.ID, Fingerprint: fingerprint(key)}); err != nil || mid != want {
-					t.Errorf("Current = %+v, %v; want %+v", mid, err, want)
-				}
-			default:
-				if !isOnly(err, tc.want) {
-					t.Errorf("Current = %v, want %v alone", err, tc.want)
-				}
+			want := keys.MaterialID{Namespace: ns, Kind: row.Kind, ID: row.ID, Fingerprint: fingerprint(key)}
+			if tc.want == nil && (err != nil || mid != want) {
+				t.Errorf("Current = %+v, %v; want %+v", mid, err, want)
+			}
+			if tc.want != nil && !isOnly(err, tc.want) {
+				t.Errorf("Current = %v, want %v alone", err, tc.want)
 			}
 		})
 	}
@@ -312,8 +308,8 @@ func TestUpdateMarkingDestroyedIsSeenAtOnce(t *testing.T) {
 	if got, err := f.p.Get(ctx, id); !isOnly(err, keys.ErrMaterialDestroyed) || got != nil {
 		t.Errorf("Get after the update marked it destroyed = %x, %v; want no bytes and ErrMaterialDestroyed alone", got, err)
 	}
-	if _, err := f.p.Current(ctx, ns, keys.KindDataKey); !isOnly(err, keys.ErrUnknownMaterial) {
-		t.Errorf("Current after its one data key was destroyed = %v, want ErrUnknownMaterial alone", err)
+	if _, err := f.p.Current(ctx, ns, keys.KindDataKey); !isOnly(err, keys.ErrMaterialDestroyed) {
+		t.Errorf("Current after its one data key was destroyed = %v, want ErrMaterialDestroyed alone", err)
 	}
 }
 
@@ -355,7 +351,7 @@ func TestReplacedChunkingKeyIsRefused(t *testing.T) {
 	replaced := wrapped(t, f.p, ns, keys.KindChunkingKey, "k", stateCurrent, key32(2))
 	r, err := decodeKeyRecord(replaced.Record)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("decode the replacing record: %v", err)
 	}
 	r.fingerprint = fingerprint(key32(1))
 	replaced.Record = r.encode()
@@ -384,9 +380,12 @@ func TestOpenUnwrapsEveryCurrentKey(t *testing.T) {
 	ctx := context.Background()
 
 	bad := entity.NewNamespaceID()
+	// Both current rows are bad, so a walk that checks only one of them,
+	// whichever the map yields first, still fails.
 	put(t, f.records, bad,
-		wrapped(t, f.p, bad, keys.KindChunkIDKey, "c", stateCurrent, key32(1)),
-		wrapped(t, other.p, bad, keys.KindDataKey, "d", stateCurrent, key32(2)))
+		wrapped(t, other.p, bad, keys.KindChunkIDKey, "c", stateCurrent, key32(1)),
+		wrapped(t, other.p, bad, keys.KindDataKey, "d", stateCurrent, key32(2)),
+		wrapped(t, f.p, bad, exportKey, "e", "retired", key32(9)))
 	if err := f.p.Open(ctx, bad); !isOnly(err, keys.ErrMaterialUnavailable) {
 		t.Errorf("Open of a namespace with a key under another master key = %v, want ErrMaterialUnavailable alone", err)
 	}
@@ -422,12 +421,12 @@ func TestGetReturnsACopy(t *testing.T) {
 	put(t, f.records, ns, wrapped(t, f.p, ns, keys.KindDataKey, "k", stateCurrent, key32(1)))
 	id := keys.MaterialID{Namespace: ns, Kind: keys.KindDataKey, ID: "k"}
 	if err := f.p.Open(ctx, ns); err != nil {
-		t.Fatal(err)
+		t.Fatalf("Open: %v", err)
 	}
 
 	got, err := f.p.Get(ctx, id)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("first Get: %v", err)
 	}
 	clear(got)
 	if again, err := f.p.Get(ctx, id); err != nil || !bytes.Equal(again, key32(1)) {
@@ -438,6 +437,8 @@ func TestGetReturnsACopy(t *testing.T) {
 // A Get of a cached key allocates only the caller's copy, which
 // keys.Provider.Get makes the caller's own. A map key built per call, a
 // record decoded again, or a second copy fails here.
+//
+// It runs without prof.Watch, whose own sampling would count here.
 func TestAllocsProviderGet(t *testing.T) {
 	if prof.RaceEnabled {
 		t.Skip("the race detector's allocations make the count meaningless")
@@ -449,12 +450,12 @@ func TestAllocsProviderGet(t *testing.T) {
 	put(t, f.records, ns, wrapped(t, f.p, ns, keys.KindDataKey, "k", stateCurrent, key32(1)))
 	id := keys.MaterialID{Namespace: ns, Kind: keys.KindDataKey, ID: "k"}
 	if err := f.p.Open(ctx, ns); err != nil {
-		t.Fatal(err)
+		t.Fatalf("Open: %v", err)
 	}
 
 	allocs := testing.AllocsPerRun(100, func() {
 		if _, err := f.p.Get(ctx, id); err != nil {
-			t.Fatal(err)
+			t.Fatalf("cached Get: %v", err)
 		}
 	})
 	if allocs != 1 {
@@ -494,5 +495,28 @@ func TestAnUnservableRecordIsLoggedOnce(t *testing.T) {
 	}
 	if want := fmt.Sprintf("id=%x", "k"); !strings.Contains(log.String(), want) {
 		t.Errorf("the log line does not name the record by %s:\n%s", want, log.String())
+	}
+}
+
+// A clear chunk-ID record in a namespace that holds a data or chunking key is
+// refused, since only a non-encrypting namespace holds its chunk-ID key in the
+// clear and nothing binds a clear key to its record. A writer of the metadata
+// store could otherwise swap an encrypting namespace's chunk-ID key for one it
+// knows. A clear record accepted for any chunk-ID key fails here.
+func TestClearChunkIDKeyInAnEncryptingNamespaceIsRefused(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	f := newReadFixture(t)
+	ctx := context.Background()
+	ns := entity.NewNamespaceID()
+	put(t, f.records, ns,
+		Row{Kind: keys.KindChunkIDKey, ID: "c", State: stateCurrent, Record: f.p.record(fingerprint(key32(1)), nil, key32(1))},
+		wrapped(t, f.p, ns, keys.KindDataKey, "d", stateCurrent, key32(2)))
+
+	if err := f.fresh(t).Open(ctx, ns); !isOnly(err, keys.ErrMaterialUnavailable) {
+		t.Errorf("Open over a clear chunk-ID key beside a data key = %v, want ErrMaterialUnavailable alone", err)
+	}
+	if got, err := f.fresh(t).Get(ctx, keys.MaterialID{Namespace: ns, Kind: keys.KindChunkIDKey, ID: "c"}); !isOnly(err, keys.ErrMaterialUnavailable) || got != nil {
+		t.Errorf("Get of a clear chunk-ID key beside a data key = %x, %v; want no bytes and ErrMaterialUnavailable alone", got, err)
 	}
 }

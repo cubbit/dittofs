@@ -216,5 +216,6 @@ func build(masterKeyID [16]byte, key []byte, deps Deps) (*Provider, error) {
 		p.now = time.Now
 	}
 	p.cache.sets = make(map[entity.NamespaceID]map[slot]*entry)
+	p.cache.epochs = make(map[entity.NamespaceID]uint64)
 	return p, nil
 }

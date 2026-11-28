@@ -131,11 +131,11 @@ func TestRecordTakesTheInjectedClock(t *testing.T) {
 	at := time.Date(2026, 11, 28, 12, 0, 0, 7, time.UTC)
 	p, err := build([16]byte{}, make([]byte, 32), Deps{Now: func() time.Time { return at }})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("build: %v", err)
 	}
 	r, err := decodeKeyRecord(p.record([32]byte{}, nil, nil))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("decode the record built: %v", err)
 	}
 	if got := time.Unix(0, r.since).UTC(); !got.Equal(at) {
 		t.Errorf("record entered its state at %v, want the injected clock's %v", got, at)
