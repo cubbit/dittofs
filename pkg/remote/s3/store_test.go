@@ -330,6 +330,32 @@ func TestPutComparesTheETag(t *testing.T) {
 	}
 }
 
+func TestPutMatchesTheRecordedRejectionOnlyWhenItCarriedTheChecksum(t *testing.T) {
+	srv := tlsServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, xmlError("InvalidRequest"))
+	}, false, nil)
+	rejected := recorded{http.StatusBadRequest, "InvalidRequest"}
+	b := []byte("x")
+
+	for _, tc := range []struct {
+		why  string
+		ch   choice
+		sum  []byte
+		want error
+	}{
+		{"CRC32C carried", choice{proved: true, sum: remote.ChecksumCRC32C, rejected: rejected}, []byte{1, 2, 3, 4}, remote.ErrCorrupt},
+		{"Content-MD5 carried", choice{proved: true, sum: remote.ChecksumMD5, rejected: rejected}, make([]byte, 16), remote.ErrCorrupt},
+		{"the ETag compared, nothing carried", choice{proved: true, rejected: rejected}, nil, remote.ErrInvalid},
+	} {
+		s, _ := storeOn(t, srv, tc.ch, nil)
+		if err := s.Put(t.Context(), remote.Name{}, bytes.NewReader(b), 1, tc.sum); !errors.Is(err, tc.want) {
+			t.Errorf("Put [%s] answered 400 InvalidRequest = %v, want %v", tc.why, err, tc.want)
+		}
+	}
+}
+
 func TestETagIsMD5(t *testing.T) {
 	sum := md5.Sum([]byte("x"))
 	h := hex.EncodeToString(sum[:])

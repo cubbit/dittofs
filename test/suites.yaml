@@ -386,6 +386,8 @@ suites:
       # survives the retry turns develop red and posts to the develop-status issue. The flake that
       # failed about one develop run in seven went when the fixture started the domain once.
       ad-dc:    { cmd: go test -tags=ad_dc -timeout=20m ./test/integration/ad-dc/, needs: [linux, docker, smbclient], tier: merge }
+      # The S3 store's allocation bounds per call, which skip under -race.
+      s3-allocs: { cmd: "go test -tags=integration -timeout=5m -run=^TestPutAllocatesFlat$ ./pkg/remote/s3/", needs: [docker, "service:localstack"], tier: pr }
   operator:
     dir: k8s/dittofs-operator
     cmd:
