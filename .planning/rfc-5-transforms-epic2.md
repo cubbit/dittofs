@@ -342,8 +342,8 @@ suite" is `keystest.Run`.
   its provider's wrap bytes against the stored-wrap vector and its unwrap. Prior art: none found.
 - **D10, the exported surface of §6 is the user's approved one** (#5857): `Memory` and its six
   methods plus the salvage-key wrap E1's `keys.SalvageWrapper` declares (T2.2), `Harness`, which
-  embeds `keys.SalvageWrapper` so the salvage row reaches every provider without a type assertion,
-  and `keystest.Run`; `Subject`, `transformtest.Run`, `FuzzDecode`, `Fixture`,
+  embeds `keys.SalvageWrapper` from T2.2 on, so the salvage row reaches every provider without a
+  type assertion, and `keystest.Run`; `Subject`, `transformtest.Run`, `FuzzDecode`, `Fixture`,
   `Vectors` and `LoadVectors`. A change to it is a revision of this document. Prior art: none
   needed.
 - **D11, the suite decodes through a census view, as the chain does.** RFC 5 §3.1 gives a
@@ -364,7 +364,7 @@ pkg/transform/keystest/
   memory.go         T2.1  Memory: Current, Get, Give, Replace, Destroy, Calls
                     T2.2  Memory's salvage-key wrap
   suite.go          T2.1  Harness, Run, the provider suite's rows
-                    T2.2  the salvage-key row
+                    T2.2  keys.SalvageWrapper in Harness, the salvage-key row
   suite_test.go     T2.1  Memory passes; each broken provider fails its row
                     T2.2  Memory's salvage wrap unwraps under its AAD only
 pkg/transform/transformtest/
@@ -404,8 +404,8 @@ pkg/carver/internal/carvetest/  T2.5  RFC 5's vectors added to the RFC 2 plan's 
     func (m *Memory) Calls() uint64
     ```
 
-  - `keystest.Harness` (`keys.Provider` and `keys.SalvageWrapper` plus `Give`, `Replace`,
-    `Destroy`, `Calls`) and
+  - `keystest.Harness` (`keys.Provider` plus `Give`, `Replace`, `Destroy`, `Calls`; T2.2 adds
+    `keys.SalvageWrapper`, since `Memory` implements it only there) and
     `keystest.Run(t *testing.T, newHarness func(t *testing.T) Harness)`, consumed by E6, which
     runs it over its provider, and by E8, which adds the notice's rows.
 - **Acceptance criteria:**
@@ -434,8 +434,8 @@ pkg/carver/internal/carvetest/  T2.5  RFC 5's vectors added to the RFC 2 plan's 
 - **Track:** team. **Depends on:** T2.1.
 - **Covers:** R20.
 - **Deliverables:** `Memory` implements the salvage-key wrap E1 declares in `keys` (D9), consumed
-  by the RFC 8 offload plan's epic 20; the provider suite's salvage row, consumed by E6, whose
-  provider runs it.
+  by the RFC 8 offload plan's epic 20; `keystest.Harness` embeds `keys.SalvageWrapper`; the
+  provider suite's salvage row, consumed by E6, whose provider runs it.
 - **Acceptance criteria:**
   - Two calls return two different 32-byte keys and two different wraps.
   - Each wrap parses as Appendix B.1's stored-wrap layout: a known provider kind, a non-empty

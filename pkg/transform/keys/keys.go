@@ -58,7 +58,9 @@ type Provider interface {
 	// ErrUnknownMaterial for an ID the provider was never given,
 	// ErrMaterialUnavailable for one it cannot reach now or whose content no
 	// longer matches its fingerprint, ErrMaterialDestroyed for one it once had
-	// and has lost or removed for good (RFC 5 §2.7).
+	// and has lost or removed for good (RFC 5 §2.7). The caller owns the
+	// slice returned: the provider never changes it after returning it, and a
+	// caller's change to it never reaches the provider.
 	Get(ctx context.Context, id MaterialID) ([]byte, error)
 }
 
